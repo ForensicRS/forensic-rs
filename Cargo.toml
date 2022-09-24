@@ -4,5 +4,7 @@ version = "0.1.0"
 authors = ["Samuel Garcés Marín <samuel.garces@protonmail.com>"]
 keywords = ["forensic", "windows", "parser", "registry", "cybersecurity"]
 categories = ["parsing"]
+description = "A Rust-based framework to build tools that analyze forensic artifacts and can be reused as libraries across multiple projects without changing anything."
+liciense = "MIT"
 
 [dependencies]
