@@ -1,8 +1,6 @@
-use std::borrow::Cow;
-
 use crate::err::ForensicResult;
 
-
+#[derive(Clone, Copy)]
 pub enum RegHiveKey {
     HkeyClassesRoot,
     HkeyCurrentConfig,
@@ -14,11 +12,10 @@ pub enum RegHiveKey {
     HkeyPerformanceText,
     HkeyUsers,
     /// For live systems
-    Hkey(isize),
-    /// For offline systems
-    Other(Cow<'static, str>)
+    Hkey(isize)
 }
 
+#[derive(Clone)]
 pub enum RegValue {
     Binary(Vec<u8>),
     MultiSZ(String),

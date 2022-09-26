@@ -18,8 +18,10 @@ Here is where this framework comes to help with the traits:
 pub trait RegistryReader {
     fn open_key(&mut self, hkey : RegHiveKey, key_name : &str) -> ForensicResult<RegHiveKey>;
     fn read_value(&self, hkey : RegHiveKey, value_name : &str) -> ForensicResult<RegValue>;
-    fn enumerate_values(&self, hkey : RegHiveKey, pos : u32) -> ForensicResult<Vec<String>>;
-    fn enumerate_keys(&self, hkey : RegHiveKey, pos : u32) -> ForensicResult<Vec<String>>;
+    fn enumerate_values(&self, hkey : RegHiveKey) -> ForensicResult<Vec<String>>;
+    fn enumerate_keys(&self, hkey : RegHiveKey) -> ForensicResult<Vec<String>>;
+    fn key_at(&self, hkey : RegHiveKey, pos : u32) -> ForensicResult<String>;
+    fn value_at(&self, hkey : RegHiveKey, pos : u32) -> ForensicResult<String>;
 }
 ```
 
