@@ -31,3 +31,7 @@ So with this we have:
 * ShellBags analyzer: accepts a *RegistryReader* as a parameter to access the registry.
 
 With this, we can reause the ShellBags analyzer to be used in a EDR-like tool or an offline analysis tool used in a forensic case.
+
+## List of libraries
+* **frnsc-liveregistry-rs**: Implements *RegistryReader* using the Windows API to access the registry of a live system. https://github.com/SecSamDev/frnsc-liveregistry-rs
+* **reg-analyzer-rs**: Analyzes registry artifacts for evidences. https://github.com/SecSamDev/reg-analyzer-rs

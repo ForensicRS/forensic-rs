@@ -1,8 +1,11 @@
 pub type ForensicResult<T> = Result<T, ForensicError>;
 
+#[derive(Clone, Debug)]
 pub enum ForensicError {
     PermissionError,
     NoMoreData,
     Other(String),
-    Io(std::io::Error)
+    Missing,
+    BadFormat,
+    Io(String)
 }
