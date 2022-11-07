@@ -2,6 +2,7 @@ pub mod traits;
 pub mod data;
 pub mod err;
 pub mod bitacora;
+pub mod core;
 
 pub mod prelude {
     pub use crate::traits::registry::*;
