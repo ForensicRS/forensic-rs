@@ -1,4 +1,6 @@
 # Forensic-rs
+[![crates.io](https://img.shields.io/crates/v/forensic-rs)](https://crates.io/crates/forensic-rs) [![documentation](https://docs.rs/forensic-rs/badge.svg)](https://docs.rs/forensic-rs) ![MIT License](https://img.shields.io/crates/l/forensic-rs)
+
 
 A Rust-based framework to build tools that analyze forensic artifacts and can be reused as libraries across multiple projects without changing anything.
 
