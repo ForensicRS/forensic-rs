@@ -3,6 +3,7 @@ pub mod data;
 pub mod err;
 pub mod bitacora;
 pub mod core;
+pub mod activity;
 
 pub mod prelude {
     pub use crate::traits::registry::*;

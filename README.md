@@ -47,23 +47,24 @@ And ShellBags analyzer can be used in a EDR-like agent or as a analysis tool in 
 
 Extracted from the [SQL trait](./src/traits/sql.rs) tests using sqlite db.
 ```rust
-let conn : sqlite::Connection = prepare_db();
-let statement : sqlite::Statement = prepare_statement(&conn, "SELECT name, age FROM users;");
-let mut wrap = SqliteWrapper::new(statement);
-test_database_content(&mut wrap);
+let conn = prepare_db();
+let w_conn = prepare_wrapper(conn);
+let mut statement = w_conn.prepare("SELECT name, age FROM users;").unwrap();
+test_database_content(statement.as_mut()).expect("Should not return error");
 
-fn test_database_content(wrap : &mut impl SqlStatement) {
-    assert!(wrap.next().unwrap());
-    let name : String = wrap.read(0).unwrap();
-    let age : usize = wrap.read(1).unwrap();
+fn test_database_content<'a>(statement : &mut dyn SqlStatement) -> ForensicResult<()> {
+    assert!(statement.next()?);
+    let name : String = statement.read(0)?.try_into()?;
+    let age : usize = statement.read(1)?.try_into()?;
     assert_eq!("Alice", name);
     assert_eq!(42, age);
-    assert!(wrap.next().unwrap());
-    let name : String = wrap.read(0).unwrap();
-    let age : usize = wrap.read(1).unwrap();
+    assert!(statement.next()?);
+    let name : String = statement.read(0)?.try_into()?;
+    let age : usize = statement.read(1)?.try_into()?;
     assert_eq!("Bob", name);
     assert_eq!(69, age);
-    assert!(!wrap.next().unwrap());
+    assert!(!statement.next()?);
+    Ok(())
 }
 ```
 

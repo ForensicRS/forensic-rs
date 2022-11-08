@@ -1,4 +1,8 @@
-use crate::prelude::ForensicResult;
+use crate::{prelude::ForensicResult, err::ForensicError};
+
+pub trait SqlDb {
+    fn prepare<'a>(&'a self, statement : &'a str) -> ForensicResult<Box<dyn SqlStatement + 'a>>;
+}
 
 /// It allows decoupling the SQL database access library from the analysis library.
 pub trait SqlStatement {
@@ -12,10 +16,8 @@ pub trait SqlStatement {
     fn column_type(&self, i: usize) -> ColumnType;
     /// Advance to the next state until there no more data is available (return=Ok(false)).
     fn next(&mut self) -> ForensicResult<bool>;
-    /// If supported, convert the row to a struct that implements Deserialized
-    fn read<T: SqlValueInto>(&self, i: usize) -> ForensicResult<T>;
     /// Read a value from a column. The first column has index 0.
-    fn read_value(&self, i: usize) -> ForensicResult<ColumnValue>;
+    fn read(&self, i: usize) -> ForensicResult<ColumnValue>;
 }
 
 pub trait SqlValueInto: Sized {
@@ -39,9 +41,11 @@ pub enum ColumnValue {
     Null,
 }
 
-impl SqlValueInto for String {
-    fn into(value: &ColumnValue) -> ForensicResult<Self> {
-        Ok(match value {
+impl TryInto<String> for ColumnValue {
+    type Error = ForensicError;
+
+    fn try_into(self) -> Result<String, Self::Error> {
+        Ok(match self {
             ColumnValue::String(v) => v.clone(),
             ColumnValue::Binary(v) => format!("{:?}",v),
             ColumnValue::Float(v) => format!("{:?}",v),
@@ -49,77 +53,48 @@ impl SqlValueInto for String {
             ColumnValue::Null => String::new()
         })
     }
-
-    fn into_owned(value: ColumnValue) -> ForensicResult<Self> {
-        Ok(match value {
-            ColumnValue::String(v) => v,
-            ColumnValue::Binary(v) => format!("{:?}",v),
-            ColumnValue::Float(v) => format!("{:?}",v),
-            ColumnValue::Integer(v) => format!("{:?}",v),
-            ColumnValue::Null => String::new()
-        })
-    }
 }
-impl SqlValueInto for i64 {
-    fn into(value: &ColumnValue) -> ForensicResult<Self> {
-        match value {
-            ColumnValue::Integer(v) => Ok(*v),
-            _ => Err(crate::prelude::ForensicError::BadFormat)
-        }
-    }
 
-    fn into_owned(value: ColumnValue) -> ForensicResult<Self> {
-        match value {
+impl TryInto<i64> for ColumnValue {
+    type Error = ForensicError;
+
+    fn try_into(self) -> Result<i64, Self::Error> {
+        match self {
             ColumnValue::Integer(v) => Ok(v),
-            _ => Err(crate::prelude::ForensicError::BadFormat)
+            _ => Err(ForensicError::BadFormat)
         }
     }
 }
 
-impl SqlValueInto for usize {
-    fn into(value: &ColumnValue) -> ForensicResult<Self> {
-        match value {
-            ColumnValue::Integer(v) => Ok(*v as usize),
-            _ => Err(crate::prelude::ForensicError::BadFormat)
-        }
-    }
+impl TryInto<usize> for ColumnValue {
+    type Error = ForensicError;
 
-    fn into_owned(value: ColumnValue) -> ForensicResult<Self> {
-        match value {
+    fn try_into(self) -> Result<usize, Self::Error> {
+        match self {
             ColumnValue::Integer(v) => Ok(v as usize),
-            _ => Err(crate::prelude::ForensicError::BadFormat)
+            _ => Err(ForensicError::BadFormat)
         }
     }
 }
 
-impl SqlValueInto for f64 {
-    fn into(value: &ColumnValue) -> ForensicResult<Self> {
-        match value {
-            ColumnValue::Float(v) => Ok(*v),
-            _ => Err(crate::prelude::ForensicError::BadFormat)
-        }
-    }
+impl TryInto<f64> for ColumnValue {
+    type Error = ForensicError;
 
-    fn into_owned(value: ColumnValue) -> ForensicResult<Self> {
-        match value {
+    fn try_into(self) -> Result<f64, Self::Error> {
+        match self {
             ColumnValue::Float(v) => Ok(v),
-            _ => Err(crate::prelude::ForensicError::BadFormat)
+            _ => Err(ForensicError::BadFormat)
         }
     }
 }
 
-impl SqlValueInto for Vec<u8> {
-    fn into(value: &ColumnValue) -> ForensicResult<Self> {
-        match value {
-            ColumnValue::Binary(v) => Ok(v.clone()),
-            _ => Err(crate::prelude::ForensicError::BadFormat)
-        }
-    }
+impl TryInto<Vec<u8>> for ColumnValue {
+    type Error = ForensicError;
 
-    fn into_owned(value: ColumnValue) -> ForensicResult<Self> {
-        match value {
+    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+        match self {
             ColumnValue::Binary(v) => Ok(v),
-            _ => Err(crate::prelude::ForensicError::BadFormat)
+            _ => Err(ForensicError::BadFormat)
         }
     }
 }
@@ -128,34 +103,57 @@ impl SqlValueInto for Vec<u8> {
 #[cfg(test)]
 mod sql_tests {
     extern crate sqlite;
+
     use crate::prelude::{ForensicResult, ForensicError};
     use self::sqlite::{Connection, Statement};
-    use super::{SqlStatement, ColumnValue};
+    use super::{SqlStatement, ColumnValue, SqlDb};
 
-    struct SqliteWrapper<'a> {
-        conn: Statement<'a>,
+    struct SqliteWDB {
+        conn : Connection
     }
-    impl<'a> SqliteWrapper<'a>{
-        pub fn new(conn: Statement<'a>) -> Self{
-            Self { conn }
+
+    impl SqliteWDB{
+        pub fn new(conn : Connection) -> SqliteWDB {
+            SqliteWDB {
+                conn
+            }
         }
     }
 
-    impl SqlStatement for SqliteWrapper<'_> {
+    impl SqlDb for SqliteWDB {
+        fn prepare<'a>(&'a self, statement : &'a str) -> ForensicResult<Box<dyn SqlStatement +'a>> {
+            Ok(Box::new(SqliteStatement::new( &self.conn, statement)?))
+        }
+    }
+
+    pub struct SqliteStatement<'conn> {
+        stmt: Statement<'conn>
+    }
+    impl<'conn> SqliteStatement<'conn>{
+        pub fn new(conn : &'conn Connection, statement : &str) -> ForensicResult<SqliteStatement<'conn>>{
+            Ok(Self { stmt : match conn.prepare(statement) {
+                    Ok(st) => st,
+                    Err(e) => return Err(ForensicError::Other(e.to_string()))
+                }
+            })
+        }
+    }
+
+    impl<'conn> SqlStatement for SqliteStatement<'conn>{
         fn column_count(&self) -> usize {
-            self.conn.column_count()
+            self.stmt.column_count()
         }
 
         fn column_name(&self, i: usize) -> &str {
-            self.conn.column_name(i)
+            self.stmt.column_name(i)
         }
 
         fn column_names(&self) -> Vec<&str> {
-            self.conn.column_names()
+            self.stmt.column_names()
         }
 
         fn column_type(&self, i: usize) -> super::ColumnType {
-            match self.conn.column_type(i) {
+            match self.stmt.column_type(i) {
                 sqlite::Type::Binary => super::ColumnType::Binary,
                 sqlite::Type::Float => super::ColumnType::Float,
                 sqlite::Type::Integer => super::ColumnType::Integer,
@@ -165,7 +163,7 @@ mod sql_tests {
         }
 
         fn next(&mut self) -> ForensicResult<bool> {
-            match self.conn.next() {
+            match self.stmt.next() {
                 Ok(v) => Ok(match v {
                     sqlite::State::Row => true,
                     sqlite::State::Done => false,
@@ -174,32 +172,28 @@ mod sql_tests {
             }
         }
 
-        fn read<T: super::SqlValueInto>(&self, i: usize) -> ForensicResult<T> {
-            T::into_owned(self.read_value(i)?)
-        }
-
-        fn read_value(&self, i: usize) -> ForensicResult<ColumnValue> {
-            match self.conn.column_type(i) {
-                sqlite::Type::Binary => match self.conn.read(i) {
+        fn read(&self, i: usize) -> ForensicResult<ColumnValue> {
+            match self.stmt.column_type(i) {
+                sqlite::Type::Binary => match self.stmt.read(i) {
                     Ok(v) => Ok(ColumnValue::Binary(v)),
                     Err(e) => Err(ForensicError::Other(e.to_string())),
                 },
-                sqlite::Type::Float => match self.conn.read(i) {
+                sqlite::Type::Float => match self.stmt.read(i) {
                     Ok(v) => Ok(ColumnValue::Float(v)),
                     Err(e) => Err(ForensicError::Other(e.to_string())),
                 },
-                sqlite::Type::Integer => match self.conn.read(i) {
+                sqlite::Type::Integer => match self.stmt.read(i) {
                     Ok(v) => Ok(ColumnValue::Integer(v)),
                     Err(e) => Err(ForensicError::Other(e.to_string())),
                 },
-                sqlite::Type::String => match self.conn.read(i) {
+                sqlite::Type::String => match self.stmt.read(i) {
                     Ok(v) => Ok(ColumnValue::String(v)),
                     Err(e) => Err(ForensicError::Other(e.to_string())),
                 },
                 sqlite::Type::Null => Ok(ColumnValue::Null),
             }
-            
         }
+
     }
 
     fn prepare_db() -> Connection {
@@ -215,30 +209,32 @@ mod sql_tests {
             .unwrap();
         connection
     }
-
-    fn prepare_statement<'a>(conn: &'a Connection, st: &'a str) -> Statement<'a> {
-        conn.prepare(st).unwrap()
+    fn prepare_wrapper(connection :Connection) -> SqliteWDB{
+        SqliteWDB::new(connection)
     }
+
 
     #[test]
     fn test_sqlite_wrapper() {
         let conn = prepare_db();
-        let statement = prepare_statement(&conn, "SELECT name, age FROM users;");
-        let mut wrap = SqliteWrapper::new(statement);
-        test_database_content(&mut wrap);
+        let w_conn = prepare_wrapper(conn);
+        let mut statement = w_conn.prepare("SELECT name, age FROM users;").unwrap();
+        test_database_content(statement.as_mut()).expect("Should not return error");
+        
     }
 
-    fn test_database_content(wrap : &mut impl SqlStatement) {
-        assert!(wrap.next().unwrap());
-        let name : String = wrap.read(0).unwrap();
-        let age : usize = wrap.read(1).unwrap();
+    fn test_database_content<'a>(statement : &mut dyn SqlStatement) -> ForensicResult<()> {
+        assert!(statement.next()?);
+        let name : String = statement.read(0)?.try_into()?;
+        let age : usize = statement.read(1)?.try_into()?;
         assert_eq!("Alice", name);
         assert_eq!(42, age);
-        assert!(wrap.next().unwrap());
-        let name : String = wrap.read(0).unwrap();
-        let age : usize = wrap.read(1).unwrap();
+        assert!(statement.next()?);
+        let name : String = statement.read(0)?.try_into()?;
+        let age : usize = statement.read(1)?.try_into()?;
         assert_eq!("Bob", name);
         assert_eq!(69, age);
-        assert!(!wrap.next().unwrap());
+        assert!(!statement.next()?);
+        Ok(())
     }
 }
