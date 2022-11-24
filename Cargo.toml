@@ -1,6 +1,6 @@
 [package]
 name = "forensic-rs"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["Samuel Garcés Marín <samuel.garces@protonmail.com>"]
 keywords = ["forensic", "windows", "parser", "registry", "cybersecurity"]
 categories = ["parsing"]
