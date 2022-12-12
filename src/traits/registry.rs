@@ -11,7 +11,6 @@ pub enum RegHiveKey {
     HkeyPerformanceNlstext,
     HkeyPerformanceText,
     HkeyUsers,
-    /// For live systems
     Hkey(isize)
 }
 
@@ -32,7 +31,7 @@ impl TryInto<String> for RegValue {
             Self::MultiSZ(v) => Ok(v),
             Self::ExpandSZ(v) => Ok(v),
             Self::SZ(v) => Ok(v),
-            _ => Err(ForensicError::BadFormat)
+            _ => Err(ForensicError::CastError)
         }
     }
 }
@@ -43,7 +42,7 @@ impl TryInto<u32> for RegValue {
         match self {
             Self::DWord(v) => Ok(v),
             Self::QWord(v) => Ok(v as u32),
-            _ => Err(ForensicError::BadFormat)
+            _ => Err(ForensicError::CastError)
         }
     }
 }
@@ -54,7 +53,7 @@ impl TryInto<u64> for RegValue {
         match self {
             Self::DWord(v) => Ok(v as u64),
             Self::QWord(v) => Ok(v),
-            _ => Err(ForensicError::BadFormat)
+            _ => Err(ForensicError::CastError)
         }
     }
 }
@@ -64,7 +63,7 @@ impl TryInto<Vec<u8>> for RegValue {
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
         match self {
             Self::Binary(v) => Ok(v),
-            _ => Err(ForensicError::BadFormat)
+            _ => Err(ForensicError::CastError)
         }
     }
 }

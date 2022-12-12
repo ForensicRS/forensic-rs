@@ -7,13 +7,15 @@ pub enum ForensicError {
     Other(String),
     Missing,
     BadFormat,
-    Io(std::io::Error)
+    Io(std::io::Error),
+    CastError
 }
 
 impl Clone for ForensicError {
     fn clone(&self) -> Self {
         match self {
             Self::PermissionError => Self::PermissionError,
+            Self::CastError => Self::CastError,
             Self::NoMoreData => Self::NoMoreData,
             Self::Other(arg0) => Self::Other(arg0.clone()),
             Self::Missing => Self::Missing,
