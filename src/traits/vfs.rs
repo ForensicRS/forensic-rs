@@ -5,15 +5,15 @@ use crate::err::ForensicResult;
 
 pub trait VirtualFileSystem {
     /// Read the entire contents of a file into a string.
-    fn read_to_string<P: AsRef<Path>>(&self, path: P) -> ForensicResult<String>;
+    fn read_to_string<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<String>;
     /// Read the entire contents of a file into a bytes vector.
-    fn read_all<P: AsRef<Path>>(&self, path: P) -> ForensicResult<Vec<u8>>;
+    fn read_all<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Vec<u8>>;
     /// Read part of the content of a file into a bytes vector.
-    fn read<P: AsRef<Path>>(&self, path: P, pos: u64, buf: &mut [u8]) -> ForensicResult<usize>;
+    fn read<P: AsRef<Path>>(&mut self, path: P, pos: u64, buf: &mut [u8]) -> ForensicResult<usize>;
     /// Get the metadata of a file/dir
-    fn metadata<P: AsRef<Path>>(&self, path: P) -> ForensicResult<VMetadata>;
+    fn metadata<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<VMetadata>;
     /// Lists the contents of a Directory
-    fn read_dir<P: AsRef<Path>>(&self, path: P) -> ForensicResult<Vec<VDirEntry>>;
+    fn read_dir<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Vec<VDirEntry>>;
     /// Check if the VirtualFileSystem is an abstraction over the real filesystem and not a virtual (like a ZIP file).
     fn is_live(&self) -> bool;
 }
