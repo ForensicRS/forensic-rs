@@ -3,13 +3,13 @@ use std::{path::Path, fmt::Display};
 use crate::err::ForensicResult;
 
 
-pub trait VirtualFileSystem {
+pub trait VirtualFileSystem2{
     /// Read the entire contents of a file into a string.
     fn read_to_string<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<String>;
     /// Read the entire contents of a file into a bytes vector.
     fn read_all<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Vec<u8>>;
     /// Read part of the content of a file into a bytes vector.
-    fn read<P: AsRef<Path>>(&mut self, path: P, pos: u64, buf: &mut [u8]) -> ForensicResult<usize>;
+    fn read<P: AsRef<Path>>(& mut self, path: P, pos: u64, buf: & mut [u8]) -> ForensicResult<usize>;
     /// Get the metadata of a file/dir
     fn metadata<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<VMetadata>;
     /// Lists the contents of a Directory
@@ -17,6 +17,21 @@ pub trait VirtualFileSystem {
     /// Check if the VirtualFileSystem is an abstraction over the real filesystem and not a virtual (like a ZIP file).
     fn is_live(&self) -> bool;
 }
+pub trait VirtualFileSystem{
+    /// Read the entire contents of a file into a string.
+    fn read_to_string(&mut self, path: &Path) -> ForensicResult<String>;
+    /// Read the entire contents of a file into a bytes vector.
+    fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>>;
+    /// Read part of the content of a file into a bytes vector.
+    fn read(& mut self, path: &Path, pos: u64, buf: & mut [u8]) -> ForensicResult<usize>;
+    /// Get the metadata of a file/dir
+    fn metadata(&mut self, path: &Path) -> ForensicResult<VMetadata>;
+    /// Lists the contents of a Directory
+    fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<VDirEntry>>;
+    /// Check if the VirtualFileSystem is an abstraction over the real filesystem and not a virtual (like a ZIP file).
+    fn is_live(&self) -> bool;
+}
+
 pub struct VMetadata {
     /// Seconds elapsed since UNIX_EPOCH in UTC
     pub created : usize,

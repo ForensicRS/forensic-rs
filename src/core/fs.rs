@@ -1,4 +1,4 @@
-use std::{time::SystemTime};
+use std::{time::SystemTime, path::Path};
 
 use crate::{traits::vfs::{VirtualFileSystem, VMetadata, VDirEntry, VFileType}, err::ForensicResult};
 
@@ -12,28 +12,28 @@ impl StdVirtualFS {
 }
 
 impl VirtualFileSystem for StdVirtualFS {
-    fn read_to_string<P: AsRef<std::path::Path>>(&mut self, path: P) -> ForensicResult<String> {
+    fn read_to_string(&mut self, path: &Path) -> ForensicResult<String>{
         Ok(std::fs::read_to_string(path)?)
     }
 
-    fn read_all<P: AsRef<std::path::Path>>(&mut self, path: P) -> ForensicResult<Vec<u8>> {
+    fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>> {
         Ok(std::fs::read(path)?)
     }
     #[cfg(target_os = "linux")]
-    fn read<P: AsRef<std::path::Path>>(&mut self, path: P, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
+    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
         use std::os::unix::prelude::FileExt;
         let file = std::fs::File::open(path)?;
         Ok(file.read_at(buf, pos)?)
     }
 
     #[cfg(target_os = "windows")]
-    fn read<P: AsRef<std::path::Path>>(&mut self, path: P, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
+    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
         use std::os::windows::prelude::FileExt;
         let file = std::fs::File::open(path)?;
         Ok(file.seek_read(buf, pos)?)
     }
 
-    fn metadata<P: AsRef<std::path::Path>>(&mut self, path: P) -> ForensicResult<VMetadata> {
+    fn metadata(&mut self, path: &Path) -> ForensicResult<VMetadata> {
         let metadata = std::fs::metadata(path)?;
         let file_type = if metadata.file_type().is_dir() {
             VFileType::Directory 
@@ -66,7 +66,7 @@ impl VirtualFileSystem for StdVirtualFS {
         })
     }
 
-    fn read_dir<P: AsRef<std::path::Path>>(&mut self, path: P) -> ForensicResult<Vec<VDirEntry>> {
+    fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<VDirEntry>> {
         let mut ret = Vec::with_capacity(128);
         for dir_entry in std::fs::read_dir(path)? {
             let entry = dir_entry?;
@@ -110,12 +110,24 @@ mod virtual_fs_tests {
 
         let mut std_vfs = StdVirtualFS::new();
         test_file_content(&mut std_vfs,&tmp_file);
-        assert!(std_vfs.read_dir(tmp).unwrap().into_iter().map(|v| v.to_string()).collect::<Vec<String>>().contains(&"test_vfs_file.txt".to_string()));
+        assert!(std_vfs.read_dir(tmp.as_path()).unwrap().into_iter().map(|v| v.to_string()).collect::<Vec<String>>().contains(&"test_vfs_file.txt".to_string()));
     }
 
     fn test_file_content(std_vfs : &mut impl VirtualFileSystem, tmp_file : &PathBuf) {
         let content = std_vfs.read_to_string(tmp_file).unwrap();
         assert_eq!(CONTENT, content);
         
+    }
+
+    #[test]
+    fn should_allow_boxing() {
+        struct Test {
+            _fs : Box<dyn VirtualFileSystem>
+        }
+        let boxed = Box::new(StdVirtualFS::new());
+        Test {
+            _fs : boxed
+        };
+
     }
 }
