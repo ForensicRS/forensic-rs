@@ -1,7 +1,8 @@
 use std::{time::SystemTime, path::Path};
 
-use crate::{traits::vfs::{VirtualFileSystem, VMetadata, VDirEntry, VFileType}, err::ForensicResult};
+use crate::{traits::vfs::{VirtualFileSystem, VMetadata, VDirEntry, VFileType, VirtualFile}, err::ForensicResult};
 
+#[derive(Clone)]
 pub struct StdVirtualFS {
 
 }
@@ -11,7 +12,34 @@ impl StdVirtualFS {
     }
 }
 
+pub struct StdVirtualFile{
+    pub file : std::fs::File
+}
+impl std::io::Write for StdVirtualFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.file.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+impl std::io::Read for StdVirtualFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(buf)
+    }
+}
+impl std::io::Seek for StdVirtualFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(pos)
+    }
+}
+impl VirtualFile for StdVirtualFile {
+    
+}
+
 impl VirtualFileSystem for StdVirtualFS {
+
     fn read_to_string(&mut self, path: &Path) -> ForensicResult<String>{
         Ok(std::fs::read_to_string(path)?)
     }
@@ -85,6 +113,22 @@ impl VirtualFileSystem for StdVirtualFS {
 
     fn is_live(&self) -> bool {
         true
+    }
+
+    fn open(&mut self, path : &Path) -> ForensicResult<Box<dyn VirtualFile>> {
+        Ok(Box::new(StdVirtualFile{file:std::fs::File::open(path)?}))
+    }
+
+    fn duplicate(&self) -> Box<dyn VirtualFileSystem> {
+        Box::new(StdVirtualFS{})
+    }
+
+    fn from_file(&self, _file : Box<dyn VirtualFile>) -> ForensicResult<Box<dyn VirtualFileSystem>> {
+        Err(crate::err::ForensicError::NoMoreData)
+    }
+
+    fn from_fs(&self, _fs : Box<dyn VirtualFileSystem>) -> ForensicResult<Box<dyn VirtualFileSystem>> {
+        Err(crate::err::ForensicError::NoMoreData)
     }
 }
 
