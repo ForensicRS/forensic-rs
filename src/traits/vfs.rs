@@ -25,7 +25,7 @@ impl From<&Path> for VPath {
     }
 }
 
-pub trait VirtualFile : std::io::Write + std::io::Seek + std::io::Read {}
+pub trait VirtualFile : std::io::Seek + std::io::Read {}
 
 pub trait VirtualFileSystem {
     /// Initializes a virtual filesystem from a file. Ex: a Zip FS from a file

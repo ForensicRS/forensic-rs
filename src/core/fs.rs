@@ -15,15 +15,6 @@ impl StdVirtualFS {
 pub struct StdVirtualFile{
     pub file : std::fs::File
 }
-impl std::io::Write for StdVirtualFile {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.file.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.file.flush()
-    }
-}
 impl std::io::Read for StdVirtualFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.file.read(buf)
