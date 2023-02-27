@@ -25,7 +25,9 @@ impl From<&Path> for VPath {
     }
 }
 
-pub trait VirtualFile : std::io::Seek + std::io::Read {}
+pub trait VirtualFile : std::io::Seek + std::io::Read {
+    fn metadata(&self) -> ForensicResult<VMetadata>;
+}
 
 pub trait VirtualFileSystem {
     /// Initializes a virtual filesystem from a file. Ex: a Zip FS from a file

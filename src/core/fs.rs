@@ -26,7 +26,38 @@ impl std::io::Seek for StdVirtualFile {
     }
 }
 impl VirtualFile for StdVirtualFile {
-    
+    fn metadata(&self) -> ForensicResult<VMetadata> {
+        let metadata = self.file.metadata()?;
+        let file_type = if metadata.file_type().is_dir() {
+            VFileType::Directory 
+        }else if metadata.file_type().is_symlink() {
+            VFileType::Symlink
+        }else{
+            VFileType::File
+        };
+        let created = match metadata.created()?.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(v) => v,
+            Err(_e) => std::time::Duration::ZERO
+        }.as_secs() as usize;
+
+        let accessed = match metadata.accessed()?.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(v) => v,
+            Err(_e) => std::time::Duration::ZERO
+        }.as_secs() as usize;
+
+        let modified = match metadata.modified()?.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(v) => v,
+            Err(_e) => std::time::Duration::ZERO
+        }.as_secs() as usize;
+        
+        Ok(VMetadata {
+            created,
+            accessed,
+            modified,
+            file_type,
+            size: metadata.len(),
+        })
+    }
 }
 
 impl VirtualFileSystem for StdVirtualFS {

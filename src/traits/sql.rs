@@ -1,7 +1,12 @@
 use crate::{prelude::ForensicResult, err::ForensicError};
 
+use super::vfs::VirtualFile;
+
 pub trait SqlDb {
+    fn list_tables(&self) -> ForensicResult<Vec<String>>;
     fn prepare<'a>(&'a self, statement : &'a str) -> ForensicResult<Box<dyn SqlStatement + 'a>>;
+    /// Mounts a SQL reader from a sqlite file
+    fn from_file(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn SqlDb>>;
 }
 
 /// It allows decoupling the SQL database access library from the analysis library.
@@ -9,7 +14,7 @@ pub trait SqlStatement {
     /// Return the number of columns.
     fn column_count(&self) -> usize;
     /// Return the name of a column. The first column has index 0.
-    fn column_name(&self, i: usize) -> &str;
+    fn column_name(&self, i: usize) -> Option<&str>;
     /// Return column names.
     fn column_names(&self) -> Vec<&str>;
     /// Return the type of a column. The first column has index 0.
@@ -124,6 +129,32 @@ mod sql_tests {
         fn prepare<'a>(&'a self, statement : &'a str) -> ForensicResult<Box<dyn SqlStatement +'a>> {
             Ok(Box::new(SqliteStatement::new( &self.conn, statement)?))
         }
+
+        fn from_file(&self, _file: Box<dyn crate::traits::vfs::VirtualFile>) -> ForensicResult<Box<dyn SqlDb>> {
+            match sqlite::open(":memory:") {
+                Ok(v) => Ok(Box::new(Self::new(v))),
+                Err(e) => Err(ForensicError::Other(e.to_string()))
+            }
+        }
+
+        fn list_tables(&self) -> ForensicResult<Vec<String>> {
+            let mut ret = Vec::with_capacity(32);
+            let mut sts = self.prepare(r#"SELECT 
+            name
+        FROM 
+            sqlite_schema
+        WHERE 
+            type ='table' AND 
+            name NOT LIKE 'sqlite_%';"#)?;
+            loop {
+                if !sts.next()? {
+                    break;
+                }
+                let name : String = sts.read(0)?.try_into()?;
+                ret.push(name);
+            }
+            Ok(ret)
+        }
     }
 
     pub struct SqliteStatement<'conn> {
@@ -144,8 +175,8 @@ mod sql_tests {
             self.stmt.column_count()
         }
 
-        fn column_name(&self, i: usize) -> &str {
-            self.stmt.column_name(i)
+        fn column_name(&self, i: usize) -> Option<&str> {
+            Some(self.stmt.column_name(i))
         }
 
         fn column_names(&self) -> Vec<&str> {
