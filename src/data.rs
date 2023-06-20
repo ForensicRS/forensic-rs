@@ -1,25 +1,25 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
+use crate::prelude::Artifact;
+
 
 /// Basic container for all Forensic Data inside an artifact
-pub struct ForensicData<'a> {
-    artifact : Cow<'static, str>,
-    host : &'a str,
+pub struct ForensicData {
+    artifact : Artifact,
+    host : String,
     fields : BTreeMap<Cow<'static, str>, String>
 }
 
-impl<'a> ForensicData<'a> {
-    pub fn new<A>(host : &'a str, artifact : A) -> Self
-    where A: Into<Cow<'static, str>>
-    {
+impl ForensicData {
+    pub fn new(host : &str, artifact : Artifact) -> Self {
         Self {
-            artifact : artifact.into(),
-            host,
+            artifact,
+            host : host.to_string(),
             fields : BTreeMap::new()
         }
     }
 
-    pub fn artifact(&self) -> &str {
+    pub fn artifact(&self) -> &Artifact {
         &self.artifact
     }
 
@@ -27,7 +27,7 @@ impl<'a> ForensicData<'a> {
         &self.host
     }
 
-    pub fn field(&'a self, field_name : &str) -> Option<&String> {
+    pub fn field(&self, field_name : &str) -> Option<&String> {
         self.fields.get(field_name)
     }
 
@@ -72,11 +72,13 @@ impl<'a> Iterator for ForensicDataInspectorMut<'a> {
 
 #[cfg(test)]
 mod data_tests {
+    use crate::prelude::{RegistryArtifacts};
+
     use super::ForensicData;
 
     #[test]
     fn iterate_fields_test() {
-        let mut data = ForensicData::new("host007", "Registry001");
+        let mut data = ForensicData::new("host007", RegistryArtifacts::ShellBags.into());
         data.insert("field001", "value001".into());
         data.insert("field002", "value002".into());
         data.insert("field003", "value003".into());
@@ -91,7 +93,7 @@ mod data_tests {
 
     #[test]
     fn iterate_mut_fields_test() {
-        let mut data = ForensicData::new("host007", "Registry001");
+        let mut data = ForensicData::new("host007",  RegistryArtifacts::ShellBags.into());
         data.insert("field001", "value001".into());
         data.insert("field002", "value002".into());
         data.insert("field003", "value003".into());

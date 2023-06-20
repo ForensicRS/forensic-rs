@@ -104,6 +104,81 @@ impl TryInto<Vec<u8>> for ColumnValue {
     }
 }
 
+impl Into<ColumnValue> for f32 {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Float(self as f64)
+    }
+}
+
+impl Into<ColumnValue> for f64 {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Float(self)
+    }
+}
+impl Into<ColumnValue> for u64 {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Integer(self as i64)
+    }
+}
+impl Into<ColumnValue> for i64 {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Integer(self as i64)
+    }
+}
+impl Into<ColumnValue> for u32 {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Integer(self as i64)
+    }
+}
+impl Into<ColumnValue> for i32 {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Integer(self as i64)
+    }
+}
+impl Into<ColumnValue> for usize {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Integer(self as i64)
+    }
+}
+impl Into<ColumnValue> for Vec<u8> {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Binary(self)
+    }
+}
+impl Into<ColumnValue> for &Vec<u8> {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Binary(self.clone())
+    }
+}
+impl Into<ColumnValue> for () {
+    fn into(self) -> ColumnValue {
+        ColumnValue::Null
+    }
+}
+impl Into<ColumnValue> for &[u8] {
+    fn into(self) -> ColumnValue {
+        let mut vc = Vec::with_capacity(self.len());
+        for v in self {
+            vc.push(*v);
+        }
+        ColumnValue::Binary(vc)
+    }
+}
+impl Into<ColumnValue> for &str {
+    fn into(self) -> ColumnValue {
+        ColumnValue::String(self.to_string())
+    }
+}
+impl Into<ColumnValue> for &String {
+    fn into(self) -> ColumnValue {
+        ColumnValue::String(self.to_string())
+    }
+}
+impl Into<ColumnValue> for String {
+    fn into(self) -> ColumnValue {
+        ColumnValue::String(self)
+    }
+}
 
 #[cfg(test)]
 mod sql_tests {

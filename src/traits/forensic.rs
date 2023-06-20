@@ -6,15 +6,22 @@ pub trait Forensicable{
     fn to_activity(&self) -> Option<(i64, ForensicActivity)>;
 }
 
-pub trait ArtifactParser : IntoIterator  {
+pub trait ArtifactParser : IntoIterator<Item = ForensicData>  {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn version(&self) -> &'static str;
 }
 
 
+pub trait RegistryParser : ArtifactParser  {
+    fn valid_path(&self, pth : &str) -> bool;
+    fn first_path_pattern(&self) -> &str;
+}
+
 #[cfg(test)]
 mod artifacts {
+    use crate::{data::ForensicData, prelude::{RegistryArtifacts, Artifact}};
+
     use super::ArtifactParser;
 
     struct Parser123 {}
@@ -34,15 +41,15 @@ mod artifacts {
     }
     struct IterParser123 {}
     impl Iterator for IterParser123 {
-        type Item = &'static str;
+        type Item = ForensicData;
 
         fn next(&mut self) -> Option<Self::Item> {
-           Some("123")
+           Some(ForensicData::new("123",  RegistryArtifacts::ShellBags.into()))
         }
     }
 
     impl IntoIterator for Parser123 {
-        type Item = &'static str;
+        type Item = ForensicData;
 
         type IntoIter = IterParser123;
 
@@ -55,7 +62,8 @@ mod artifacts {
     fn should_iterate_parser() {
         let parser = Parser123{};
         let mut iter = parser.into_iter();
-        assert_eq!("123", iter.next().unwrap());
+        let artfct : Artifact = RegistryArtifacts::ShellBags.into();
+        assert_eq!(&artfct, iter.next().unwrap().artifact());
 
     }
 }

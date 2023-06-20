@@ -1,9 +1,18 @@
+use std::mem::size_of;
+
 use crate::{
     core::user::UserInfo,
     err::{ForensicError, ForensicResult},
 };
 
 use super::vfs::{VirtualFile, VirtualFileSystem};
+
+pub const HKCR : RegHiveKey = RegHiveKey::HkeyClassesRoot;
+pub const HKC : RegHiveKey = RegHiveKey::HkeyCurrentConfig;
+pub const HKCU : RegHiveKey = RegHiveKey::HkeyCurrentUser;
+pub const HKLM : RegHiveKey = RegHiveKey::HkeyLocalMachine;
+pub const HKU : RegHiveKey = RegHiveKey::HkeyUsers;
+
 
 #[derive(Clone, Copy)]
 pub enum RegHiveKey {
@@ -22,18 +31,112 @@ pub enum RegHiveKey {
 #[derive(Clone)]
 pub enum RegValue {
     Binary(Vec<u8>),
-    MultiSZ(String),
+    MultiSZ(Vec<String>),
     ExpandSZ(String),
     SZ(String),
     DWord(u32),
     QWord(u64),
 }
 
+impl Into<RegValue> for String {
+    fn into(self) -> RegValue {
+        RegValue::SZ(self)
+    }
+}
+
+impl Into<RegValue> for &str {
+    fn into(self) -> RegValue {
+        RegValue::SZ(self.to_string())
+    }
+}
+
+impl Into<RegValue> for u32 {
+    fn into(self) -> RegValue {
+        RegValue::DWord(self)
+    }
+}
+
+impl Into<RegValue> for u64 {
+    fn into(self) -> RegValue {
+        RegValue::QWord(self)
+    }
+}
+impl Into<RegValue> for i32 {
+    fn into(self) -> RegValue {
+        RegValue::DWord(self as u32)
+    }
+}
+
+impl Into<RegValue> for i64 {
+    fn into(self) -> RegValue {
+        RegValue::QWord(self as u64)
+    }
+}
+impl Into<RegValue> for usize {
+    fn into(self) -> RegValue {
+        if size_of::<usize>() == 4 {
+            RegValue::DWord(self as u32)
+        }else {
+            RegValue::QWord(self as u64)
+        }
+    }
+}
+
+impl Into<RegValue> for Vec<u8> {
+    fn into(self) -> RegValue {
+        RegValue::Binary(self)
+    }
+}
+
+impl Into<RegValue> for &[u8] {
+    fn into(self) -> RegValue {
+        let mut vc = Vec::with_capacity(self.len());
+        for v in self {
+            vc.push(*v);
+        }
+        RegValue::Binary(vc)
+    }
+}
+impl Into<RegValue> for Vec<String> {
+    fn into(self) -> RegValue {
+        RegValue::MultiSZ(self)
+    }
+}
+impl Into<RegValue> for &[String] {
+    fn into(self) -> RegValue {
+        let mut vc = Vec::with_capacity(self.len());
+        for v in self {
+            vc.push(v.clone());
+        }
+        RegValue::MultiSZ(vc)
+    }
+}
+impl Into<RegValue> for &[&String] {
+    fn into(self) -> RegValue {
+        let mut vc = Vec::with_capacity(self.len());
+        for v in self {
+            vc.push(v.to_string());
+        }
+        RegValue::MultiSZ(vc)
+    }
+}
+impl Into<RegValue> for &[&str] {
+    fn into(self) -> RegValue {
+        let mut vc = Vec::with_capacity(self.len());
+        for v in self {
+            vc.push(v.to_string());
+        }
+        RegValue::MultiSZ(vc)
+    }
+}
+
+
+
 impl TryInto<String> for RegValue {
     type Error = ForensicError;
     fn try_into(self) -> Result<String, Self::Error> {
         match self {
-            Self::MultiSZ(v) => Ok(v),
+            Self::MultiSZ(v) => Ok(v.join("\n")),
             Self::ExpandSZ(v) => Ok(v),
             Self::SZ(v) => Ok(v),
             _ => Err(ForensicError::CastError),
@@ -139,7 +242,7 @@ mod reg_value {
         let _: String = RegValue::SZ(format!("String RegValue"))
             .try_into()
             .expect("Must convert values");
-        let _: String = RegValue::MultiSZ(format!("String RegValue"))
+        let _: String = RegValue::MultiSZ(vec![format!("String RegValue")])
             .try_into()
             .expect("Must convert values");
         let _: String = RegValue::ExpandSZ(format!("String RegValue"))
