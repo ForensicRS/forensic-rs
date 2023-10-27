@@ -155,9 +155,9 @@ impl VirtualFileSystem for StdVirtualFS {
 }
 
 #[cfg(test)]
-mod virtual_fs_tests {
+mod tst {
     use std::path::PathBuf;
-    use std::{io::Write};
+    use std::io::Write;
     use crate::traits::vfs::VirtualFileSystem;
 
     use crate::core::fs::StdVirtualFS;
