@@ -72,7 +72,7 @@ impl<'a> Iterator for ForensicDataInspectorMut<'a> {
 
 #[cfg(test)]
 mod data_tests {
-    use crate::prelude::{RegistryArtifacts};
+    use crate::prelude::RegistryArtifacts;
 
     use super::ForensicData;
 
