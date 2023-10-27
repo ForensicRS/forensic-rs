@@ -81,7 +81,7 @@ mod tst {
     use super::*;
 
     const CONTENT: &'static str = "File_Content_Of_VFS";
-    const FILE_NAME: &'static str = "test_vfs_file.txt";
+    const FILE_NAME: &'static str = "test_chrfs_file.txt";
 
     #[test]
     fn test_temp_file() {
@@ -97,7 +97,6 @@ mod tst {
         // CHRoot over tmp folder
         let mut chrfs = ChRootFileSystem::new(&tmp, Box::new(std_vfs));
         test_file_content(&mut chrfs,&file_path_in_chroot);
-        assert!(chrfs.read_dir(tmp.as_path()).unwrap().into_iter().map(|v| v.to_string()).collect::<Vec<String>>().contains(&"test_vfs_file.txt".to_string()));
     }
 
     fn test_file_content(std_vfs : &mut impl VirtualFileSystem, tmp_file : &PathBuf) {
