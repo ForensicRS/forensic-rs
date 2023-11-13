@@ -8,7 +8,13 @@ pub mod artifact;
 pub mod logging;
 pub mod channel;
 pub mod notifications;
+pub mod field;
+pub mod dictionary;
+pub mod context;
+
 pub mod prelude {
+    pub use crate::context::initialize_context;
+    pub use crate::dictionary::*;
     pub use crate::traits::registry::*;
     pub use crate::err::*;
     pub use crate::data::*;

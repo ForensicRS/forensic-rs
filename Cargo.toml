@@ -1,6 +1,6 @@
 [package]
 name = "forensic-rs"
-version = "0.6.2"
+version = "0.7.0"
 authors = ["Samuel Garcés Marín <samuel.garces@protonmail.com>"]
 keywords = ["forensic", "windows", "parser", "registry", "cybersecurity"]
 categories = ["parsing"]
@@ -8,6 +8,13 @@ description = "A Rust-based framework to build tools that analyze forensic artif
 license = "MIT"
 edition = "2021"
 repository = "https://github.com/ForensicRS/forensic-rs"
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
+[dependencies]
+serde = {version = "1", optional = true, features = ["derive"]}
 
 [dev-dependencies]
 sqlite = "0.28.1"

@@ -1,5 +1,10 @@
+#[cfg(feature="serde")]
+use serde::{Serialize, Deserialize};
+
+use crate::field::Text;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Artifact {
     #[default]
     Unknown,
@@ -8,13 +13,21 @@ pub enum Artifact {
     Linux(LinuxArtifacts),
     MacOs
 }
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct OtherSO {
-    pub so : &'static str,
-    pub artifact : &'static str,
+impl std::fmt::Display for Artifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct OtherSO {
+    pub so : Text,
+    pub artifact : Text,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum WindowsArtifacts {
     Registry(RegistryArtifacts),
     MFT,
@@ -32,6 +45,7 @@ pub enum WindowsArtifacts {
     Unknown
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum WindowsEvents {
     /// Sysmon event
     Sysmon,
@@ -46,6 +60,7 @@ pub enum WindowsEvents {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum RegistryArtifacts {
     /// Shim Cache
     ShimCache,
@@ -59,6 +74,7 @@ pub enum RegistryArtifacts {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum LinuxArtifacts {
     Log(String),
     ShellHistory(String),
@@ -70,6 +86,7 @@ pub enum LinuxArtifacts {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum LinuxService {
     SysV,
     InitD,
