@@ -14,7 +14,7 @@ pub const HKLM : RegHiveKey = RegHiveKey::HkeyLocalMachine;
 pub const HKU : RegHiveKey = RegHiveKey::HkeyUsers;
 
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug)]
 pub enum RegHiveKey {
     HkeyClassesRoot,
     HkeyCurrentConfig,
@@ -28,7 +28,7 @@ pub enum RegHiveKey {
     Hkey(isize),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
 pub enum RegValue {
     Binary(Vec<u8>),
     MultiSZ(Vec<String>),
@@ -190,6 +190,9 @@ pub trait RegistryReader {
     fn enumerate_keys(&self, hkey: RegHiveKey) -> ForensicResult<Vec<String>>;
     fn key_at(&self, hkey: RegHiveKey, pos: u32) -> ForensicResult<String>;
     fn value_at(&self, hkey: RegHiveKey, pos: u32) -> ForensicResult<String>;
+    /// Closes a handle to the specified registry key.
+    #[allow(unused_variables)]
+    fn close_key(&self, hkey: RegHiveKey) {}
 
     /// Get the same value as the env var "%SystemRoot%"". It's usually "C:\Windows"
     fn get_system_root(&self) -> ForensicResult<String> {
