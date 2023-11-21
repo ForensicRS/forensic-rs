@@ -1,9 +1,7 @@
-use serde::{Serialize, Deserialize};
-
 use super::{Field, Text, Ip};
 
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum PreStoredField<T> {
     Invalid,
     #[default]
@@ -11,7 +9,7 @@ pub enum PreStoredField<T> {
     Some(T)
 }
 
-#[derive(Deserialize, Debug, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct InternalField {
     pub original : Field,
     pub array : Box<PreStoredField<Vec<Text>>>,
@@ -53,26 +51,5 @@ impl Into<InternalField> for Field{
             _ => {}
         }
         ifield
-    }
-}
-
-impl Serialize for InternalField {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer {
-            match &self.original {
-                Field::Null => serializer.serialize_none(),
-                Field::Text(v) => serializer.serialize_str(&v[..]),
-                Field::Ip(v) => v.serialize(serializer),
-                Field::Domain(v) => serializer.serialize_str(&v[..]),
-                Field::User(v) => serializer.serialize_str(&v[..]),
-                Field::AssetID(v) => serializer.serialize_str(&v[..]),
-                Field::U64(v) => serializer.serialize_u64(*v),
-                Field::I64(v) => serializer.serialize_i64(*v),
-                Field::F64(v) => serializer.serialize_f64(*v),
-                Field::Date(v) => serializer.serialize_i64(*v),
-                Field::Array(v) => v.serialize(serializer),
-                Field::Path(v) => serializer.serialize_str(&v.to_string_lossy()[..]),
-            }
     }
 }

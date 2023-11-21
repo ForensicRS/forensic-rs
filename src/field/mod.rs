@@ -1,21 +1,19 @@
 use std::{borrow::Cow, path::PathBuf};
 
-#[cfg(feature="serde")]
-use serde::{Serialize, Deserialize};
+use serde::{de::Visitor, Deserializer};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
+pub(crate) mod internal;
 pub mod ip;
 pub mod utils;
-pub(crate) mod internal;
 
 pub use ip::Ip;
 
 pub type Text = Cow<'static, str>;
 
-
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[non_exhaustive]
-#[cfg_attr(feature = "serde", serde(untagged))]
 pub enum Field {
     #[default]
     Null,
@@ -46,7 +44,7 @@ pub enum Field {
     ///A date in a decimal number format with 64 bits
     Date(i64),
     Array(Vec<Text>),
-    Path(PathBuf)
+    Path(PathBuf),
 }
 
 impl<'a> TryInto<&'a str> for &'a Field {
@@ -58,7 +56,7 @@ impl<'a> TryInto<&'a str> for &'a Field {
             Field::Domain(v) => Ok(&v[..]),
             Field::User(v) => Ok(&v[..]),
             Field::AssetID(v) => Ok(&v[..]),
-            _ => Err("Invalid text type")
+            _ => Err("Invalid text type"),
         }
     }
 }
@@ -72,7 +70,7 @@ impl<'a> TryInto<Text> for &'a Field {
             Field::Domain(v) => Ok(Text::Owned(v.to_string())),
             Field::User(v) => Ok(Text::Owned(v.to_string())),
             Field::AssetID(v) => Ok(Text::Owned(v.to_string())),
-            _ => Err("Invalid type")
+            _ => Err("Invalid type"),
         }
     }
 }
@@ -82,7 +80,7 @@ impl<'a> TryInto<&'a Text> for &'a Field {
     fn try_into(self) -> Result<&'a Text, Self::Error> {
         match self {
             Field::Text(v) => Ok(v),
-            _ => Err("Invalid type")
+            _ => Err("Invalid type"),
         }
     }
 }
@@ -93,7 +91,7 @@ impl<'a> TryInto<&'a Vec<Text>> for &'a Field {
     fn try_into(self) -> Result<&'a Vec<Text>, Self::Error> {
         match self {
             Field::Array(v) => Ok(v),
-            _ => Err("Invalid type")
+            _ => Err("Invalid type"),
         }
     }
 }
@@ -129,7 +127,7 @@ impl<'a> TryInto<u64> for &'a Field {
             Field::I64(v) => *v as u64,
             Field::U64(v) => *v,
             Field::Date(v) => *v as u64,
-            _ => return Err("Invalid type")
+            _ => return Err("Invalid type"),
         })
     }
 }
@@ -142,7 +140,7 @@ impl<'a> TryInto<i64> for &'a Field {
             Field::I64(v) => *v as i64,
             Field::U64(v) => *v as i64,
             Field::Date(v) => *v as i64,
-            _ => return Err("Invalid type")
+            _ => return Err("Invalid type"),
         })
     }
 }
@@ -155,7 +153,7 @@ impl<'a> TryInto<f64> for &'a Field {
             Field::I64(v) => *v as f64,
             Field::U64(v) => *v as f64,
             Field::Date(v) => *v as f64,
-            _ => return Err("Invalid type")
+            _ => return Err("Invalid type"),
         })
     }
 }
@@ -166,85 +164,230 @@ impl<'a> TryInto<Ip> for &'a Field {
         Ok(match self {
             Field::Text(v) => Ip::from_ip_str(&v).map_err(|_e| "Invalud ip format")?,
             Field::Ip(v) => v.clone(),
-            _ => return Err("Type cannot be converted to Ip")
+            _ => return Err("Type cannot be converted to Ip"),
         })
     }
 }
 
 impl From<&'static str> for Field {
-    fn from(v : &'static str) -> Field {
+    fn from(v: &'static str) -> Field {
         Field::Text(Text::Borrowed(v))
     }
 }
 impl From<&String> for Field {
-    fn from(v : &String) -> Field {
+    fn from(v: &String) -> Field {
         Field::Text(Text::Owned(v.to_string()))
     }
 }
 impl From<String> for Field {
-    fn from(v : String) -> Field {
+    fn from(v: String) -> Field {
         Field::Text(Text::Owned(v))
     }
 }
 impl From<Text> for Field {
-    fn from(v : Text) -> Field {
+    fn from(v: Text) -> Field {
         Field::Text(v)
     }
 }
 impl From<&Text> for Field {
-    fn from(v : &Text) -> Field {
+    fn from(v: &Text) -> Field {
         Field::Text(v.clone())
     }
 }
 
 impl From<&u64> for Field {
-    fn from(v : &u64) -> Field {
+    fn from(v: &u64) -> Field {
         Field::U64(*v)
     }
 }
 impl From<u64> for Field {
-    fn from(v : u64) -> Field {
+    fn from(v: u64) -> Field {
         Field::U64(v)
     }
 }
 impl From<&i64> for Field {
-    fn from(v : &i64) -> Field {
+    fn from(v: &i64) -> Field {
         Field::I64(*v)
     }
 }
 impl From<i64> for Field {
-    fn from(v : i64) -> Field {
+    fn from(v: i64) -> Field {
         Field::I64(v)
     }
 }
 
 impl From<&f64> for Field {
-    fn from(v : &f64) -> Field {
+    fn from(v: &f64) -> Field {
         Field::F64(*v)
     }
 }
 impl From<f64> for Field {
-    fn from(v : f64) -> Field {
+    fn from(v: f64) -> Field {
         Field::F64(v)
     }
 }
 impl From<Ip> for Field {
-    fn from(v : Ip) -> Field {
+    fn from(v: Ip) -> Field {
         Field::Ip(v)
     }
 }
 impl From<&Ip> for Field {
-    fn from(v : &Ip) -> Field {
+    fn from(v: &Ip) -> Field {
         Field::Ip(*v)
     }
 }
 impl From<Vec<Text>> for Field {
-    fn from(v : Vec<Text>) -> Field {
+    fn from(v: Vec<Text>) -> Field {
         Field::Array(v)
     }
 }
 impl From<&Vec<Text>> for Field {
-    fn from(v : &Vec<Text>) -> Field {
+    fn from(v: &Vec<Text>) -> Field {
         Field::Array(v.clone())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for Field {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Field::Null => serializer.serialize_none(),
+            Field::Text(v) => serializer.serialize_str(&v[..]),
+            Field::Ip(v) => v.serialize(serializer),
+            Field::Domain(v) => serializer.serialize_str(&v[..]),
+            Field::User(v) => serializer.serialize_str(&v[..]),
+            Field::AssetID(v) => serializer.serialize_str(&v[..]),
+            Field::U64(v) => serializer.serialize_u64(*v),
+            Field::I64(v) => serializer.serialize_i64(*v),
+            Field::F64(v) => serializer.serialize_f64(*v),
+            Field::Date(v) => serializer.serialize_i64(*v),
+            Field::Array(v) => v.serialize(serializer),
+            Field::Path(v) => serializer.serialize_str(&v.to_string_lossy()[..]),
+        }
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Field {
+    fn deserialize<D>(deserializer: D) -> Result<Field, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(FieldVisitor)
+    }
+}
+#[cfg(feature = "serde")]
+struct FieldVisitor;
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for FieldVisitor {
+    type Value = Field;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid forensic data")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::Text(Cow::Owned(v.to_string())))
+    }
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::Text(Cow::Owned(v)))
+    }
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::U64(if v { 1 } else { 0 }))
+    }
+
+    fn visit_i8<E>(self, v: i8) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::I64(v as _))
+    }
+    fn visit_i16<E>(self, v: i16) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::I64(v as _))
+    }
+    fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::I64(v as _))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::I64(v))
+    }
+    fn visit_f32<E>(self, v: f32) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::F64(v as _))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::F64(v))
+    }
+
+    fn visit_u32<E>(self, v: u32) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::U64(v as _))
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::U64(v))
+    }
+
+    fn visit_u8<E>(self, v: u8) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::U64(v as _))
+    }
+    fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(Field::U64(v as _))
+    }
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error, {
+        Ok(Field::Null)
+    }
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error, {
+        Ok(Field::Null)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>, {
+        let mut vc = Vec::with_capacity(32);
+        while let Some(value) = seq.next_element()? {
+            vc.push(value);
+        }
+        Ok(Field::Array(vc))
     }
 }

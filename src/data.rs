@@ -1,8 +1,7 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
-use serde::{Deserializer, de::Visitor, ser::SerializeMap};
 #[cfg(feature="serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize, de::Visitor, Deserializer, ser::SerializeMap};
 
 use crate::{prelude::{Artifact, *}, field::{internal::{InternalField, PreStoredField}, Text, Field, Ip}, context::context};
 
@@ -294,7 +293,7 @@ impl<'a> Iterator for EventFieldIter<'a> {
         Some((field, &value.original))
     }
 }
-
+#[cfg(feature = "serde")]
 impl<'de> Deserialize<'de> for ForensicData {
     fn deserialize<D>(deserializer: D) -> Result<ForensicData, D::Error>
     where
@@ -303,7 +302,7 @@ impl<'de> Deserialize<'de> for ForensicData {
         deserializer.deserialize_any(DataVisitor)
     }
 }
-
+#[cfg(feature = "serde")]
 impl Serialize for ForensicData {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -315,8 +314,9 @@ impl Serialize for ForensicData {
         map.end()
     }
 }
-
+#[cfg(feature = "serde")]
 struct DataVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for DataVisitor {
     type Value = ForensicData;
 
@@ -367,8 +367,9 @@ mod data_tests {
         data.insert("field001".into(), "value001".into());
         data.insert("field002".into(), "value002".into());
         data.insert("field003".into(), "value003".into());
+        data.insert("field004".into(), crate::field::Field::Array(vec!["aaa".into(), "bbb".into()]));
         let deserialized = serde_json::to_string(&data).unwrap();
-        assert_eq!(r#"{"artifact.host":"host007","artifact.name":"Windows::Registry::ShellBags","field001":"value001","field002":"value002","field003":"value003"}"#, deserialized);
+        assert_eq!(r#"{"artifact.host":"host007","artifact.name":"Windows::Registry::ShellBags","field001":"value001","field002":"value002","field003":"value003","field004":["aaa","bbb"]}"#, deserialized);
         let serialized : ForensicData = serde_json::from_str(&deserialized).unwrap();
         assert_eq!(Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::ShellBags)), serialized.artifact);
         let deserialized2 = serde_json::to_string(&serialized).unwrap();

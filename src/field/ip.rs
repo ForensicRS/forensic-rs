@@ -1,12 +1,13 @@
 use std::fmt::Display;
 
-use serde::{Deserialize, Serialize, Serializer};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize, Serializer, Deserializer, de::Visitor};
 
 use super::utils::{ipv4_to_str, ipv6_to_str, is_local_ipv4, is_local_ipv6, ipv4_from_str, ipv6_from_str};
 use super::Field;
 
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Ip {
     V4(u32),
     V6(u128),
@@ -51,6 +52,8 @@ impl Ip {
         }
     }
 }
+
+#[cfg(feature = "serde")]
 impl Serialize for Ip {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -147,6 +150,33 @@ impl std::hash::Hash for Ip {
             Ip::V4(v) => v.hash(state),
             Ip::V6(v) => v.hash(state),
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Ip {
+    fn deserialize<D>(deserializer: D) -> Result<Ip, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(IpVisitor)
+    }
+}
+#[cfg(feature = "serde")]
+struct IpVisitor;
+
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for IpVisitor {
+    type Value = Ip;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid forensic data")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error, {
+        Ip::from_ip_str(v).map_err(|e| E::custom(e))
     }
 }
 

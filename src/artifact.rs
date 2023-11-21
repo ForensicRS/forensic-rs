@@ -1,6 +1,5 @@
-use serde::{de::Visitor, Deserializer};
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize,de::Visitor, Deserializer};
 
 use crate::field::Text;
 
@@ -218,6 +217,7 @@ impl std::fmt::Display for OtherOS {
         write!(f, "{}::{}", self.os, self.artifact)
     }
 }
+#[cfg(feature = "serde")]
 impl Serialize for Artifact {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -226,7 +226,7 @@ impl Serialize for Artifact {
         serializer.collect_str(&self)
     }
 }
-
+#[cfg(feature = "serde")]
 impl Serialize for OtherOS {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -235,6 +235,7 @@ impl Serialize for OtherOS {
         serializer.collect_str(&self)
     }
 }
+#[cfg(feature = "serde")]
 impl Serialize for WindowsArtifacts {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -243,7 +244,7 @@ impl Serialize for WindowsArtifacts {
         serializer.collect_str(&self)
     }
 }
-
+#[cfg(feature = "serde")]
 impl Serialize for WindowsEvents {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -252,6 +253,7 @@ impl Serialize for WindowsEvents {
         serializer.collect_str(&self)
     }
 }
+#[cfg(feature = "serde")]
 impl Serialize for RegistryArtifacts {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -260,6 +262,7 @@ impl Serialize for RegistryArtifacts {
         serializer.collect_str(&self)
     }
 }
+#[cfg(feature = "serde")]
 impl Serialize for LinuxService {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -268,6 +271,7 @@ impl Serialize for LinuxService {
         serializer.collect_str(&self)
     }
 }
+#[cfg(feature = "serde")]
 impl Serialize for MacArtifacts {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -276,7 +280,7 @@ impl Serialize for MacArtifacts {
         serializer.collect_str(&self)
     }
 }
-
+#[cfg(feature = "serde")]
 impl<'de> Deserialize<'de> for Artifact {
     fn deserialize<D>(deserializer: D) -> Result<Artifact, D::Error>
     where
@@ -285,8 +289,9 @@ impl<'de> Deserialize<'de> for Artifact {
         deserializer.deserialize_str(ArtifactVisitor)
     }
 }
-
+#[cfg(feature = "serde")]
 struct LinuxServiceVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for LinuxServiceVisitor {
     type Value = LinuxService;
 
@@ -313,8 +318,9 @@ impl<'de> Visitor<'de> for LinuxServiceVisitor {
         self.visit_str(&v[..])
     }
 }
-
+#[cfg(feature = "serde")]
 pub struct ArtifactVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for ArtifactVisitor {
     type Value = Artifact;
 
@@ -342,7 +348,9 @@ impl<'de> Visitor<'de> for ArtifactVisitor {
     }
 }
 
+#[cfg(feature = "serde")]
 struct WindowsArtifactVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for WindowsArtifactVisitor {
     type Value = WindowsArtifacts;
 
@@ -369,8 +377,9 @@ impl<'de> Visitor<'de> for WindowsArtifactVisitor {
         self.visit_str(&v[..])
     }
 }
-
+#[cfg(feature = "serde")]
 struct WinEvtVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for WinEvtVisitor {
     type Value = WindowsEvents;
 
@@ -397,8 +406,9 @@ impl<'de> Visitor<'de> for WinEvtVisitor {
         self.visit_str(&v[..])
     }
 }
-
+#[cfg(feature = "serde")]
 struct RegistryArtifactsVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for RegistryArtifactsVisitor {
     type Value = RegistryArtifacts;
 
@@ -425,8 +435,9 @@ impl<'de> Visitor<'de> for RegistryArtifactsVisitor {
         self.visit_str(&v[..])
     }
 }
-
+#[cfg(feature = "serde")]
 struct OtherOsVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for OtherOsVisitor {
     type Value = OtherOS;
 
@@ -454,8 +465,9 @@ impl<'de> Visitor<'de> for OtherOsVisitor {
     }
 }
 
-
+#[cfg(feature = "serde")]
 struct LinuxArtifactVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for LinuxArtifactVisitor {
     type Value = LinuxArtifacts;
 
@@ -482,8 +494,9 @@ impl<'de> Visitor<'de> for LinuxArtifactVisitor {
         self.visit_str(&v[..])
     }
 }
-
+#[cfg(feature = "serde")]
 struct MacOsArtifactVisitor;
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for MacOsArtifactVisitor {
     type Value = MacArtifacts;
 
