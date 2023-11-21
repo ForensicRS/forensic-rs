@@ -1,5 +1,6 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
+use serde::{Deserializer, de::Visitor, ser::SerializeMap};
 #[cfg(feature="serde")]
 use serde::{Serialize, Deserialize};
 
@@ -7,11 +8,8 @@ use crate::{prelude::{Artifact, *}, field::{internal::{InternalField, PreStoredF
 
 /// Basic container for all Forensic Data inside an artifact
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[non_exhaustive]
 pub struct ForensicData {
     artifact : Artifact,
-    #[serde(flatten)]
     pub(crate) fields: BTreeMap<Text, InternalField>,
 }
 
@@ -297,9 +295,55 @@ impl<'a> Iterator for EventFieldIter<'a> {
     }
 }
 
+impl<'de> Deserialize<'de> for ForensicData {
+    fn deserialize<D>(deserializer: D) -> Result<ForensicData, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DataVisitor)
+    }
+}
+
+impl Serialize for ForensicData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        let mut map = serializer.serialize_map(Some(self.fields.len()))?;
+        for (k,v) in &self.fields {
+            map.serialize_entry(k, &v.original)?;
+        }
+        map.end()
+    }
+}
+
+struct DataVisitor;
+impl<'de> Visitor<'de> for DataVisitor {
+    type Value = ForensicData;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid forensic data")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>, {
+        let mut artifact = Artifact::default();
+        let mut fields = BTreeMap::new();
+        while let Some((key, value)) = map.next_entry()? {
+            fields.insert(Cow::Owned(key), InternalField::new(value));
+        }
+        if let Some(artf) = fields.get(ARTIFACT_NAME) {
+            if let Field::Text(artf) = &artf.original {
+                artifact = (&artf[..]).into();
+            }
+        }
+        Ok(ForensicData { artifact, fields })
+    }
+}
+
 #[cfg(test)]
 mod data_tests {
-    use crate::prelude::RegistryArtifacts;
+    use crate::{prelude::RegistryArtifacts, artifact::{Artifact, WindowsArtifacts}};
 
     use super::ForensicData;
 
@@ -315,6 +359,19 @@ mod data_tests {
             count += 1;
         }
         assert_eq!(5, count);// 3 + 2
+    }
 
+    #[test]
+    fn should_serialize_data() {
+        let mut data = ForensicData::new("host007", RegistryArtifacts::ShellBags.into());
+        data.insert("field001".into(), "value001".into());
+        data.insert("field002".into(), "value002".into());
+        data.insert("field003".into(), "value003".into());
+        let deserialized = serde_json::to_string(&data).unwrap();
+        assert_eq!(r#"{"artifact.host":"host007","artifact.name":"Windows::Registry::ShellBags","field001":"value001","field002":"value002","field003":"value003"}"#, deserialized);
+        let serialized : ForensicData = serde_json::from_str(&deserialized).unwrap();
+        assert_eq!(Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::ShellBags)), serialized.artifact);
+        let deserialized2 = serde_json::to_string(&serialized).unwrap();
+        assert_eq!(deserialized, deserialized2);
     }
 }
