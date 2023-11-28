@@ -19,25 +19,28 @@ impl ChRootFileSystem {
 }
 fn normalize_prefix(path : &Path) -> PathBuf {
     let striped = strip_prefix(path);
-    let mut path_comps = striped.components().into_iter();
-    
-    let first = match path_comps.next() {
-        Some(v) => v,
-        None => return striped
-    };
-    let first = first.as_os_str().to_string_lossy();
-    if !first.contains(":") {
-        return striped;
-    }
-    let no_dots = first.replace(":", "");
-    let mut final_path = PathBuf::from(&no_dots);
-    for next in path_comps {
+    let path_comps = striped.components().into_iter();
+    let mut final_path = PathBuf::new();
+    for next in path_comps.into_iter() {
         if let std::path::Component::RootDir = &next {
             continue
         }
-        final_path.push(next);
+        for splt in next.as_os_str().to_string_lossy().split(split_path) {
+            if splt.trim().is_empty() {
+                continue
+            }
+            if splt.contains(":") {
+                final_path.push(&splt.replace(":", ""));
+            }else {
+                final_path.push(splt);
+            }
+            
+        }
     }
     final_path
+}
+fn split_path(chr : char) -> bool {
+    chr == '\\' || chr == '/'
 }
 fn strip_prefix(path : &Path) -> PathBuf {
     if path.starts_with("/") {
