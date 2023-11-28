@@ -17,9 +17,36 @@ impl ChRootFileSystem {
         }
     }
 }
+fn normalize_prefix(path : &Path) -> PathBuf {
+    let striped = strip_prefix(path);
+    let mut path_comps = striped.components().into_iter();
+    
+    let first = match path_comps.next() {
+        Some(v) => v,
+        None => return striped
+    };
+    let first = first.as_os_str().to_string_lossy();
+    if !first.contains(":") {
+        return striped;
+    }
+    let no_dots = first.replace(":", "");
+    let mut final_path = PathBuf::from(&no_dots);
+    for next in path_comps {
+        if let std::path::Component::RootDir = &next {
+            continue
+        }
+        final_path.push(next);
+    }
+    final_path
+}
 fn strip_prefix(path : &Path) -> PathBuf {
     if path.starts_with("/") {
         match path.strip_prefix("/") {
+            Ok(v) => v.to_path_buf(),
+            Err(_) => path.to_path_buf()
+        }
+    }else if path.starts_with("\\") {
+        match path.strip_prefix("\\") {
             Ok(v) => v.to_path_buf(),
             Err(_) => path.to_path_buf()
         }
@@ -29,7 +56,7 @@ fn strip_prefix(path : &Path) -> PathBuf {
 }
 impl VirtualFileSystem for ChRootFileSystem {
     fn read_to_string(&mut self, path: &Path) -> ForensicResult<String> {
-        self.fs.read_to_string(self.path.join(strip_prefix(path)).as_path())
+        self.fs.read_to_string(self.path.join(normalize_prefix(path)).as_path())
     }
 
     fn is_live(&self) -> bool {
@@ -37,19 +64,19 @@ impl VirtualFileSystem for ChRootFileSystem {
     }
 
     fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>> {
-        self.fs.read_all(self.path.join(strip_prefix(path)).as_path())
+        self.fs.read_all(self.path.join(normalize_prefix(path)).as_path())
     }
 
     fn read(& mut self, path: &Path, pos: u64, buf: & mut [u8]) -> ForensicResult<usize> {
-        self.fs.read(self.path.join(strip_prefix(path)).as_path(), pos, buf)
+        self.fs.read(self.path.join(normalize_prefix(path)).as_path(), pos, buf)
     }
 
     fn metadata(&mut self, path: &Path) -> ForensicResult<crate::traits::vfs::VMetadata> {
-        self.fs.metadata(self.path.join(strip_prefix(path)).as_path())
+        self.fs.metadata(self.path.join(normalize_prefix(path)).as_path())
     }
 
     fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<crate::traits::vfs::VDirEntry>> {
-        self.fs.read_dir(self.path.join(strip_prefix(path)).as_path())
+        self.fs.read_dir(self.path.join(normalize_prefix(path)).as_path())
     }
 
     fn from_file(&self, _file : Box<dyn crate::traits::vfs::VirtualFile>) -> ForensicResult<Box<dyn VirtualFileSystem>> {
@@ -61,7 +88,7 @@ impl VirtualFileSystem for ChRootFileSystem {
     }
 
     fn open(&mut self, path : &Path) -> ForensicResult<Box<dyn crate::traits::vfs::VirtualFile>> {
-        self.fs.open(self.path.join(strip_prefix(path)).as_path())
+        self.fs.open(self.path.join(normalize_prefix(path)).as_path())
     }
 
     fn duplicate(&self) -> Box<dyn VirtualFileSystem> {
@@ -69,6 +96,9 @@ impl VirtualFileSystem for ChRootFileSystem {
             fs : self.fs.duplicate(),
             path : self.path.clone()
         })
+    }
+    fn exists(&self, path : &Path) -> bool {
+        self.path.join(normalize_prefix(path)).exists()
     }
 }
 
@@ -115,5 +145,15 @@ mod tst {
             _fs : boxed
         };
 
+    }
+
+    #[test]
+    #[cfg(target_os="windows")]
+    fn should_exists_c_windows() {
+        let chrfs = ChRootFileSystem::new(Path::new("C:\\"), Box::new(StdVirtualFS::new()));
+        assert!(chrfs.exists(Path::new("Windows")));
+        let chrfs = ChRootFileSystem::new(Path::new("C:\\"), Box::new(StdVirtualFS::new()));
+        assert!(chrfs.exists(Path::new("Windows:\\System32")));
+        // This will be normalized into C:\Windows\System32
     }
 }

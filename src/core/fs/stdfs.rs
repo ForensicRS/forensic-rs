@@ -152,6 +152,9 @@ impl VirtualFileSystem for StdVirtualFS {
     fn from_fs(&self, _fs : Box<dyn VirtualFileSystem>) -> ForensicResult<Box<dyn VirtualFileSystem>> {
         Err(crate::err::ForensicError::NoMoreData)
     }
+    fn exists(&self, path : &Path) -> bool {
+        path.exists()
+    }
 }
 
 #[cfg(test)]

@@ -50,6 +50,11 @@ pub trait VirtualFileSystem {
     fn open(&mut self, path : &Path) -> ForensicResult<Box<dyn VirtualFile>>;
     /// Allows duplicating the existing file system
     fn duplicate(&self) -> Box<dyn VirtualFileSystem>;
+    /// Check if a file exists
+    #[allow(unused_variables)]
+    fn exists(&self, path : &Path) -> bool {
+        false
+    }
 }
 
 
