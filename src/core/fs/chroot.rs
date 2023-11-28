@@ -2,11 +2,20 @@ use std::path::{PathBuf, Path};
 
 use crate::{traits::vfs::VirtualFileSystem, prelude::ForensicResult};
 
+/// Changes the apparent root directory of the underlaying virtual filesystem like chroot on unix.
 pub struct ChRootFileSystem {
     path : PathBuf,
     fs : Box<dyn VirtualFileSystem>
 }
 impl ChRootFileSystem {
+    /// Creates a new ChRoot file system
+    /// 
+    /// ```
+    /// use forensic_rs::prelude::*;
+    /// use std::path::Path;
+    /// let chrfs = ChRootFileSystem::new(Path::new("C:\\"), Box::new(StdVirtualFS::new()));
+    /// let exists_c_windows = chrfs.exists(Path::new("Windows"));
+    /// ```
     pub fn new<P>(path : P, fs : Box<dyn VirtualFileSystem>) -> Self 
     where
         P : Into<std::path::PathBuf>

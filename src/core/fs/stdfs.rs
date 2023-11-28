@@ -2,10 +2,12 @@ use std::{time::SystemTime, path::Path};
 
 use crate::{traits::vfs::{VirtualFileSystem, VMetadata, VDirEntry, VFileType, VirtualFile}, err::ForensicResult};
 
-#[derive(Clone)]
-pub struct StdVirtualFS {
 
-}
+/// A basic Virtual filesystem that uses the Rust standard library filesystem
+/// 
+#[derive(Clone)]
+pub struct StdVirtualFS {}
+
 impl StdVirtualFS {
     pub fn new() -> Self {
         Self{}

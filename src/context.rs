@@ -14,6 +14,7 @@ pub struct ForensicContext {
     pub tenant : String
 }
 
+/// Simplifys the creation of new events with the context of the analysis: artifact being processed, name of the machine where the artifacts came from and the name of the client/tenant.
 pub fn initialize_context(context: ForensicContext) {
     let _ = FORENSIC_CONTEXT.with(|v| {
         let mut brw = v.borrow_mut();
@@ -24,6 +25,7 @@ pub fn initialize_context(context: ForensicContext) {
     //COMPONENT_LOGGER.replace(msngr);
 }
 
+/// Gets the context of the analysis
 pub fn context() -> ForensicContext {
     FORENSIC_CONTEXT.with(|context| context.borrow().clone())
 }

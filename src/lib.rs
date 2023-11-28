@@ -22,4 +22,6 @@ pub mod prelude {
     pub use crate::artifact::*;
     pub use crate::logging::{Message, LogLevel, enabled_level, initialize_logger, max_level, set_max_level, macros::{*}};
     pub use crate::notifications::{Notification, NotificationType, Priority, initialize_notifier, macros::{*}};
+    pub use crate::core::fs::{ChRootFileSystem, StdVirtualFS, StdVirtualFile};
+    pub use crate::traits::vfs::{VDirEntry, VFileType, VirtualFile, VirtualFileSystem};
 }

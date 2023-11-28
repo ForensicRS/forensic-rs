@@ -11,6 +11,7 @@ pub enum Artifact {
     Windows(WindowsArtifacts),
     Linux(LinuxArtifacts),
     MacOs(MacArtifacts),
+    Common(CommonArtifact)
 }
 impl std::fmt::Display for Artifact {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -20,6 +21,7 @@ impl std::fmt::Display for Artifact {
             Artifact::Windows(v) => write!(f, "Windows::{}", v),
             Artifact::Linux(v) => write!(f, "Linux::{}", v),
             Artifact::MacOs(v) => write!(f, "Mac::{}", v),
+            Artifact::Common(v) => write!(f, "Common::{}", v),
         }
     }
 }
@@ -97,6 +99,33 @@ pub enum LinuxService {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MacArtifacts {
+    Other(String),
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CommonArtifact {
+    WebBrowsing(WebBrowsingArtifact),
+    Other(String),
+    #[default]
+    Unknown,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WebBrowsingArtifact {
+    BrowserHistory,
+    BrowserStorage,
+    BrowserCache,
+    Cookie,
+    Extension,
+    ExtensionActivity,
+    FileSystem,
+    LocalStorage,
+    Preferences,
+    SessionStorage,
+    Download,
+    AutoFill,
+    RSSFeed,
     Other(String),
     #[default]
     Unknown,
@@ -217,6 +246,38 @@ impl std::fmt::Display for OtherOS {
         write!(f, "{}::{}", self.os, self.artifact)
     }
 }
+
+impl std::fmt::Display for CommonArtifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommonArtifact::WebBrowsing(v) => write!(f, "WebBrowsing::{}", v),
+            CommonArtifact::Other(v) => write!(f, "{}", v),
+            CommonArtifact::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+impl std::fmt::Display for WebBrowsingArtifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WebBrowsingArtifact::AutoFill => write!(f, "AutoFill"),
+            WebBrowsingArtifact::Other(v) => write!(f, "{}", v),
+            WebBrowsingArtifact::Unknown => write!(f, "Unknown"),
+            WebBrowsingArtifact::BrowserHistory  => write!(f, "BrowserHistory"),
+            WebBrowsingArtifact::BrowserStorage  => write!(f, "BrowserStorage"),
+            WebBrowsingArtifact::BrowserCache  => write!(f, "BrowserCache"),
+            WebBrowsingArtifact::Cookie  => write!(f, "Cookie"),
+            WebBrowsingArtifact::Extension  => write!(f, "Extension"),
+            WebBrowsingArtifact::ExtensionActivity  => write!(f, "ExtensionActivity"),
+            WebBrowsingArtifact::FileSystem  => write!(f, "FileSystem"),
+            WebBrowsingArtifact::LocalStorage  => write!(f, "LocalStorage"),
+            WebBrowsingArtifact::Preferences  => write!(f, "Preferences"),
+            WebBrowsingArtifact::SessionStorage  => write!(f, "SessionStorage"),
+            WebBrowsingArtifact::Download  => write!(f, "Download"),
+            WebBrowsingArtifact::RSSFeed  => write!(f, "RSSFeed"),
+        }
+    }
+}
+
 #[cfg(feature = "serde")]
 impl Serialize for Artifact {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -541,6 +602,7 @@ pub fn artifact_from_str(txt : &str) -> Artifact {
         "Windows" => Artifact::Windows(windows_artifacts_from_str(artifact)),
         "Linux" => Artifact::Linux(linux_artifacts_from_str(artifact)),
         "MacOs" => Artifact::MacOs(mac_artifact_from_str(artifact)),
+        "Common" => Artifact::Common(common_artifact_from_str(artifact)),
         _ => Artifact::Other(other_artifact_from_str(txt)),
     }
 }
@@ -613,6 +675,36 @@ pub fn mac_artifact_from_str(txt : &str) -> MacArtifacts {
     match txt {
         "Unknown" => MacArtifacts::Unknown,
         _ => MacArtifacts::Other(txt.to_string())
+    }
+}
+pub fn common_artifact_from_str(txt : &str) -> CommonArtifact {
+    let (artifact, subartifact) = match txt.find("::") {
+        Some(v) => (&txt[0..v], &txt[v+2..]),
+        None => return CommonArtifact::Unknown
+    };
+    match artifact {
+        "Unknown" => CommonArtifact::Unknown,
+        "WebBrowsing" => CommonArtifact::WebBrowsing(webbrowsing_artifact_from_str(subartifact)),
+        _ => CommonArtifact::Other(txt.to_string())
+    }
+}
+pub fn webbrowsing_artifact_from_str(txt : &str) -> WebBrowsingArtifact {
+    match txt {
+        "AutoFill" => WebBrowsingArtifact::AutoFill,
+        "BrowserCache" => WebBrowsingArtifact::BrowserCache,
+        "BrowserHistory" => WebBrowsingArtifact::BrowserHistory,
+        "BrowserStorage" => WebBrowsingArtifact::BrowserStorage,
+        "Cookie" => WebBrowsingArtifact::Cookie,
+        "Download" => WebBrowsingArtifact::Download,
+        "Extension" => WebBrowsingArtifact::Extension,
+        "ExtensionActivity" => WebBrowsingArtifact::ExtensionActivity,
+        "FileSystem" => WebBrowsingArtifact::FileSystem,
+        "LocalStorage" => WebBrowsingArtifact::LocalStorage,
+        "Preferences" => WebBrowsingArtifact::Preferences,
+        "RSSFeed" => WebBrowsingArtifact::RSSFeed,
+        "SessionStorage" => WebBrowsingArtifact::SessionStorage,
+        "Unknown" => WebBrowsingArtifact::Unknown,
+        _ => WebBrowsingArtifact::Other(txt.to_string())
     }
 }
 pub fn other_artifact_from_str(txt : &str) -> OtherOS {

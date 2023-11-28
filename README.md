@@ -89,6 +89,31 @@ fn test_file_content(std_vfs : &impl VirtualFileSystem, tmp_file : &PathBuf) {
 }
 ```
 
+## Logs
+To simplify the development of modules, plugins and libraries its availabe some macros with the same syntax as that of the [log](https://crates.io/crates/log) crate:
+```rust
+// For production use initialize_logger(logger) instead of testing_logger_dummy()
+let log_receiver = testing_logger_dummy();
+error!("This is log name: {}", "ERROR");
+warn!("This is log name: {}", "WARN");
+info!("This is log name: {}", "INFO");
+debug!("This is log name: {}", "DEBUG");
+trace!("This is log name: {}", "TRACE");
+assert_eq!("This is log name: ERROR", log_receiver.recv().unwrap());
+```
+
+
+## Notifications and Alerts
+
+To simplify the detection of anomalies when processing or analyzing artifacts, we can use the notifications. It uses a syntax similar as that of the [log](https://crates.io/crates/log) crate.
+```rust
+// For production use initialize_notifier(notifier) instead of testing_notifier_dummy()
+let notification_receiver = testing_notifier_dummy();
+notify_high!(NotificationType::AntiForensicsDetected, "The registry key {} is not present. The only possibility is that someone deleted it.", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
+assert_eq!(r"The registry key HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList is not present. The only possibility is that someone deleted it.", notification_receiver.recv().unwrap().data);
+```
+
 ## List of libraries
 * **frnsc-liveregistry-rs**: Implements *RegistryReader* using the Windows API to access the registry of a live system. https://github.com/SecSamDev/frnsc-liveregistry-rs
 * **reg-analyzer-rs**: Analyzes registry artifacts for evidences. https://github.com/SecSamDev/reg-analyzer-rs
+* **Hive Reader**: Implements *RegistryReader* parsing HIVE files. https://github.com/ForensicRS/frnsc-hive
