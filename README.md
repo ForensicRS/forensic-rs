@@ -1,10 +1,13 @@
 # Forensic-rs
-[![crates.io](https://img.shields.io/crates/v/forensic-rs)](https://crates.io/crates/forensic-rs) [![documentation](https://docs.rs/forensic-rs/badge.svg)](https://docs.rs/forensic-rs) ![MIT License](https://img.shields.io/crates/l/forensic-rs) ![Rust](https://github.com/secsamdev/forensic-rs/workflows/Rust/badge.svg?branch=main)
+[![crates.io](https://img.shields.io/crates/v/forensic-rs.svg?style=for-the-badge&logo=rust)](https://crates.io/crates/forensic-rs) [![documentation](https://img.shields.io/badge/read%20the-docs-9cf.svg?style=for-the-badge&logo=docs.rs)](https://docs.rs/forensic-rs) [![MIT License](https://img.shields.io/crates/l/forensic-rs?style=for-the-badge)](https://github.com/ForensicRS/forensic-rs/blob/main/LICENSE) [![Rust](https://img.shields.io/github/actions/workflow/status/ForensicRS/forensic-rs/rust.yml?style=for-the-badge)](https://github.com/ForensicRS/forensic-rs/workflows/Rust/badge.svg?branch=main)
 
 
 A Rust-based framework to build tools that analyze forensic artifacts and can be reused as libraries across multiple projects without changing anything.
 
 Note: still in Alpha version
+
+## Community
+[![Telegram](https://img.shields.io/badge/-telegram-gray?style=for-the-badge&logo=telegram)](https://t.me/forensic_rs)
 
 ## Introduction
 The idea behind the framework is to allow the reuse of forensic artifact analysis tools. For this reason, the framework allows decoupling the code of the analysis tools from the reading of the artifacts. Thus, a tool that analyzes [UAL](https://learn.microsoft.com/en-us/windows-server/administration/user-access-logging/get-started-with-user-access-logging
