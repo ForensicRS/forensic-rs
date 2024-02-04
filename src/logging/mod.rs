@@ -6,7 +6,7 @@ use crate::channel::{self, Receiver, Sender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(usize)]
-pub enum LogLevel {
+pub enum Level {
     Off,
     Error,
     Warn,
@@ -32,14 +32,14 @@ impl Logger {
             channel : sender
         }
     }
-    pub fn log(&self, level : LogLevel, module : &'static str, file : &'static str, line : u32, data : Cow<'static, str>) {
+    pub fn log(&self, level : Level, module : &'static str, file : &'static str, line : u32, data : Cow<'static, str>) {
         let _ = self.channel.send(Message { level, module, file, line, data });
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub level : LogLevel,
+    pub level : Level,
     pub module : &'static str,
     pub line : u32,
     pub file : &'static str,
@@ -53,16 +53,16 @@ static MAX_NOTIFY_LEVEL_FILTER: AtomicUsize = AtomicUsize::new(5);
 //static NOTIFY_LEVEL_NAMES: [&str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 
 #[inline]
-pub fn set_max_level(level: LogLevel) {
+pub fn set_max_level(level: Level) {
     MAX_NOTIFY_LEVEL_FILTER.store(level as usize, Ordering::Relaxed);
 }
 
 #[inline]
-pub fn enabled_level(level: &LogLevel) -> bool {
+pub fn enabled_level(level: &Level) -> bool {
     MAX_NOTIFY_LEVEL_FILTER.load(Ordering::Relaxed) >= (*level as usize)
 }
 #[inline]
-pub fn max_level() -> LogLevel {
+pub fn max_level() -> Level {
     unsafe { std::mem::transmute(MAX_NOTIFY_LEVEL_FILTER.load(Ordering::Relaxed)) }
 }
 

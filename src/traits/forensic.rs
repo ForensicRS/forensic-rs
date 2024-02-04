@@ -1,9 +1,35 @@
+use std::borrow::Cow;
+
 use crate::{prelude::ForensicData, activity::ForensicActivity};
 
 
-pub trait Forensicable{
-    fn to_timeline(&self) -> Option<(i64, ForensicData)>;
-    fn to_activity(&self) -> Option<(i64, ForensicActivity)>;
+pub trait Forensicable {
+    /// A processed forensic artifact entry struct that implements forensicable can be transformed into a list of events/logs/data with a
+    fn to_timeline(&self) -> Option<Vec<TimelineData>>;
+    fn to_activity(&self) -> Option<Vec<ActivityData>>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum TimeContext {
+    #[default]
+    Creation,
+    Modification,
+    Accessed,
+    Other(Cow<'static, str>)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TimelineData {
+    pub time : i64,
+    pub data : ForensicData,
+    pub time_context : TimeContext
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ActivityData {
+    pub time : i64,
+    pub data : ForensicActivity,
+    pub time_context : TimeContext
 }
 
 pub trait ArtifactParser : IntoIterator<Item = ForensicData>  {

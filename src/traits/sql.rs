@@ -66,7 +66,7 @@ impl TryInto<i64> for ColumnValue {
     fn try_into(self) -> Result<i64, Self::Error> {
         match self {
             ColumnValue::Integer(v) => Ok(v),
-            _ => Err(ForensicError::BadFormat)
+            _ => Err(ForensicError::CastError)
         }
     }
 }
@@ -77,7 +77,7 @@ impl TryInto<usize> for ColumnValue {
     fn try_into(self) -> Result<usize, Self::Error> {
         match self {
             ColumnValue::Integer(v) => Ok(v as usize),
-            _ => Err(ForensicError::BadFormat)
+            _ => Err(ForensicError::CastError)
         }
     }
 }
@@ -88,7 +88,7 @@ impl TryInto<f64> for ColumnValue {
     fn try_into(self) -> Result<f64, Self::Error> {
         match self {
             ColumnValue::Float(v) => Ok(v),
-            _ => Err(ForensicError::BadFormat)
+            _ => Err(ForensicError::CastError)
         }
     }
 }
@@ -99,7 +99,7 @@ impl TryInto<Vec<u8>> for ColumnValue {
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
         match self {
             ColumnValue::Binary(v) => Ok(v),
-            _ => Err(ForensicError::BadFormat)
+            _ => Err(ForensicError::CastError)
         }
     }
 }

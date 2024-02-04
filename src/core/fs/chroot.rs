@@ -92,7 +92,7 @@ impl VirtualFileSystem for ChRootFileSystem {
     }
 
     fn from_file(&self, _file : Box<dyn crate::traits::vfs::VirtualFile>) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        Err(crate::prelude::ForensicError::Missing)
+        Err(crate::prelude::ForensicError::missing_str("File not found"))
     }
 
     fn from_fs(&self, fs : Box<dyn VirtualFileSystem>) -> ForensicResult<Box<dyn VirtualFileSystem>> {

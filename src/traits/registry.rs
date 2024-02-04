@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use crate::{
     core::user::UserInfo,
     err::{ForensicError, ForensicResult},
@@ -38,6 +36,21 @@ pub enum RegValue {
     QWord(u64),
 }
 
+impl RegValue {
+    pub fn from_str(v : &str) -> RegValue {
+        RegValue::SZ(v.to_string())
+    }
+    pub fn from_string(v : String) -> RegValue {
+        RegValue::SZ(v.clone())
+    }
+    pub fn from_u32(v : u32) -> RegValue {
+        RegValue::DWord(v)
+    }
+    pub fn from_u64(v : u64) -> RegValue {
+        RegValue::QWord(v)
+    }
+}
+
 impl Into<RegValue> for String {
     fn into(self) -> RegValue {
         RegValue::SZ(self)
@@ -74,9 +87,16 @@ impl Into<RegValue> for i64 {
 }
 impl Into<RegValue> for usize {
     fn into(self) -> RegValue {
-        if size_of::<usize>() == 4 {
+        #[cfg(target_pointer_width="32")] 
+        {
             RegValue::DWord(self as u32)
-        }else {
+        }
+        #[cfg(target_pointer_width="16")] 
+        {
+            RegValue::DWord(self as u32)
+        }
+        #[cfg(target_pointer_width="64")] 
+        {
             RegValue::QWord(self as u64)
         }
     }
@@ -220,19 +240,60 @@ pub trait RegistryReader {
         Ok(value.try_into()?)
     }
 
-    fn get_basic_user_info(&self, user_id: &str) -> ForensicResult<UserInfo> {
-        let user_key = self.open_key(RegHiveKey::HkeyUsers, user_id)?;
-        let user_key = self.open_key(user_key, "Volatile Environment")?;
-        let mut user_info = UserInfo::default();
-        user_info.id = user_id.to_string();
-        user_info.home = self.read_value(user_key, "USERPROFILE")?.try_into()?;
-        user_info.app_data = self.read_value(user_key, "APPDATA")?.try_into()?;
-        user_info.local_app_data = self.read_value(user_key, "LOCALAPPDATA")?.try_into()?;
-        user_info.domain = self.read_value(user_key, "USERDOMAIN")?.try_into()?;
-        user_info.name = self.read_value(user_key, "USERNAME")?.try_into()?;
-        Ok(user_info)
+    fn get_basic_user_info(&self, user_id : &str) -> ForensicResult<UserInfo> where Self: Sized{
+        get_basic_user_info(self, user_id)
     }
+
 }
+
+pub fn get_basic_user_info(reader : &dyn RegistryReader, user_id: &str) -> ForensicResult<UserInfo> {
+    let user_key = reader.open_key(RegHiveKey::HkeyUsers, user_id)?;
+    auto_close_key(reader, user_key, || {
+        let volatile_key = reader.open_key(user_key, "Volatile Environment")?;
+        auto_close_key(reader, volatile_key, || {
+            let mut user_info = UserInfo::default();
+            user_info.id = user_id.to_string();
+            user_info.home = reader.read_value(volatile_key, "USERPROFILE")?.try_into()?;
+            user_info.app_data = reader.read_value(volatile_key, "APPDATA")?.try_into()?;
+            user_info.local_app_data = reader.read_value(volatile_key, "LOCALAPPDATA")?.try_into()?;
+            user_info.domain = reader.read_value(volatile_key, "USERDOMAIN")?.try_into()?;
+            user_info.name = reader.read_value(volatile_key, "USERNAME")?.try_into()?;
+            Ok(user_info)
+        })
+    })
+}
+
+
+
+/// Simplify the process of closing Registry keys
+/// 
+/// ```rust
+/// use forensic_rs::prelude::*;
+/// use forensic_rs::core::user::UserInfo;
+/// use forensic_rs::utils::testing::TestingRegistry;
+/// let reader = TestingRegistry::new();
+/// let user_id = "S-1-5-21-1366093794-4292800403-1155380978-513";
+/// let user_key = reader.open_key(RegHiveKey::HkeyUsers, user_id).unwrap();
+/// let _user_info = auto_close_key(&reader, user_key, || {
+///     let volatile_key = reader.open_key(user_key, "Volatile Environment")?;
+///     auto_close_key(&reader, volatile_key, || {
+///         let mut user_info = UserInfo::default();
+///         user_info.id = user_id.to_string();
+///         user_info.home = reader.read_value(volatile_key, "USERPROFILE")?.try_into()?;
+///         user_info.app_data = reader.read_value(volatile_key, "APPDATA")?.try_into()?;
+///         user_info.local_app_data = reader.read_value(volatile_key, "LOCALAPPDATA")?.try_into()?;
+///         user_info.domain = reader.read_value(volatile_key, "USERDOMAIN")?.try_into()?;
+///         user_info.name = reader.read_value(volatile_key, "USERNAME")?.try_into()?;
+///         Ok(user_info)
+///     })
+/// }).unwrap();
+/// ```
+pub fn auto_close_key<F, T>(reader : &dyn RegistryReader, key : RegHiveKey, operation : F) -> ForensicResult<T> where
+    F: FnOnce() -> ForensicResult<T> {
+        let result = operation();
+        reader.close_key(key);
+        result
+    }
 
 #[cfg(test)]
 mod reg_value {
