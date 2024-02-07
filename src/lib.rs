@@ -13,7 +13,7 @@ pub mod context;
 pub mod utils;
 
 pub mod prelude {
-    pub use crate::utils::win::{UnixTimestamp, WinFiletime, filetime_to_unix_timestamp};
+    pub use crate::utils::time::{UnixTimestamp, WinFiletime, Filetime, filetime_to_unix_timestamp};
     pub use crate::context::initialize_context;
     pub use crate::dictionary::*;
     pub use crate::traits::registry::*;
