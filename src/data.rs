@@ -65,9 +65,8 @@ impl<'a> ForensicData {
     pub fn field_mut(&'a mut self, field_name: &str) -> Option<&mut Field> {
         Some(&mut self.fields.get_mut(field_name)?.original)
     }
-    pub fn add_field(&mut self, field_name: &str, field_value: Field) {
-        let field_name = Text::Owned(field_name.to_owned());
-        self.insert(field_name, field_value);
+    pub fn add_field(&mut self, field_name: &'static str, field_value: Field) {
+        self.insert(Text::Borrowed(field_name), field_value);
     }
     pub fn insert(&mut self, field_name: Text, field_value: Field) {
         self.fields.insert(field_name, field_value.into());

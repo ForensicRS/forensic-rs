@@ -1,3 +1,5 @@
+use crate::utils::time::Filetime;
+
 use super::{Field, Text, Ip};
 
 
@@ -9,13 +11,14 @@ pub enum PreStoredField<T> {
     Some(T)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct InternalField {
     pub original : Field,
     pub array : Box<PreStoredField<Vec<Text>>>,
     pub text : Box<PreStoredField<Text>>,
     pub nu64 : Box<PreStoredField<u64>>,
     pub ni64 : Box<PreStoredField<i64>>,
+    pub date : Box<PreStoredField<Filetime>>,
     pub nf64 : Box<PreStoredField<f64>>,
     pub ip : Box<PreStoredField<Ip>>
 }
@@ -25,7 +28,11 @@ impl InternalField {
         field.into()
     }
 }
-
+impl std::fmt::Debug for InternalField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:?}", self.original))
+    }
+}
 impl Into<InternalField> for Field{
     fn into(self) -> InternalField {
         let mut ifield = InternalField {
@@ -40,7 +47,7 @@ impl Into<InternalField> for Field{
                 ifield.ni64 = Box::new(PreStoredField::Some(*v));
             },
             Field::Date(v) => {
-                ifield.ni64 = Box::new(PreStoredField::Some(*v));
+                ifield.date = Box::new(PreStoredField::Some(*v));
             },
             Field::U64(v) => {
                 ifield.nu64 = Box::new(PreStoredField::Some(*v));

@@ -1,65 +1,82 @@
 //https://www.elastic.co/guide/en/ecs/current/index.html
 // Some of this events are automatically created when you map a SiemLog to a SiemEvent. The object field types are not supported for simplicity in uSIEM.
 // If needed join the values by the character "\n" into a single String. Useful for file names.
-pub static EVENT_OUTCOME: &'static str = "event.outcome";
+pub const EVENT_OUTCOME: &str = "event.outcome";
 /// The action captured by the event. This describes the information in the event. It is more specific than event.category. Examples are group-add, process-started, file-created. The value is normally defined by the implementer.
-pub static EVENT_ACTION: &'static str = "event.action";
+pub const EVENT_ACTION: &str = "event.action";
 /// event.category represents the "big buckets" of ECS categories. For example, filtering on event.category:process yields all events relating to process activity. Valudes: authentication, configuration, database, driver, file, host, iam, intrusion_detection, malware, network, package, process, web
-pub static EVENT_CATEGORY: &'static str = "event.category";
+pub const EVENT_CATEGORY: &str = "event.category";
 /// Some event sources use event codes to identify messages unambiguously, regardless of message language or wording adjustments over time. An example of this is the Windows Event ID.
-pub static EVENT_CODE: &'static str = "event.code";
+pub const EVENT_CODE: &str = "event.code";
 
-pub static USER_NAME: &'static str = "user.name";
-pub static USER_DOMAIN: &'static str = "user.domain";
-pub static SOURCE_IP: &'static str = "source.ip";
-pub static SOURCE_PORT: &'static str = "source.port";
+pub const USER_NAME: &str = "user.name";
+pub const USER_DOMAIN: &str = "user.domain";
+pub const SOURCE_IP: &str = "source.ip";
+pub const SOURCE_PORT: &str = "source.port";
 /// Amount of bytes sent by the local host
-pub static SOURCE_BYTES: &'static str = "source.bytes";
-pub static DESTINATION_IP: &'static str = "destination.ip";
-pub static DESTINATION_PORT: &'static str = "destination.port";
+pub const SOURCE_BYTES: &str = "source.bytes";
+pub const DESTINATION_IP: &str = "destination.ip";
+pub const DESTINATION_PORT: &str = "destination.port";
 
 /// Amount of bytes sent by the remote host
-pub static DESTINATION_BYTES: &'static str = "destination.bytes";
+pub const DESTINATION_BYTES: &str = "destination.bytes";
 
-pub static NETWORK_TRANSPORT: &'static str = "network.transport";
-pub static NETWORK_PROTOCOL: &'static str = "network.protocol";
-pub static NETWORK_DURATION: &'static str = "network.duration";
+pub const NETWORK_TRANSPORT: &str = "network.transport";
+pub const NETWORK_PROTOCOL: &str = "network.protocol";
+pub const NETWORK_DURATION: &str = "network.duration";
 
-pub static IN_INTERFACE: &'static str = "observer.ingress.interface";
-pub static OUT_INTERFACE: &'static str = "observer.egress.interface";
+pub const IN_INTERFACE: &str = "observer.ingress.interface";
+pub const OUT_INTERFACE: &str = "observer.egress.interface";
 
-pub static OBSERVER_IP: &'static str = "observer.ip";
-pub static OBSERVER_NAME: &'static str = "observer.name";
+pub const OBSERVER_IP: &str = "observer.ip";
+pub const OBSERVER_NAME: &str = "observer.name";
 
-pub static URL_FULL: &'static str = "url.full";
-pub static URL_DOMAIN: &'static str = "url.domain";
-pub static URL_PATH: &'static str = "url.path";
-pub static URL_QUERY: &'static str = "url.query";
+pub const URL_FULL: &str = "url.full";
+pub const URL_DOMAIN: &str = "url.domain";
+pub const URL_PATH: &str = "url.path";
+pub const URL_QUERY: &str = "url.query";
 
-pub static HTTP_REQUEST_METHOD: &'static str = "http.request.method";
-pub static HTTP_RESPONSE_MIME_TYPE: &'static str = "http.response.mime_type";
-pub static HTTP_RESPONSE_STATUS_CODE: &'static str = "http.response.status_code";
+pub const HTTP_REQUEST_METHOD: &str = "http.request.method";
+pub const HTTP_RESPONSE_MIME_TYPE: &str = "http.response.mime_type";
+pub const HTTP_RESPONSE_STATUS_CODE: &str = "http.response.status_code";
 
-pub static RULE_NAME: &'static str = "rule.name";
-pub static RULE_CATEGORY: &'static str = "rule.category";
-pub static RULE_ID: &'static str = "rule.id";
+pub const RULE_NAME: &str = "rule.name";
+pub const RULE_CATEGORY: &str = "rule.category";
+pub const RULE_ID: &str = "rule.id";
 
-pub static DNS_OP_CODE: &'static str = "dns.op_code";
-pub static DNS_ANSWER_CLASS: &'static str = "dns.answer.class";
-pub static DNS_ANSWER_NAME: &'static str = "dns.answer.name";
-pub static DNS_ANSWER_TYPE: &'static str = "dns.answer.type";
-pub static DNS_ANSWER_TTL: &'static str = "dns.answer.ttl";
-pub static DNS_ANSWER_DATA: &'static str = "dns.answer.data";
-pub static DNS_QUESTION_CLASS: &'static str = "dns.question.class";
-pub static DNS_QUESTION_NAME: &'static str = "dns.question.name";
-pub static DNS_QUESTION_TYPE: &'static str = "dns.question.type";
-pub static DNS_RESOLVED_IP: &'static str = "dns.resolved_ip";
+pub const DNS_OP_CODE: &str = "dns.op_code";
+pub const DNS_ANSWER_CLASS: &str = "dns.answer.class";
+pub const DNS_ANSWER_NAME: &str = "dns.answer.name";
+pub const DNS_ANSWER_TYPE: &str = "dns.answer.type";
+pub const DNS_ANSWER_TTL: &str = "dns.answer.ttl";
+pub const DNS_ANSWER_DATA: &str = "dns.answer.data";
+pub const DNS_QUESTION_CLASS: &str = "dns.question.class";
+pub const DNS_QUESTION_NAME: &str = "dns.question.name";
+pub const DNS_QUESTION_TYPE: &str = "dns.question.type";
+pub const DNS_RESOLVED_IP: &str = "dns.resolved_ip";
 
-pub static DHCP_RECORD_TYPE: &'static str = "dhcp.type";
+pub const DHCP_RECORD_TYPE: &str = "dhcp.type";
 
-pub static TAG_REPROCESS: &'static str = "reprocess_log";
+pub const TAG_REPROCESS: &str = "reprocess_log";
 
-pub static ARTIFACT_NAME: &'static str = "artifact.name";
-pub static ARTIFACT_PATH: &'static str = "artifact.path";
-pub static ARTIFACT_HOST: &'static str = "artifact.host";
-pub static ARTIFACT_TENANT: &'static str = "artifact.tenant";
+pub const ARTIFACT_NAME: &str = "artifact.name";
+pub const ARTIFACT_PATH: &str = "artifact.path";
+pub const ARTIFACT_HOST: &str = "artifact.host";
+pub const ARTIFACT_TENANT: &str = "artifact.tenant";
+
+pub const PROCESS_EXECUTABLE : &str = "process.executable";
+
+pub const FILE_INODE : &str = "file.inode";
+pub const FILE_NAME : &str = "file.name";
+pub const FILE_OWNER : &str = "file.OWNER";
+pub const FILE_PATH : &str = "file.path";
+pub const FILE_SIZE : &str = "file.size";
+pub const FILE_TYPE : &str = "file.type";
+pub const FILE_ACCESSED : &str = "file.accessed";
+pub const FILE_CREATED : &str = "file.created";
+pub const FILE_DEVICE : &str = "file.device";
+pub const FILE_DIRECTORY : &str = "file.directory";
+pub const FILE_EXTENSION : &str = "file.extension";
+
+
+pub const PE_IMPORTS : &str = "pe.imports";

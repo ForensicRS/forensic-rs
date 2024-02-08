@@ -10,9 +10,11 @@ pub mod utils;
 
 pub use ip::Ip;
 
+use crate::utils::time::Filetime;
+
 pub type Text = Cow<'static, str>;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub enum Field {
     #[default]
@@ -42,9 +44,28 @@ pub enum Field {
     /// decimal number with 64 bits
     F64(f64),
     ///A date in a decimal number format with 64 bits
-    Date(i64),
+    Date(Filetime),
     Array(Vec<Text>),
     Path(PathBuf),
+}
+
+impl std::fmt::Debug for Field {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Null => write!(f, "Null"),
+            Self::Text(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
+            Self::Ip(arg0) => f.write_fmt(format_args!("{}", arg0)),
+            Self::Domain(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
+            Self::User(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
+            Self::AssetID(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
+            Self::U64(arg0) => f.write_fmt(format_args!("{}", arg0)),
+            Self::I64(arg0) => f.write_fmt(format_args!("{}", arg0)),
+            Self::F64(arg0) => f.write_fmt(format_args!("{}", arg0)),
+            Self::Date(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
+            Self::Array(arg0) => f.debug_list().entries(arg0.iter()).finish(),
+            Self::Path(arg0) => f.write_fmt(format_args!("{:?}", arg0.to_string_lossy())),
+        }
+    }
 }
 
 impl<'a> TryInto<&'a str> for &'a Field {
@@ -126,7 +147,7 @@ impl<'a> TryInto<u64> for &'a Field {
             Field::F64(v) => *v as u64,
             Field::I64(v) => *v as u64,
             Field::U64(v) => *v,
-            Field::Date(v) => *v as u64,
+            Field::Date(v) => v.filetime() as u64,
             _ => return Err("Invalid type"),
         })
     }
@@ -139,7 +160,7 @@ impl<'a> TryInto<i64> for &'a Field {
             Field::F64(v) => *v as i64,
             Field::I64(v) => *v as i64,
             Field::U64(v) => *v as i64,
-            Field::Date(v) => *v as i64,
+            Field::Date(v) => v.filetime() as i64,
             _ => return Err("Invalid type"),
         })
     }
@@ -152,7 +173,7 @@ impl<'a> TryInto<f64> for &'a Field {
             Field::F64(v) => *v as f64,
             Field::I64(v) => *v as f64,
             Field::U64(v) => *v as f64,
-            Field::Date(v) => *v as f64,
+            Field::Date(v) => v.filetime() as f64,
             _ => return Err("Invalid type"),
         })
     }
@@ -205,6 +226,17 @@ impl From<u64> for Field {
         Field::U64(v)
     }
 }
+impl From<&u32> for Field {
+    fn from(v: &u32) -> Field {
+        Field::U64(*v as u64)
+    }
+}
+impl From<u32> for Field {
+    fn from(v: u32) -> Field {
+        Field::U64(v as u64)
+    }
+}
+
 impl From<&i64> for Field {
     fn from(v: &i64) -> Field {
         Field::I64(*v)
@@ -263,7 +295,7 @@ impl Serialize for Field {
             Field::U64(v) => serializer.serialize_u64(*v),
             Field::I64(v) => serializer.serialize_i64(*v),
             Field::F64(v) => serializer.serialize_f64(*v),
-            Field::Date(v) => serializer.serialize_i64(*v),
+            Field::Date(v) => serializer.serialize_str(&v.to_string()),
             Field::Array(v) => v.serialize(serializer),
             Field::Path(v) => serializer.serialize_str(&v.to_string_lossy()[..]),
         }

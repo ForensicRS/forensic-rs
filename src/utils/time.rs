@@ -212,7 +212,12 @@ impl std::fmt::Debug for Filetime {
             ))
         }
     }
+}
 
+impl std::fmt::Display for Filetime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl Add<Duration> for Filetime {
@@ -580,6 +585,24 @@ impl WinFiletime {
     
 }
 
+impl PartialEq for Filetime {
+    fn eq(&self, other: &Self) -> bool {
+        self.original == other.original
+    }
+}
+impl Eq for Filetime {}
+
+impl PartialOrd for Filetime {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.original.partial_cmp(&other.original)
+    }
+}
+
+impl Ord for Filetime {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.original.cmp(&other.original)
+    }
+}
 
 #[test]
 fn should_generate_valid_windows_timestamps() {

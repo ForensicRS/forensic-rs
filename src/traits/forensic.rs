@@ -1,12 +1,46 @@
 use std::borrow::Cow;
 
-use crate::{prelude::ForensicData, activity::ForensicActivity};
+use crate::{activity::ForensicActivity, prelude::ForensicData, utils::time::Filetime};
 
+/// Quickly transform a structure into one or more events that are part of a timeline
+/// ```rust,ignore
+/// impl<'a> IntoTimeline<'a> for PrefetchFile {
+///     fn timeline(&'a self) -> Self::IntoIter {
+///         PrefetchTimelineIterator {
+///             prefetch : self,
+///             time_pos : 0
+///         }
+///     }
+/// 
+///     type IntoIter = PrefetchTimelineIterator<'a> where Self: 'a;
+/// }
+/// ```
+pub trait IntoTimeline<'a> {
+    type IntoIter: Iterator<Item = TimelineData> where Self: 'a;
+    
+    fn timeline(&'a self) -> Self::IntoIter;
+}
 
-pub trait Forensicable {
-    /// A processed forensic artifact entry struct that implements forensicable can be transformed into a list of events/logs/data with a
-    fn to_timeline(&self) -> Option<Vec<TimelineData>>;
-    fn to_activity(&self) -> Option<Vec<ActivityData>>;
+/// Quickly transform a structure into one or more user activity events. In order to know what a user did at a high level at a specific moment.
+/// 
+/// Example: `ForensicActivity { timestamp: 06-11-2023 15:18:00.237, user: "", session_id: Unknown, activity: ProgramExecution(\VOLUME{01d98a6b9e4a0a35-1c9e547d}\WINDOWS\SYSWOW64\WINDOWSPOWERSHELL\V1.0\POWERSHELL.EXE) }`
+/// 
+/// ```rust,ignore
+/// impl<'a> IntoActivity<'a> for PrefetchFile {
+///     fn activity(&'a self) -> Self::IntoIter {
+///         PrefetchActivityIterator {
+///             prefetch : self,
+///             time_pos : 0
+///         }
+///     }
+/// 
+///     type IntoIter = PrefetchActivityIterator<'a> where Self: 'a;
+/// }
+/// ```
+pub trait IntoActivity<'a> {
+    type IntoIter: Iterator<Item = ForensicActivity> where Self: 'a;
+    
+    fn activity(&'a self) -> Self::IntoIter;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -20,15 +54,8 @@ pub enum TimeContext {
 
 #[derive(Clone, Debug, Default)]
 pub struct TimelineData {
-    pub time : i64,
+    pub time : Filetime,
     pub data : ForensicData,
-    pub time_context : TimeContext
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ActivityData {
-    pub time : i64,
-    pub data : ForensicActivity,
     pub time_context : TimeContext
 }
 

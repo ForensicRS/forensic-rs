@@ -30,6 +30,30 @@ pub fn context() -> ForensicContext {
     FORENSIC_CONTEXT.with(|context| context.borrow().clone())
 }
 
+/// Changes the type of artifact being processed by the current thread
+pub fn set_artifact<A : Into<Artifact>>(artifact : A) {
+    let artifact = artifact.into();
+    FORENSIC_CONTEXT.with(|context| {
+        let mut borrowed = context.borrow_mut();
+        borrowed.artifact = artifact;
+    })
+}
+
+/// Change the tenant ID for which artifacts are being processed by the current thread
+pub fn set_tenant(tenant : String) {
+    FORENSIC_CONTEXT.with(|context| {
+        let mut borrowed = context.borrow_mut();
+        borrowed.tenant = tenant;
+    })
+}
+/// Change the name of the computer for which artifacts are being processed by the current thread
+pub fn set_host(host : String) {
+    FORENSIC_CONTEXT.with(|context| {
+        let mut borrowed = context.borrow_mut();
+        borrowed.host = host;
+    })
+}
+
 #[test]
 fn should_initialize_log_with_context() {
     use crate::artifact::Artifact;
