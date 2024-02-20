@@ -1,8 +1,10 @@
 use crate::{
     err::ForensicError,
-    traits::registry::{RegHiveKey, RegValue, RegistryReader},
+    traits::registry::{RegHiveKey, RegValue, RegistryKeyInfo, RegistryReader},
 };
 use std::{cell::RefCell, collections::BTreeMap};
+
+use super::time::Filetime;
 
 /// Basic Registry for testing. Includes the user profile "S-1-5-21-1366093794-4292800403-1155380978-513"
 #[derive(Clone, Debug)]
@@ -341,6 +343,27 @@ impl RegistryReader for TestingRegistry {
             return Err(ForensicError::NoMoreData);
         }
         Ok(value.remove(pos))
+    }
+
+    fn key_info(&self, hkey: RegHiveKey) -> crate::err::ForensicResult<crate::traits::registry::RegistryKeyInfo> {
+        let borrowed = self.cached.borrow();
+        let key_path = borrowed
+            .get(&hkey)
+            .ok_or_else(|| ForensicError::missing_str("HKey not found"))?;
+        let value = self.get_values(key_path).ok_or_else(|| {
+            ForensicError::missing_string(format!("Values for {} not found", key_path))
+        })?;
+        let keys = self.get_keys(key_path).ok_or_else(|| {
+            ForensicError::missing_string(format!("Values for {} not found", key_path))
+        })?;
+        Ok(RegistryKeyInfo {
+            last_write_time : Filetime::new(0),
+            subkeys : keys.len() as u32,
+            values : value.len() as u32,
+            max_subkey_name_length : keys.iter().map(|v| v.len()).fold(0, |acc, e| e.max(acc)) as u32,
+            max_value_name_length: value.iter().map(|v| v.len()).fold(0, |acc, e| e.max(acc)) as u32,
+            max_value_length: 0,
+        })
     }
 }
 fn basic_cache() -> BTreeMap<RegHiveKey, String> {

@@ -1,6 +1,6 @@
 use crate::{
     core::user::UserInfo,
-    err::{ForensicError, ForensicResult},
+    err::{ForensicError, ForensicResult}, utils::time::Filetime,
 };
 
 use super::vfs::{VirtualFile, VirtualFileSystem};
@@ -196,6 +196,16 @@ impl TryInto<Vec<u8>> for RegValue {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegistryKeyInfo {
+    pub subkeys : u32,
+    pub max_subkey_name_length : u32,
+    pub values : u32,
+    pub max_value_name_length : u32,
+    pub max_value_length : u32,
+    pub last_write_time : Filetime
+
+}
 /// It allows decoupling the registry access library from the analysis library.
 pub trait RegistryReader {
     /// Mounts a registry reader in a hive file
@@ -210,6 +220,8 @@ pub trait RegistryReader {
     fn enumerate_keys(&self, hkey: RegHiveKey) -> ForensicResult<Vec<String>>;
     fn key_at(&self, hkey: RegHiveKey, pos: u32) -> ForensicResult<String>;
     fn value_at(&self, hkey: RegHiveKey, pos: u32) -> ForensicResult<String>;
+    /// Retrieves information about the key. Emulates RegQueryInfoKey
+    fn key_info(&self, hkey: RegHiveKey) -> ForensicResult<RegistryKeyInfo>;
     /// Closes a handle to the specified registry key.
     #[allow(unused_variables)]
     fn close_key(&self, hkey: RegHiveKey) {}
@@ -297,7 +309,7 @@ pub fn auto_close_key<F, T>(reader : &dyn RegistryReader, key : RegHiveKey, oper
 
 #[cfg(test)]
 mod reg_value {
-    use crate::{traits::registry::RegistryReader, err::ForensicResult};
+    use crate::{err::ForensicResult, traits::registry::{RegistryKeyInfo, RegistryReader}};
 
     use super::RegValue;
 
@@ -416,6 +428,9 @@ mod reg_value {
                 _pos: u32,
             ) -> crate::err::ForensicResult<String> {
                 Ok(format!("123"))
+            }
+            fn key_info(&self, _hkey: crate::traits::registry::RegHiveKey) -> ForensicResult<crate::traits::registry::RegistryKeyInfo>{
+                Ok(RegistryKeyInfo::default())
             }
         }
 
