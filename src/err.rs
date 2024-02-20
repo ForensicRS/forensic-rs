@@ -1,10 +1,9 @@
 use std::{borrow::Cow, fmt::Display};
-use thiserror::Error;
 
 pub type ForensicResult<T> = Result<T, ForensicError>;
 
 /// Cannot parse certain data because the format is invalid
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BadFormatError(Cow<'static, str>);
 
 impl  Display for BadFormatError {
@@ -14,30 +13,23 @@ impl  Display for BadFormatError {
 }
 
 /// The expected content cannot be found
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingError(Cow<'static, str>);
 
-#[derive(Error, Debug)]
+impl std::fmt::Display for MissingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug)]
 pub enum ForensicError {
-    #[error("Not enough permissions")]
     PermissionError,
-
-    #[error("No more content/data/files")]
     NoMoreData,
-
-    #[error("Some error has occured: {0}")]
     Other(String),
-
-    #[error("A file/data cannot be found")]
     Missing(MissingError),
-
-    #[error("The data have an unexpected format: {0}")]
     BadFormat(BadFormatError),
-
-    #[error("IO operations error: {0}")]
     Io(std::io::Error),
-
-    #[error("The Into/Form operation cannot executed")]
     CastError,
 }
 
@@ -73,6 +65,21 @@ impl Clone for ForensicError {
         }
     }
 }
+
+impl PartialEq for ForensicError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Other(l0), Self::Other(r0)) => l0 == r0,
+            (Self::Missing(l0), Self::Missing(r0)) => l0 == r0,
+            (Self::BadFormat(l0), Self::BadFormat(r0)) => l0 == r0,
+            (Self::PermissionError, Self::PermissionError) => true,
+            (Self::NoMoreData, Self::NoMoreData) => true,
+            (Self::CastError, Self::CastError) => true,
+            _ => false
+        }
+    }
+}
+impl Eq for ForensicError {}
 
 impl From<std::io::Error> for ForensicError {
     fn from(e: std::io::Error) -> Self {
@@ -122,4 +129,56 @@ impl From<&String> for ForensicError {
     fn from(value: &String) -> Self {
         ForensicError::Other(value.to_string())
     }
+}
+
+impl std::fmt::Display for ForensicError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ForensicError::PermissionError => f.write_str("Not enough permissions"),
+            ForensicError::NoMoreData => f.write_str("No more content/data/files"),
+            ForensicError::Other(e) => f.write_fmt(format_args!("An error ocurred: {}", e)),
+            ForensicError::Missing(e) => f.write_fmt(format_args!("A file/data cannot be found: {}", e)),
+            ForensicError::BadFormat(e) => f.write_fmt(format_args!("The data have an unexpected format: {}", e)),
+            ForensicError::Io(e) => f.write_fmt(format_args!("IO operations error: {}", e)),
+            ForensicError::CastError => f.write_str("The Into/Form operation cannot be executed"),
+        }
+    }
+}
+
+impl std::error::Error for ForensicError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+
+    fn description(&self) -> &str {
+        match self {
+            ForensicError::PermissionError => "Not enough permissions",
+            ForensicError::NoMoreData => "No more content/data/files",
+            ForensicError::Other(e) => e,
+            ForensicError::Missing(e) => &e.0,
+            ForensicError::BadFormat(e) => &e.0,
+            ForensicError::Io(_) => "IO operations error",
+            ForensicError::CastError => "The Into/Form operation cannot be executed",
+        }
+    }
+
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        self.source()
+    }
+    
+}
+
+#[test]
+fn error_compatible_with_anyhow() {
+    fn this_returns_error() -> anyhow::Result<u64> {
+        let value = second_function()?;
+        Ok(value)
+    }
+    fn second_function() -> ForensicResult<u64> {
+        Err(ForensicError::bad_format_str("Invalid prefetch format"))
+    }
+
+    let error = this_returns_error().unwrap_err();
+    let frns_err = error.downcast_ref::<ForensicError>().unwrap();
+    assert_eq!(&ForensicError::bad_format_str("Invalid prefetch format"), frns_err);
 }
