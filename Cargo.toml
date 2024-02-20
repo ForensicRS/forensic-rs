@@ -1,6 +1,6 @@
 [package]
 name = "forensic-rs"
-version = "0.9.0"
+version = "0.9.1"
 authors = ["Samuel Garcés Marín <samuel.garces@protonmail.com>"]
 keywords = ["forensic", "windows", "parser", "registry", "cybersecurity"]
 categories = ["parsing"]
@@ -15,6 +15,7 @@ serde = ["dep:serde"]
 
 [dependencies]
 serde = {version = "1", optional = true}
+thiserror = "1"
 
 [dev-dependencies]
 sqlite = "0.28.1"
