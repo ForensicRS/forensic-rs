@@ -31,6 +31,7 @@ pub enum ForensicError {
     BadFormat(BadFormatError),
     Io(std::io::Error),
     CastError,
+    IllegalTimestamp(String)
 }
 
 impl ForensicError {
@@ -62,6 +63,7 @@ impl Clone for ForensicError {
             Self::Missing(e) => Self::Missing(e.clone()),
             Self::BadFormat(e) => Self::BadFormat(e.clone()),
             Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
+            Self::IllegalTimestamp(reason) => Self::IllegalTimestamp(reason.clone()),
         }
     }
 }
@@ -75,6 +77,7 @@ impl PartialEq for ForensicError {
             (Self::PermissionError, Self::PermissionError) => true,
             (Self::NoMoreData, Self::NoMoreData) => true,
             (Self::CastError, Self::CastError) => true,
+            (Self::IllegalTimestamp(l0), Self::IllegalTimestamp(r0)) => l0 == r0,
             _ => false
         }
     }
@@ -141,6 +144,7 @@ impl std::fmt::Display for ForensicError {
             ForensicError::BadFormat(e) => f.write_fmt(format_args!("The data have an unexpected format: {}", e)),
             ForensicError::Io(e) => f.write_fmt(format_args!("IO operations error: {}", e)),
             ForensicError::CastError => f.write_str("The Into/Form operation cannot be executed"),
+            ForensicError::IllegalTimestamp(reason) => f.write_fmt(format_args!("Illegal timestamp: '{reason}'"))
         }
     }
 }
@@ -159,6 +163,7 @@ impl std::error::Error for ForensicError {
             ForensicError::BadFormat(e) => &e.0,
             ForensicError::Io(_) => "IO operations error",
             ForensicError::CastError => "The Into/Form operation cannot be executed",
+            ForensicError::IllegalTimestamp(_) => "Illegal timestamp"
         }
     }
 
