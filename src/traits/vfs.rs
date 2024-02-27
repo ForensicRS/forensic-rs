@@ -61,11 +61,20 @@ pub trait VirtualFileSystem {
 
 pub struct VMetadata {
     /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub created : usize,
+    ///
+    /// this is optional, because some filesystems might not support this timestamp
+    pub created : Option<usize>,
+
     /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub accessed : usize,
+    ///
+    /// this is optional, because some filesystems might not support this timestamp
+    pub accessed : Option<usize>,
+    
     /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub modified : usize,
+    ///
+    /// this is optional, because some filesystems might not support this timestamp
+    pub modified : Option<usize>,
+    
     pub file_type : VFileType,
     pub size : u64
 }
@@ -79,16 +88,16 @@ pub enum VFileType {
 
 impl VMetadata {
     /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn created(&self) -> usize{
-        self.created
+    pub fn created(&self) -> Option<&usize>{
+        self.created.as_ref()
     }
     /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn accessed(&self)  -> usize{
-        self.accessed
+    pub fn accessed(&self)  -> Option<&usize>{
+        self.accessed.as_ref()
     }
     /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn modified(&self)  -> usize{
-        self.modified
+    pub fn modified(&self)  -> Option<&usize>{
+        self.modified.as_ref()
     }
     pub fn is_file(&self) -> bool {
         self.file_type == VFileType::File
