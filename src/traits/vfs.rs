@@ -92,7 +92,7 @@ impl VMetadata {
     /// Seconds elapsed since UNIX_EPOCH in UTC
     pub fn created(&self) -> usize {
         self.created.unwrap_or_else(|| {
-            log::warn!(
+            crate::warn!(
                 "this filesystem has no support for creation time, using UNIX_EPOCH instead"
             );
             0
@@ -101,14 +101,14 @@ impl VMetadata {
     /// Seconds elapsed since UNIX_EPOCH in UTC
     pub fn accessed(&self) -> usize {
         self.accessed.unwrap_or_else(|| {
-            log::warn!("this filesystem has no support for access time, using UNIX_EPOCH instead");
+            crate::warn!("this filesystem has no support for access time, using UNIX_EPOCH instead");
             0
         })
     }
     /// Seconds elapsed since UNIX_EPOCH in UTC
     pub fn modified(&self) -> usize {
         self.modified.unwrap_or_else(|| {
-            log::warn!(
+            crate::warn!(
                 "this filesystem has no support for modification time, using UNIX_EPOCH instead"
             );
             0

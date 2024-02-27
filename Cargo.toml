@@ -15,7 +15,6 @@ serde = ["dep:serde"]
 
 [dependencies]
 serde = {version = "1", optional = true}
-log = "0.4"
 
 [dev-dependencies]
 sqlite = "0.28.1"
