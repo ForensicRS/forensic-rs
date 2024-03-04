@@ -11,6 +11,7 @@ use std::{ops::{Add, AddAssign, Sub}, time::{Duration, SystemTime, UNIX_EPOCH}};
 #[derive(Clone, Default, Copy)]
 pub struct WinFiletime(pub u64);
 
+
 /// Simplifies handling unix timestamp dates. Use only with UTC dates as it does not take time zones into account. Eliminates the need to use the chrono library.
 /// 
 /// ```rust
