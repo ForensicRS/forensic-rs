@@ -182,7 +182,6 @@ impl MountedCell {
             return self
                 .values
                 .keys()
-                .into_iter()
                 .map(|v| v.to_string())
                 .collect();
         }
@@ -205,7 +204,6 @@ impl MountedCell {
             return self
                 .keys
                 .keys()
-                .into_iter()
                 .map(|v| v.to_string())
                 .collect();
         }

@@ -147,7 +147,7 @@ impl<'a> TryInto<u64> for &'a Field {
             Field::F64(v) => *v as u64,
             Field::I64(v) => *v as u64,
             Field::U64(v) => *v,
-            Field::Date(v) => v.filetime() as u64,
+            Field::Date(v) => v.filetime(),
             _ => return Err("Invalid type"),
         })
     }
@@ -158,7 +158,7 @@ impl<'a> TryInto<i64> for &'a Field {
     fn try_into(self) -> Result<i64, Self::Error> {
         Ok(match self {
             Field::F64(v) => *v as i64,
-            Field::I64(v) => *v as i64,
+            Field::I64(v) => *v,
             Field::U64(v) => *v as i64,
             Field::Date(v) => v.filetime() as i64,
             _ => return Err("Invalid type"),
@@ -170,7 +170,7 @@ impl<'a> TryInto<f64> for &'a Field {
 
     fn try_into(self) -> Result<f64, Self::Error> {
         Ok(match self {
-            Field::F64(v) => *v as f64,
+            Field::F64(v) => *v,
             Field::I64(v) => *v as f64,
             Field::U64(v) => *v as f64,
             Field::Date(v) => v.filetime() as f64,
@@ -183,8 +183,8 @@ impl<'a> TryInto<Ip> for &'a Field {
     type Error = &'static str;
     fn try_into(self) -> Result<Ip, Self::Error> {
         Ok(match self {
-            Field::Text(v) => Ip::from_ip_str(&v).map_err(|_e| "Invalud ip format")?,
-            Field::Ip(v) => v.clone(),
+            Field::Text(v) => Ip::from_ip_str(v).map_err(|_e| "Invalud ip format")?,
+            Field::Ip(v) => *v,
             _ => return Err("Type cannot be converted to Ip"),
         })
     }

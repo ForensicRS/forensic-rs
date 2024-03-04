@@ -33,20 +33,20 @@ impl Ip {
     pub fn equals(&self, val: &str) -> bool {
         match self {
             Ip::V4(ip1) => match ipv4_from_str(val) {
-                Ok(ip2) => return *ip1 == ip2,
+                Ok(ip2) => *ip1 == ip2,
                 Err(_) => false,
             },
             Ip::V6(ip1) => match ipv6_from_str(val) {
-                Ok(ip2) => return *ip1 == ip2,
+                Ok(ip2) => *ip1 == ip2,
                 Err(_) => false,
             },
         }
     }
     pub fn from_ip_str(val: &str) -> Result<Ip, &'static str> {
-        match ipv4_from_str(&val) {
+        match ipv4_from_str(val) {
             Ok(val) => Ok(Ip::V4(val)),
             Err(_) => {
-                let ip = ipv6_from_str(&val)?;
+                let ip = ipv6_from_str(val)?;
                 Ok(Ip::V6(ip))
             }
         }

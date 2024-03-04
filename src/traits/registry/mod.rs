@@ -1,7 +1,8 @@
 use crate::{
-    core::user::UserInfo,
-    err::{ForensicError, ForensicResult}, utils::time::Filetime,
+    core::UsersEnvVars, err::{ForensicError, ForensicResult}, utils::time::Filetime
 };
+
+use self::extra::env_vars::get_env_vars_of_users;
 
 use super::vfs::{VirtualFile, VirtualFileSystem};
 
@@ -11,6 +12,7 @@ pub const HKCU : RegHiveKey = RegHiveKey::HkeyCurrentUser;
 pub const HKLM : RegHiveKey = RegHiveKey::HkeyLocalMachine;
 pub const HKU : RegHiveKey = RegHiveKey::HkeyUsers;
 
+mod extra;
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug)]
 pub enum RegHiveKey {
@@ -108,89 +110,84 @@ impl Into<RegValue> for Vec<u8> {
     }
 }
 
-impl Into<RegValue> for &[u8] {
-    fn into(self) -> RegValue {
-        let mut vc = Vec::with_capacity(self.len());
-        for v in self {
+impl From<Vec<String>> for RegValue {
+    fn from(value: Vec<String>) -> Self {
+        RegValue::MultiSZ(value)
+    }
+}
+impl From<&[u8]> for RegValue {
+    fn from(value: &[u8]) -> Self {
+        let mut vc = Vec::with_capacity(value.len());
+        for v in value {
             vc.push(*v);
         }
         RegValue::Binary(vc)
     }
 }
-impl Into<RegValue> for Vec<String> {
-    fn into(self) -> RegValue {
-        RegValue::MultiSZ(self)
-    }
-}
-impl Into<RegValue> for &[String] {
-    fn into(self) -> RegValue {
-        let mut vc = Vec::with_capacity(self.len());
-        for v in self {
+impl From<&[String]> for RegValue {
+    fn from(value: &[String]) -> Self {
+        let mut vc = Vec::with_capacity(value.len());
+        for v in value {
             vc.push(v.clone());
         }
         RegValue::MultiSZ(vc)
     }
 }
-impl Into<RegValue> for &[&String] {
-    fn into(self) -> RegValue {
-        let mut vc = Vec::with_capacity(self.len());
-        for v in self {
+impl From<&[&String]> for RegValue {
+    fn from(value: &[&String]) -> Self {
+        let mut vc = Vec::with_capacity(value.len());
+        for &v in value {
+            vc.push(v.clone());
+        }
+        RegValue::MultiSZ(vc)
+    }
+}
+impl From<&[&str]> for RegValue {
+    fn from(value: &[&str]) -> Self {
+        let mut vc = Vec::with_capacity(value.len());
+        for &v in value {
             vc.push(v.to_string());
         }
         RegValue::MultiSZ(vc)
     }
 }
-impl Into<RegValue> for &[&str] {
-    fn into(self) -> RegValue {
-        let mut vc = Vec::with_capacity(self.len());
-        for v in self {
-            vc.push(v.to_string());
-        }
-        RegValue::MultiSZ(vc)
-    }
-}
 
-
-
-impl TryInto<String> for RegValue {
+impl TryFrom<RegValue> for String {
     type Error = ForensicError;
-    fn try_into(self) -> Result<String, Self::Error> {
-        match self {
-            Self::MultiSZ(v) => Ok(v.join("\n")),
-            Self::ExpandSZ(v) => Ok(v),
-            Self::SZ(v) => Ok(v),
+    fn try_from(value : RegValue) -> Result<Self, Self::Error> {
+        match value {
+            RegValue::MultiSZ(v) => Ok(v.join("\n")),
+            RegValue::ExpandSZ(v) => Ok(v),
+            RegValue::SZ(v) => Ok(v),
             _ => Err(ForensicError::CastError),
         }
     }
 }
-
-impl TryInto<u32> for RegValue {
+impl TryFrom<RegValue> for u32 {
     type Error = ForensicError;
-    fn try_into(self) -> Result<u32, Self::Error> {
-        match self {
-            Self::DWord(v) => Ok(v),
-            Self::QWord(v) => Ok(v as u32),
+    fn try_from(value : RegValue) -> Result<Self, Self::Error> {
+        match value {
+            RegValue::DWord(v) => Ok(v),
+            RegValue::QWord(v) => Ok(v as u32),
             _ => Err(ForensicError::CastError),
         }
     }
 }
-
-impl TryInto<u64> for RegValue {
+impl TryFrom<RegValue> for u64 {
     type Error = ForensicError;
-    fn try_into(self) -> Result<u64, Self::Error> {
-        match self {
-            Self::DWord(v) => Ok(v as u64),
-            Self::QWord(v) => Ok(v),
+    fn try_from(value : RegValue) -> Result<Self, Self::Error> {
+        match value {
+            RegValue::DWord(v) => Ok(v as u64),
+            RegValue::QWord(v) => Ok(v),
             _ => Err(ForensicError::CastError),
         }
     }
 }
-
-impl TryInto<Vec<u8>> for RegValue {
+impl TryFrom<RegValue> for Vec<u8> {
     type Error = ForensicError;
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        match self {
-            Self::Binary(v) => Ok(v),
+    fn try_from(value : RegValue) -> Result<Self, Self::Error> {
+        match value {
+            RegValue::Binary(v) => Ok(v),
             _ => Err(ForensicError::CastError),
         }
     }
@@ -206,6 +203,7 @@ pub struct RegistryKeyInfo {
     pub last_write_time : Filetime
 
 }
+
 /// It allows decoupling the registry access library from the analysis library.
 pub trait RegistryReader {
     /// Mounts a registry reader in a hive file
@@ -225,6 +223,9 @@ pub trait RegistryReader {
     /// Closes a handle to the specified registry key.
     #[allow(unused_variables)]
     fn close_key(&self, hkey: RegHiveKey) {}
+}
+
+pub trait RegistryReaderUtils : RegistryReader {
 
     /// Get the same value as the env var "%SystemRoot%"". It's usually "C:\Windows"
     fn get_system_root(&self) -> ForensicResult<String> {
@@ -251,51 +252,47 @@ pub trait RegistryReader {
         let value = self.read_value(key, "CurrentBuild")?;
         Ok(value.try_into()?)
     }
-
-    fn get_basic_user_info(&self, user_id : &str) -> ForensicResult<UserInfo> where Self: Sized{
-        get_basic_user_info(self, user_id)
+    /// Extract the principal environment variables for all users which have a profile:
+    /// * USERPROFILE
+    /// * SystemRoot
+    /// * windir
+    /// * SystemDrive
+    /// * ProgramFiles
+    /// * ProgramData
+    /// * ProgramFiles(x86)
+    /// * ProgramW6432
+    /// * LOCALAPPDATA
+    /// * APPDATA
+    /// * TMP
+    /// * TEMP
+    /// * HOMEPATH
+    /// * HOMEDRIVE
+    /// * USERNAME
+    fn get_env_vars_of_users(&self) -> ForensicResult<UsersEnvVars> where Self: Sized { 
+        get_env_vars_of_users(self)
     }
-
 }
-
-pub fn get_basic_user_info(reader : &dyn RegistryReader, user_id: &str) -> ForensicResult<UserInfo> {
-    let user_key = reader.open_key(RegHiveKey::HkeyUsers, user_id)?;
-    auto_close_key(reader, user_key, || {
-        let volatile_key = reader.open_key(user_key, "Volatile Environment")?;
-        auto_close_key(reader, volatile_key, || {
-            let mut user_info = UserInfo::default();
-            user_info.id = user_id.to_string();
-            user_info.home = reader.read_value(volatile_key, "USERPROFILE")?.try_into()?;
-            user_info.app_data = reader.read_value(volatile_key, "APPDATA")?.try_into()?;
-            user_info.local_app_data = reader.read_value(volatile_key, "LOCALAPPDATA")?.try_into()?;
-            user_info.domain = reader.read_value(volatile_key, "USERDOMAIN")?.try_into()?;
-            user_info.name = reader.read_value(volatile_key, "USERNAME")?.try_into()?;
-            Ok(user_info)
-        })
-    })
-}
-
 
 
 /// Simplify the process of closing Registry keys
 /// 
 /// ```rust
+/// use std::collections::BTreeMap;
 /// use forensic_rs::prelude::*;
-/// use forensic_rs::core::user::UserInfo;
 /// use forensic_rs::utils::testing::TestingRegistry;
 /// let reader = TestingRegistry::new();
 /// let user_id = "S-1-5-21-1366093794-4292800403-1155380978-513";
 /// let user_key = reader.open_key(RegHiveKey::HkeyUsers, user_id).unwrap();
-/// let _user_info = auto_close_key(&reader, user_key, || {
+/// let _user_info : BTreeMap<String, String> = auto_close_key(&reader, user_key, || {
 ///     let volatile_key = reader.open_key(user_key, "Volatile Environment")?;
 ///     auto_close_key(&reader, volatile_key, || {
-///         let mut user_info = UserInfo::default();
-///         user_info.id = user_id.to_string();
-///         user_info.home = reader.read_value(volatile_key, "USERPROFILE")?.try_into()?;
-///         user_info.app_data = reader.read_value(volatile_key, "APPDATA")?.try_into()?;
-///         user_info.local_app_data = reader.read_value(volatile_key, "LOCALAPPDATA")?.try_into()?;
-///         user_info.domain = reader.read_value(volatile_key, "USERDOMAIN")?.try_into()?;
-///         user_info.name = reader.read_value(volatile_key, "USERNAME")?.try_into()?;
+///         let mut user_info = BTreeMap::new();
+///         user_info.insert("id".into(), user_id.to_string());
+///         user_info.insert("home".into(), reader.read_value(volatile_key, "USERPROFILE")?.try_into()?);
+///         user_info.insert("app_data".into(), reader.read_value(volatile_key, "APPDATA")?.try_into()?);
+///         user_info.insert("local_app_data".into(), reader.read_value(volatile_key, "LOCALAPPDATA")?.try_into()?);
+///         user_info.insert("domain".into(), reader.read_value(volatile_key, "USERDOMAIN")?.try_into()?);
+///         user_info.insert("name".into(), reader.read_value(volatile_key, "USERNAME")?.try_into()?);
 ///         Ok(user_info)
 ///     })
 /// }).unwrap();

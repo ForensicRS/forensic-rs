@@ -194,7 +194,7 @@ impl Filetime {
         let self_nanos = self.original as u128 * 100;
 
         if nanos > self_nanos {
-            return Err(Duration::from_nanos((nanos - self_nanos) as u64).into())
+            return Err(Duration::from_nanos((nanos - self_nanos) as u64))
         }
         Ok(Duration::from_nanos((self_nanos - nanos) as u64))
     }
@@ -416,9 +416,9 @@ fn to_years_unix(mut days : u128) -> (u128, u128) {
     (year, days)
 }
 
-impl Into<SystemTime> for WinFiletime {
-    fn into(self) -> SystemTime {
-        filetime_to_system_time(self.0)
+impl From<WinFiletime> for SystemTime {
+    fn from(val: WinFiletime) -> Self {
+        filetime_to_system_time(val.0)
     }
 }
 
@@ -594,7 +594,7 @@ impl Eq for Filetime {}
 
 impl PartialOrd for Filetime {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.original.partial_cmp(&other.original)
+        Some(self.original.cmp(&other.original))
     }
 }
 
