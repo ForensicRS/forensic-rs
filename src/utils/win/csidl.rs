@@ -325,7 +325,7 @@ pub fn csidl_value(csidl: &str) -> Option<&'static str> {
 /// ```
 pub fn interpolate_csidl_path(pth : &mut str, env_vars : &UserEnvVars) -> Option<String> {
     if !pth.starts_with('{') {
-        return None
+        return Some(pth.to_string())
     }
     let pos = pth.as_bytes().iter().position(|&v| v == b'}')?;
     (&mut pth[0..pos + 1]).make_ascii_uppercase();

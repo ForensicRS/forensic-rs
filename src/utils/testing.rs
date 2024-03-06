@@ -413,3 +413,28 @@ fn basic_registry() -> BTreeMap<String, MountedCell> {
     map.insert("HKU".into(), hkcu_cell);
     map
 }
+
+pub fn init_testing_logger() {
+    let rcv = crate::notifications::testing_notifier_dummy();
+    std::thread::spawn(move || loop {
+        let msg = match rcv.recv() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        println!(
+            "{:?} - {} - {}:{} - {}",
+            msg.r#type, msg.module, msg.file, msg.line, msg.data
+        );
+    });
+    let rcv = crate::logging::testing_logger_dummy();
+    std::thread::spawn(move || loop {
+        let msg = match rcv.recv() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        println!(
+            "{:?} - {} - {}:{} - {}",
+            msg.level, msg.module, msg.file, msg.line, msg.data
+        );
+    });
+}

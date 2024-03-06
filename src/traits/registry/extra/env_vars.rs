@@ -5,6 +5,22 @@ use crate::err::ForensicResult;
 
 use crate::traits::registry::{RegValue, RegistryReader, HKLM, HKU};
 
+/// Extract the principal environment variables for all users which have a profile:
+/// * USERPROFILE
+/// * SystemRoot
+/// * windir
+/// * SystemDrive
+/// * ProgramFiles
+/// * ProgramData
+/// * ProgramFiles(x86)
+/// * ProgramW6432
+/// * LOCALAPPDATA
+/// * APPDATA
+/// * TMP
+/// * TEMP
+/// * HOMEPATH
+/// * HOMEDRIVE
+/// * USERNAME
 pub fn get_env_vars_of_users(
     reg_reader: &dyn RegistryReader,
 ) -> ForensicResult<UsersEnvVars> {
@@ -65,6 +81,9 @@ fn list_all_profiles(reg_reader: &dyn RegistryReader, system_root : &str) -> For
             profile_path = format!("{}{}", system_root, &profile_path[12..])
         }
         if !profile_path.is_empty() {
+            if user_sid == "S-1-5-18" {
+                map.insert(String::new(), profile_path.clone());
+            }
             map.insert(user_sid, profile_path);
         }
         reg_reader.close_key(user_key);

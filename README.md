@@ -7,10 +7,16 @@ A Rust-based framework to build tools that analyze forensic artifacts and can be
 Note: still in Alpha version
 
 ## Community
-[![Telegram](https://img.shields.io/badge/-telegram-gray?style=for-the-badge&logo=telegram)](https://t.me/forensic_rs)
+
+[![Discord][discord-badge]][chat-url]
+
+Join [the conversation on Discord][chat-url] to discuss anything related to ForensicRS.
+
+[chat-url]: https://discord.gg/uVq4289B
+[discord-badge]: https://img.shields.io/badge/Discord-chat-5865F2?style=for-the-badge&logo=discord
 
 ## Introduction
-The idea behind the framework is to allow the reuse of forensic artifact analysis tools. For this reason, the framework allows decoupling the code of the analysis tools from the reading of the artifacts. Thus, a tool that analyzes [UAL](https://learn.microsoft.com/en-us/windows-server/administration/user-access-logging/get-started-with-user-access-logging
+The idea behind the framework is to allow the reuse of forensic artifact analysis tools. For this reason, the framework decouples the code of the analysis tools that parses or reads artifacts from the ones that access the readed value: registry keys, files, SQL rows. Thus, a tool that analyzes [UAL](https://learn.microsoft.com/en-us/windows-server/administration/user-access-logging/get-started-with-user-access-logging
 ) artifacts can be used regardless of whether the artifact is inside a ZIP as a result of triage or directly on the file system.
 
 In this way, the same tools can be used if we want to make a triage processor like [Plaso](https://plaso.readthedocs.io/en/latest/), a module within an EDR or even a tool with a graphical interface like Eric Zimmerman's [Registry Explorer](https://ericzimmerman.github.io) with the advantage of the reliability of the Rust code and its easy integration into Python scripts.

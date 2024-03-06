@@ -1,8 +1,6 @@
 use crate::{
-    core::UsersEnvVars, err::{ForensicError, ForensicResult}, utils::time::Filetime
+    err::{ForensicError, ForensicResult}, utils::time::Filetime
 };
-
-use self::extra::env_vars::get_env_vars_of_users;
 
 use super::vfs::{VirtualFile, VirtualFileSystem};
 
@@ -12,7 +10,7 @@ pub const HKCU : RegHiveKey = RegHiveKey::HkeyCurrentUser;
 pub const HKLM : RegHiveKey = RegHiveKey::HkeyLocalMachine;
 pub const HKU : RegHiveKey = RegHiveKey::HkeyUsers;
 
-mod extra;
+pub mod extra;
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug)]
 pub enum RegHiveKey {
@@ -223,9 +221,6 @@ pub trait RegistryReader {
     /// Closes a handle to the specified registry key.
     #[allow(unused_variables)]
     fn close_key(&self, hkey: RegHiveKey) {}
-}
-
-pub trait RegistryReaderUtils : RegistryReader {
 
     /// Get the same value as the env var "%SystemRoot%"". It's usually "C:\Windows"
     fn get_system_root(&self) -> ForensicResult<String> {
@@ -252,27 +247,7 @@ pub trait RegistryReaderUtils : RegistryReader {
         let value = self.read_value(key, "CurrentBuild")?;
         Ok(value.try_into()?)
     }
-    /// Extract the principal environment variables for all users which have a profile:
-    /// * USERPROFILE
-    /// * SystemRoot
-    /// * windir
-    /// * SystemDrive
-    /// * ProgramFiles
-    /// * ProgramData
-    /// * ProgramFiles(x86)
-    /// * ProgramW6432
-    /// * LOCALAPPDATA
-    /// * APPDATA
-    /// * TMP
-    /// * TEMP
-    /// * HOMEPATH
-    /// * HOMEDRIVE
-    /// * USERNAME
-    fn get_env_vars_of_users(&self) -> ForensicResult<UsersEnvVars> where Self: Sized { 
-        get_env_vars_of_users(self)
-    }
 }
-
 
 /// Simplify the process of closing Registry keys
 /// 
