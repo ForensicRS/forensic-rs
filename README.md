@@ -123,6 +123,6 @@ assert_eq!(r"The registry key HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\
 ```
 
 ## List of libraries
-* **frnsc-liveregistry-rs**: Implements *RegistryReader* using the Windows API to access the registry of a live system. https://github.com/SecSamDev/frnsc-liveregistry-rs
+* **frnsc-liveregistry-rs**: Implements *RegistryReader* using the Windows API to access the registry of a live system. https://github.com/ForensicRS/frnsc-liveregistry-rs
 * **reg-analyzer-rs**: Analyzes registry artifacts for evidences. https://github.com/SecSamDev/reg-analyzer-rs
 * **Hive Reader**: Implements *RegistryReader* parsing HIVE files. https://github.com/ForensicRS/frnsc-hive

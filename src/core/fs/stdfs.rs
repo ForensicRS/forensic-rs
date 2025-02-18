@@ -87,6 +87,13 @@ impl VirtualFileSystem for StdVirtualFS {
     fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>> {
         Ok(std::fs::read(path)?)
     }
+
+    #[cfg(target_os = "macos")]
+    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
+        use std::os::unix::prelude::FileExt;
+        let file = std::fs::File::open(path)?;
+        Ok(file.read_at(buf, pos)?)
+    }
     #[cfg(target_os = "linux")]
     fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
         use std::os::unix::prelude::FileExt;

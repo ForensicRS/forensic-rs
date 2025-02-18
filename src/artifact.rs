@@ -57,6 +57,10 @@ pub enum WindowsEvents {
     System,
     /// Security event
     Security,
+    /// Setup event
+    Setup,
+    /// Application event
+    Application,
     /// Other events not defined. The value is the Channel of the event.
     Other(String),
     #[default]
@@ -206,6 +210,8 @@ impl std::fmt::Display for WindowsEvents {
             WindowsEvents::Sysmon => write!(f, "Sysmon"),
             WindowsEvents::System => write!(f, "System"),
             WindowsEvents::Security => write!(f, "Security"),
+            WindowsEvents::Application => write!(f, "Application"),
+            WindowsEvents::Setup => write!(f, "Setup"),
             WindowsEvents::Other(v) => write!(f, "{}", v),
             WindowsEvents::Unknown => write!(f, "Unknown"),
         }
@@ -352,6 +358,7 @@ impl<'de> Deserialize<'de> for Artifact {
 }
 #[cfg(feature = "serde")]
 struct LinuxServiceVisitor;
+
 #[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for LinuxServiceVisitor {
     type Value = LinuxService;

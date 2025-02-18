@@ -46,6 +46,7 @@ pub struct Filetime {
 }
 
 impl Filetime {
+    /// Makes a new Filetime from windows u64 filetime
     pub fn new(timestap : u64) -> Self {
         let nanoseconds_since_beginning = (timestap as u128) * 100;
         let days_since_beginning = nanoseconds_since_beginning.div_euclid(60 * 60 * 24 * 1_000_000_000);
@@ -89,6 +90,24 @@ impl Filetime {
             minute: minute as u8,
             second: second as u8,
             nanos: nanos as u32,
+        }
+    }
+    /// Make a new Filetime from year, month, day, time components assuming UTC.
+    pub fn with_ymd_and_hms(year : u16, month : u8, day : u8, hour : u8, minute : u8, second : u8, nanos : u32 ) -> Self {
+        let days_since_begining = days_from_year(year) as u64;
+        let days_since_start_year = acumulated_day_month(month, year) as u64;
+        let days = days_since_begining + days_since_start_year + day as u64 - 1;
+        let original = (nanos as u64 / 100) + ((second as u64 + (60u64 * (minute as u64 + (60u64 * (hour as u64 + 24 * days))))) * 10_000_000u64);
+        
+        Self {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            nanos,
+            original 
         }
     }
 
@@ -385,10 +404,24 @@ impl std::fmt::Debug for UnixTimestamp {
     }
 }
 
-fn is_leap_year(year: u128) -> bool {
+fn acumulated_day_month(month : u8, year : u16) -> u16 {
+    if is_leap_year(year) {
+        if month >= 12 {
+            return 366u16
+        }
+        [0,0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335][month as usize]
+    } else {
+        if month >= 12 {
+            return 365u16
+        }
+        [0,0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334][month as usize]
+    }
+}
+
+fn is_leap_year(year: u16) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 100 == 0 && year % 400 == 0)
 }
-fn to_years(mut days : u128) -> (u128, u128) {
+fn to_years(mut days : u128) -> (u16, u128) {
     let mut year = 1601;
     while days >= 365 {
         days -= 365;
@@ -402,7 +435,20 @@ fn to_years(mut days : u128) -> (u128, u128) {
     }
     (year, days)
 }
-fn to_years_unix(mut days : u128) -> (u128, u128) {
+fn days_from_year(year : u16) -> u128 {
+    let mut days = 0;
+    if year <= 1601 {
+        return 0
+    }
+    for yr in 1601..year {
+        if is_leap_year(yr) {
+            days += 1;
+        }
+        days += 365;
+    }
+    days
+}
+fn to_years_unix(mut days : u128) -> (u16, u128) {
     let mut year = 1970;
     while days >= 365 {
         days -= 365;
@@ -420,6 +466,21 @@ fn to_years_unix(mut days : u128) -> (u128, u128) {
 impl From<WinFiletime> for SystemTime {
     fn from(val: WinFiletime) -> Self {
         filetime_to_system_time(val.0)
+    }
+}
+impl From<&WinFiletime> for SystemTime {
+    fn from(val: &WinFiletime) -> Self {
+        filetime_to_system_time(val.0)
+    }
+}
+impl From<Filetime> for SystemTime {
+    fn from(val: Filetime) -> Self {
+        filetime_to_system_time(val.original)
+    }
+}
+impl From<&Filetime> for SystemTime {
+    fn from(val: &Filetime) -> Self {
+        filetime_to_system_time(val.original)
     }
 }
 
@@ -666,5 +727,9 @@ fn should_transform_unix_to_calendar() {
 #[test]
 fn should_generate_valid_filetime() {
     let time = Filetime::new(125963224790010000);
-    println!("{:?}", time);
+    assert_eq!("29-02-2000 18:27:59.001", &format!("{}", time));
+    assert_eq!(time, Filetime::with_ymd_and_hms(2000, 2, 29, 18, 27, 59, 1000000));
+    let time = Filetime::new(94405624790010000);
+    assert_eq!(time, Filetime::with_ymd_and_hms(1900, 2, 28, 18, 27, 59, 1000000));
+    assert_eq!("28-02-1900 18:27:59.001", format!("{}", time));
 }
