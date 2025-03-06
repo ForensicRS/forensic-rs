@@ -11,17 +11,23 @@ pub struct ForensicData {
     artifact : Artifact,
     pub(crate) fields: BTreeMap<Text, InternalField>,
 }
-
+#[allow(unused_mut, unused_assignments)]
 impl Default for ForensicData {
     fn default() -> Self {
-        let context = context();
         let mut fields = BTreeMap::new();
-        fields.insert(Text::Borrowed(ARTIFACT_HOST), Field::Text(Text::Owned(context.host)).into());
-        fields.insert(Text::Borrowed(ARTIFACT_TENANT), Field::Text(Text::Owned(context.tenant)).into());
-        fields.insert(Text::Borrowed(ARTIFACT_NAME), Field::Text(Text::Owned(context.artifact.to_string())).into());
+        let mut artifact = Artifact::Unknown;
+        #[cfg(feature="context")]
+        {
+            let context = context();
+            fields.insert(Text::Borrowed(ARTIFACT_HOST), Field::Text(Text::Owned(context.host)).into());
+            fields.insert(Text::Borrowed(ARTIFACT_TENANT), Field::Text(Text::Owned(context.tenant)).into());
+            fields.insert(Text::Borrowed(ARTIFACT_NAME), Field::Text(Text::Owned(context.artifact.to_string())).into());
+            artifact = context.artifact;
+        }
+
         Self {
             fields,
-            artifact : context.artifact
+            artifact
         }
     }
 }

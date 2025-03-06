@@ -37,7 +37,7 @@ pub enum WindowsArtifacts {
     Registry(RegistryArtifacts),
     MFT,
     WinEvt(WindowsEvents),
-    Other(String),
+    Other(Text),
     Prefetch,
     UAL,
     Clipboard,
@@ -62,7 +62,7 @@ pub enum WindowsEvents {
     /// Application event
     Application,
     /// Other events not defined. The value is the Channel of the event.
-    Other(String),
+    Other(Text),
     #[default]
     Unknown,
 }
@@ -75,18 +75,18 @@ pub enum RegistryArtifacts {
     ShellBags,
     /// Run and RunOnce keys
     AutoRuns,
-    Other(String),
+    Other(Text),
     #[default]
     Unknown,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LinuxArtifacts {
-    Log(String),
-    ShellHistory(String),
-    Cron(String),
+    Log(Text),
+    ShellHistory(Text),
+    Cron(Text),
     Service(LinuxService),
-    Other(String),
+    Other(Text),
     #[default]
     Unknown,
 }
@@ -96,14 +96,14 @@ pub enum LinuxService {
     SysV,
     InitD,
     SystemD,
-    Other(String),
+    Other(Text),
     #[default]
     Unknown,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MacArtifacts {
-    Other(String),
+    Other(Text),
     #[default]
     Unknown,
 }
@@ -111,7 +111,7 @@ pub enum MacArtifacts {
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommonArtifact {
     WebBrowsing(WebBrowsingArtifact),
-    Other(String),
+    Other(Text),
     #[default]
     Unknown,
 }
@@ -130,7 +130,7 @@ pub enum WebBrowsingArtifact {
     Download,
     AutoFill,
     RSSFeed,
-    Other(String),
+    Other(Text),
     #[default]
     Unknown,
 }
@@ -153,17 +153,17 @@ impl Into<Artifact> for WindowsEvents {
 
 impl Into<WindowsArtifacts> for String {
     fn into(self) -> WindowsArtifacts {
-        WindowsArtifacts::Other(self)
+        WindowsArtifacts::Other(Text::Owned(self))
     }
 }
 impl Into<RegistryArtifacts> for String {
     fn into(self) -> RegistryArtifacts {
-        RegistryArtifacts::Other(self)
+        RegistryArtifacts::Other(Text::Owned(self))
     }
 }
 impl Into<WindowsEvents> for String {
     fn into(self) -> WindowsEvents {
-        WindowsEvents::Other(self)
+        WindowsEvents::Other(Text::Owned(self))
     }
 }
 
@@ -582,7 +582,7 @@ impl<'de> Visitor<'de> for MacOsArtifactVisitor {
         };
         Ok(match artifact {
             "Unknown" => Self::Value::Unknown,
-            _ => Self::Value::Other(subartifact.to_string()),
+            _ => Self::Value::Other(Text::Owned(subartifact.to_string())),
         })
     }
     fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E>
@@ -631,7 +631,7 @@ pub fn windows_artifacts_from_str(txt : &str) -> WindowsArtifacts {
         "SRU" => WindowsArtifacts::SRU,
         "Startup" => WindowsArtifacts::Startup,
         "RecycleBin" => WindowsArtifacts::RecycleBin,
-        _ => WindowsArtifacts::Other(subartifact.to_string())
+        _ => WindowsArtifacts::Other(Text::Owned(subartifact.to_string())),
     }
 }
 
@@ -641,7 +641,7 @@ pub fn registry_artifacts_from_str(txt : &str) -> RegistryArtifacts {
         "ShimCache" => RegistryArtifacts::ShimCache,
         "ShellBags" => RegistryArtifacts::ShellBags,
         "AutoRuns" => RegistryArtifacts::AutoRuns,
-        _ => RegistryArtifacts::Other(txt.to_string())
+        _ => RegistryArtifacts::Other(Text::Owned(txt.to_string())),
     }
 }
 
@@ -651,7 +651,7 @@ pub fn winevt_artifacts_from_str(txt : &str) -> WindowsEvents {
         "Sysmon" => WindowsEvents::Sysmon,
         "System" => WindowsEvents::System,
         "Security" => WindowsEvents::Security,
-        _ => WindowsEvents::Other(txt.to_string())
+        _ => WindowsEvents::Other(Text::Owned(txt.to_string())),
     }
 }
 
@@ -661,11 +661,11 @@ pub fn linux_artifacts_from_str(txt : &str) -> LinuxArtifacts {
         None => return LinuxArtifacts::Unknown
     };
     match artifact {
-        "Log" => LinuxArtifacts::Log(subartifact.to_string()),
-        "ShellHistory" => LinuxArtifacts::ShellHistory(subartifact.to_string()),
-        "Cron" => LinuxArtifacts::Cron(subartifact.to_string()),
+        "Log" => LinuxArtifacts::Log(Text::Owned(subartifact.to_string())),
+        "ShellHistory" => LinuxArtifacts::ShellHistory(Text::Owned(subartifact.to_string())),
+        "Cron" => LinuxArtifacts::Cron(Text::Owned(subartifact.to_string())),
         "Service" => LinuxArtifacts::Service(linux_service_from_str(txt)),
-        _ => LinuxArtifacts::Other(subartifact.to_string()),
+        _ => LinuxArtifacts::Other(Text::Owned(subartifact.to_string())),
     }
 }
 pub fn linux_service_from_str(txt : &str) -> LinuxService {
@@ -674,14 +674,14 @@ pub fn linux_service_from_str(txt : &str) -> LinuxService {
         "InitD" => LinuxService::InitD,
         "SystemD" => LinuxService::SystemD,
         "Unknown" => LinuxService::Unknown,
-        _ => LinuxService::Other(txt.to_string())
+        _ => LinuxService::Other(Text::Owned(txt.to_string())),
     }
 }
 
 pub fn mac_artifact_from_str(txt : &str) -> MacArtifacts {
     match txt {
         "Unknown" => MacArtifacts::Unknown,
-        _ => MacArtifacts::Other(txt.to_string())
+        _ => MacArtifacts::Other(Text::Owned(txt.to_string())),
     }
 }
 pub fn common_artifact_from_str(txt : &str) -> CommonArtifact {
@@ -692,7 +692,7 @@ pub fn common_artifact_from_str(txt : &str) -> CommonArtifact {
     match artifact {
         "Unknown" => CommonArtifact::Unknown,
         "WebBrowsing" => CommonArtifact::WebBrowsing(webbrowsing_artifact_from_str(subartifact)),
-        _ => CommonArtifact::Other(txt.to_string())
+        _ => CommonArtifact::Other(Text::Owned(txt.to_string())),
     }
 }
 pub fn webbrowsing_artifact_from_str(txt : &str) -> WebBrowsingArtifact {
@@ -711,7 +711,7 @@ pub fn webbrowsing_artifact_from_str(txt : &str) -> WebBrowsingArtifact {
         "RSSFeed" => WebBrowsingArtifact::RSSFeed,
         "SessionStorage" => WebBrowsingArtifact::SessionStorage,
         "Unknown" => WebBrowsingArtifact::Unknown,
-        _ => WebBrowsingArtifact::Other(txt.to_string())
+        _ => WebBrowsingArtifact::Other(Text::Owned(txt.to_string())),
     }
 }
 pub fn other_artifact_from_str(txt : &str) -> OtherOS {

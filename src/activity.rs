@@ -1,13 +1,19 @@
 
-use crate::utils::time::Filetime;
+use crate::{prelude::Artifact, utils::time::Filetime};
 
 /// Activity of a user in a device
 #[derive(Clone, Debug, Default)]
 pub struct ForensicActivity {
+    /// When the activity took place
     pub timestamp : Filetime,
+    /// Which user did it
     pub user : String,
+    /// In which session
     pub session_id : SessionId,
-    pub activity : ActivityType
+    /// Activity being done
+    pub activity : ActivityType,
+    /// In which artifact the activity was detected
+    pub origin : Artifact
 }
 #[derive(Clone, Debug, Default)]
 pub enum SessionId {
