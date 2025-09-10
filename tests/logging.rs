@@ -3,7 +3,6 @@ use std::time::Duration;
 use forensic_rs::logging::testing_logger_dummy;
 
 
-#[cfg(not(lib_build))]
 #[macro_use]
 extern crate forensic_rs;
 

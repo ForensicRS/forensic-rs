@@ -62,7 +62,7 @@ impl<'a> ForensicData {
         self.fields.contains_key(field_name)
     }
 
-    pub fn field_mut(&'a mut self, field_name: &str) -> Option<&mut Field> {
+    pub fn field_mut(&mut self, field_name: &str) -> Option<&mut Field> {
         Some(&mut self.fields.get_mut(field_name)?.original)
     }
     pub fn add_field(&mut self, field_name: &'static str, field_value: Field) {
@@ -148,7 +148,7 @@ impl<'a> ForensicData {
         }
     }
     /// Obtains the casted value of the field into Text and caches it
-    pub fn txt_field(&'a mut self, field_name: &str) -> Option<&Text> {
+    pub fn txt_field(&mut self, field_name: &str) -> Option<&Text> {
 
         let mut has_value = false;
 
@@ -178,7 +178,7 @@ impl<'a> ForensicData {
         }
     }
     /// Obtains the casted value of the field into Vec<Text> and caches it
-    pub fn array_field(&'a mut self, field_name: &str) -> Option<&Vec<Text>> {
+    pub fn array_field(&mut self, field_name: &str) -> Option<&Vec<Text>> {
 
         let mut has_value = false;
 

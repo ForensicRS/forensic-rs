@@ -357,7 +357,7 @@ impl<'de> Deserialize<'de> for Artifact {
     }
 }
 #[cfg(feature = "serde")]
-struct LinuxServiceVisitor;
+pub struct LinuxServiceVisitor;
 
 #[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for LinuxServiceVisitor {
@@ -417,7 +417,7 @@ impl<'de> Visitor<'de> for ArtifactVisitor {
 }
 
 #[cfg(feature = "serde")]
-struct WindowsArtifactVisitor;
+pub struct WindowsArtifactVisitor;
 #[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for WindowsArtifactVisitor {
     type Value = WindowsArtifacts;
@@ -446,7 +446,7 @@ impl<'de> Visitor<'de> for WindowsArtifactVisitor {
     }
 }
 #[cfg(feature = "serde")]
-struct WinEvtVisitor;
+pub struct WinEvtVisitor;
 #[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for WinEvtVisitor {
     type Value = WindowsEvents;
@@ -475,7 +475,7 @@ impl<'de> Visitor<'de> for WinEvtVisitor {
     }
 }
 #[cfg(feature = "serde")]
-struct RegistryArtifactsVisitor;
+pub struct RegistryArtifactsVisitor;
 #[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for RegistryArtifactsVisitor {
     type Value = RegistryArtifacts;
@@ -504,7 +504,7 @@ impl<'de> Visitor<'de> for RegistryArtifactsVisitor {
     }
 }
 #[cfg(feature = "serde")]
-struct OtherOsVisitor;
+pub struct OtherOsVisitor;
 #[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for OtherOsVisitor {
     type Value = OtherOS;
@@ -534,7 +534,7 @@ impl<'de> Visitor<'de> for OtherOsVisitor {
 }
 
 #[cfg(feature = "serde")]
-struct LinuxArtifactVisitor;
+pub struct LinuxArtifactVisitor;
 #[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for LinuxArtifactVisitor {
     type Value = LinuxArtifacts;
@@ -563,7 +563,7 @@ impl<'de> Visitor<'de> for LinuxArtifactVisitor {
     }
 }
 #[cfg(feature = "serde")]
-struct MacOsArtifactVisitor;
+pub struct MacOsArtifactVisitor;
 #[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for MacOsArtifactVisitor {
     type Value = MacArtifacts;

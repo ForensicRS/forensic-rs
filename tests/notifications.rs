@@ -3,7 +3,6 @@ use std::time::Duration;
 use forensic_rs::notifications::{testing_notifier_dummy, NotificationType};
 
 
-#[cfg(not(lib_build))]
 #[macro_use]
 extern crate forensic_rs;
 

@@ -1,32 +1,9 @@
 use std::{
     fmt::Display,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use crate::err::ForensicResult;
-
-pub struct VPath(PathBuf);
-
-impl From<&str> for VPath {
-    fn from(v: &str) -> Self {
-        VPath(PathBuf::from(v))
-    }
-}
-impl From<String> for VPath {
-    fn from(v: String) -> Self {
-        VPath(PathBuf::from(v))
-    }
-}
-impl From<PathBuf> for VPath {
-    fn from(v: PathBuf) -> Self {
-        VPath(v)
-    }
-}
-impl From<&Path> for VPath {
-    fn from(v: &Path) -> Self {
-        VPath(v.to_path_buf())
-    }
-}
 
 pub trait VirtualFile: std::io::Seek + std::io::Read {
     fn metadata(&self) -> ForensicResult<VMetadata>;
@@ -58,6 +35,48 @@ pub trait VirtualFileSystem {
     #[allow(unused_variables)]
     fn exists(&self, path: &Path) -> bool {
         false
+    }
+}
+
+impl dyn VirtualFileSystem {
+    /// Read the entire contents of a file into a string.
+    pub fn read_to_string_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<String> {
+        self.read_to_string(path.as_ref())
+    }
+
+    /// Read the entire contents of a file into a bytes vector.
+    pub fn read_all_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Vec<u8>> {
+        self.read_all(path.as_ref())
+    }
+
+    /// Read part of the content of a file into a mutable byte slice
+    pub fn read_path<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        pos: u64,
+        buf: &mut [u8],
+    ) -> ForensicResult<usize> {
+        self.read(path.as_ref(), pos, buf)
+    }
+
+    /// Get the metadata of a file/dir
+    pub fn metadata_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<VMetadata> {
+        self.metadata(path.as_ref())
+    }
+
+    /// Lists the contents of a Directory
+    pub fn read_dir_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Vec<VDirEntry>> {
+        self.read_dir(path.as_ref())
+    }
+
+    /// Open a file
+    pub fn open_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Box<dyn VirtualFile>> {
+        self.open(path.as_ref())
+    }
+
+    /// Check if a file exists
+    pub fn exists_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<bool> {
+        Ok(self.exists(path.as_ref()))
     }
 }
 
@@ -101,7 +120,9 @@ impl VMetadata {
     /// Seconds elapsed since UNIX_EPOCH in UTC
     pub fn accessed(&self) -> usize {
         self.accessed.unwrap_or_else(|| {
-            crate::warn!("this filesystem has no support for access time, using UNIX_EPOCH instead");
+            crate::warn!(
+                "this filesystem has no support for access time, using UNIX_EPOCH instead"
+            );
             0
         })
     }
