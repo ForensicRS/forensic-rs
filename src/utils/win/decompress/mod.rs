@@ -36,9 +36,10 @@ pub fn decompress(
             out_buf.copy_from_slice(in_buf);
         }
         CompressionAlgorithm::CompressionFormatDefault => {
-            return Err(ForensicError::Other(
-                "Default compression algorithm not supported".into(),
-            ))
+            return Err(ForensicError::Other { 
+                category: "compression", 
+                message: "Default compression algorithm not supported".into()
+            })
         }
         CompressionAlgorithm::CompressionFormatLznt1 => lz77::decompress(in_buf, out_buf)?,
         CompressionAlgorithm::CompressionFormatXpress => xpress_huff::decompress(in_buf, out_buf)?, // Can't happen

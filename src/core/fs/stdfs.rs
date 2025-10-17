@@ -16,9 +16,10 @@ fn timestamp_from(ts_res: std::io::Result<SystemTime>) -> ForensicResult<Option<
     match ts_res {
         Ok(ts) => match ts.duration_since(SystemTime::UNIX_EPOCH) {
             Ok(v) => Ok(Some(v.as_secs() as usize)),
-            Err(_why) => Err(ForensicError::IllegalTimestamp(format!(
-                "timestamp {ts:?} cannot be converted into a unix timestamp"
-            ))),
+            Err(_why) => Err(ForensicError::illegal_timestamp(
+                0, // We don't have the raw timestamp value here
+                format!("timestamp {ts:?} cannot be converted into a unix timestamp").into()
+            )),
         },
         Err(why) => {
             if why.kind() == ErrorKind::Unsupported {
@@ -163,14 +164,14 @@ impl VirtualFileSystem for StdVirtualFS {
     }
 
     fn from_file(&self, _file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        Err(crate::err::ForensicError::NoMoreData)
+        ForensicError::no_more_data().into()
     }
 
     fn from_fs(
         &self,
         _fs: Box<dyn VirtualFileSystem>,
     ) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        Err(crate::err::ForensicError::NoMoreData)
+        ForensicError::no_more_data().into()
     }
     fn exists(&self, path: &Path) -> bool {
         path.exists()

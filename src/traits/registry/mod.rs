@@ -157,7 +157,7 @@ impl TryFrom<RegValue> for String {
             RegValue::MultiSZ(v) => Ok(v.join("\n")),
             RegValue::ExpandSZ(v) => Ok(v),
             RegValue::SZ(v) => Ok(v),
-            _ => Err(ForensicError::CastError),
+            _ => Err(ForensicError::cast_error("RegValue", "String", "Incompatible registry value type".into())),
         }
     }
 }
@@ -167,7 +167,7 @@ impl TryFrom<RegValue> for u32 {
         match value {
             RegValue::DWord(v) => Ok(v),
             RegValue::QWord(v) => Ok(v as u32),
-            _ => Err(ForensicError::CastError),
+            _ => Err(ForensicError::cast_error("RegValue", "u32", "Incompatible registry value type".into())),
         }
     }
 }
@@ -177,7 +177,7 @@ impl TryFrom<RegValue> for u64 {
         match value {
             RegValue::DWord(v) => Ok(v as u64),
             RegValue::QWord(v) => Ok(v),
-            _ => Err(ForensicError::CastError),
+            _ => Err(ForensicError::cast_error("RegValue", "u64", "Incompatible registry value type".into())),
         }
     }
 }
@@ -186,7 +186,24 @@ impl TryFrom<RegValue> for Vec<u8> {
     fn try_from(value : RegValue) -> Result<Self, Self::Error> {
         match value {
             RegValue::Binary(v) => Ok(v),
-            _ => Err(ForensicError::CastError),
+            _ => Err(ForensicError::cast_error("RegValue", "Vec<u8>", "Incompatible registry value type".into())),
+        }
+    }
+}
+
+impl std::fmt::Display for RegHiveKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegHiveKey::HkeyClassesRoot => write!(f, "HKEY_CLASSES_ROOT"),
+            RegHiveKey::HkeyCurrentConfig => write!(f, "HKEY_CURRENT_CONFIG"),
+            RegHiveKey::HkeyCurrentUser => write!(f, "HKEY_CURRENT_USER"),
+            RegHiveKey::HkeyDynData => write!(f, "HKEY_CURRENT_USER_LOCAL_SETTINGS"),
+            RegHiveKey::HkeyLocalMachine => write!(f, "HKEY_LOCAL_MACHINE"),
+            RegHiveKey::KkeyPerformanceData => write!(f, "HKEY_PERFORMANCE_DATA"),
+            RegHiveKey::HkeyPerformanceNlstext => write!(f, "HKEY_PERFORMANCE_NLSTEXT"),
+            RegHiveKey::HkeyPerformanceText => write!(f, "HKEY_PERFORMANCE_TEXT"),
+            RegHiveKey::HkeyUsers => write!(f, "HKEY_USERS"),
+            RegHiveKey::Hkey(v) => write!(f, "Hkey({})", v),
         }
     }
 }

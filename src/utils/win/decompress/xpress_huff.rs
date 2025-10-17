@@ -1,4 +1,4 @@
-use crate::err::{ForensicError, ForensicResult};
+use crate::err::{DataAccessError, ForensicError, ForensicResult};
 use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 
 /// Inspired by https://raw.githubusercontent.com/Velocidex/go-prefetch/master/lzxpress.go
@@ -36,7 +36,7 @@ fn decompress_chunk(
         let mut symbol = match prefix_code_tree_decode_symbol(&mut bstr, root.clone()) {
             Ok(v) => v,
             Err(e) => match e {
-                ForensicError::NoMoreData => return Ok((bstr.index, i)),
+                ForensicError::DataAccess(DataAccessError::NoMoreData) => return Ok((bstr.index, i)),
                 _ => return Err(e),
             },
         };
@@ -70,7 +70,7 @@ fn decompress_chunk(
             length += 3;
             loop {
                 if (i as i32 + offset) < 0 {
-                    return Err(ForensicError::bad_format_str("decompress_expres_huff(): Invalid offset position when decompressing a chunk"));
+                    return ForensicError::invalid_offset("decompress_expres_huff", offset as _, chunk_size as _).into();
                 }
                 let position = (i as i32 + offset) as usize;
                 out_buf.push(out_buf[position]);
@@ -120,7 +120,7 @@ impl<'a> BitStream<'a> {
         self.bits = self.bits.saturating_sub(n);
         if self.bits < 16 {
             if (self.index + 2) > self.source.len() {
-                return Err(ForensicError::NoMoreData);
+                return ForensicError::no_more_data().into();
             }
             self.mask += (u16::from_le_bytes(
                 self.source[self.index..self.index + 2]
@@ -178,11 +178,7 @@ fn prefix_code_tree_add_leaf(
 ) -> ForensicResult<u32> {
     let mut node = match tree_nodes.first() {
         Some(v) => v.clone(),
-        None => {
-            return Err(ForensicError::bad_format_str(
-                "decompress_expres_huff(): Invalid PreficCode",
-            ))
-        }
+        None => return ForensicError::compression_error("express_huff", "No valid PrefixCodeNode").into()
     };
     let mut i = leaf_index + 1;
     let mut child_index;
@@ -275,12 +271,7 @@ fn prefix_code_tree_decode_symbol(
         let nt = node.borrow();
         let new_node = match &nt.child[bit as usize] {
             Some(v) => v.clone(),
-            None => {
-                return Err(ForensicError::Other(format!(
-                    "No child in decode symbol: {}",
-                    bit
-                )))
-            }
+            None => return ForensicError::too_small("get_prefix_code_symbol", bit as _, bstr.bits as _).into()
         };
         drop(nt);
         node = new_node;

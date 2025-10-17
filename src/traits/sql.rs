@@ -66,7 +66,10 @@ impl TryInto<i64> for ColumnValue {
     fn try_into(self) -> Result<i64, Self::Error> {
         match self {
             ColumnValue::Integer(v) => Ok(v),
-            _ => Err(ForensicError::CastError)
+            ColumnValue::Binary(_) => Err(ForensicError::cast_error("Vec<u8>", "i64", "Incompatible column value type".into())),
+            ColumnValue::Null => Err(ForensicError::cast_error("null", "i64", "Incompatible column value type".into())),
+            ColumnValue::String(_) => Err(ForensicError::cast_error("str", "i64", "Incompatible column value type".into())),
+            ColumnValue::Float(_) => Err(ForensicError::cast_error("f64", "i64", "Incompatible column value type".into())),
         }
     }
 }
@@ -76,8 +79,11 @@ impl TryInto<usize> for ColumnValue {
 
     fn try_into(self) -> Result<usize, Self::Error> {
         match self {
-            ColumnValue::Integer(v) => Ok(v as usize),
-            _ => Err(ForensicError::CastError)
+            ColumnValue::Integer(v) => Ok(v as _),
+            ColumnValue::Binary(_) => Err(ForensicError::cast_error("Vec<u8>", "usize", "Incompatible column value type".into())),
+            ColumnValue::Null => Err(ForensicError::cast_error("null", "usize", "Incompatible column value type".into())),
+            ColumnValue::String(_) => Err(ForensicError::cast_error("str", "usize", "Incompatible column value type".into())),
+            ColumnValue::Float(_) => Err(ForensicError::cast_error("f64", "usize", "Incompatible column value type".into())),
         }
     }
 }
@@ -88,7 +94,10 @@ impl TryInto<f64> for ColumnValue {
     fn try_into(self) -> Result<f64, Self::Error> {
         match self {
             ColumnValue::Float(v) => Ok(v),
-            _ => Err(ForensicError::CastError)
+            ColumnValue::Integer(v) => Ok(v as _),
+            ColumnValue::Binary(_) => Err(ForensicError::cast_error("Vec<u8>", "f64", "Incompatible column value type".into())),
+            ColumnValue::Null => Err(ForensicError::cast_error("null", "f64", "Incompatible column value type".into())),
+            ColumnValue::String(_) => Err(ForensicError::cast_error("str", "f64", "Incompatible column value type".into())),
         }
     }
 }
@@ -99,7 +108,10 @@ impl TryInto<Vec<u8>> for ColumnValue {
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
         match self {
             ColumnValue::Binary(v) => Ok(v),
-            _ => Err(ForensicError::CastError)
+            ColumnValue::Null => Err(ForensicError::cast_error("null", "Vec<u8>", "Incompatible column value type".into())),
+            ColumnValue::String(_) => Err(ForensicError::cast_error("str", "Vec<u8>", "Incompatible column value type".into())),
+            ColumnValue::Integer(_) => Err(ForensicError::cast_error("i64", "Vec<u8>", "Incompatible column value type".into())),
+            ColumnValue::Float(_) => Err(ForensicError::cast_error("f64", "Vec<u8", "Incompatible column value type".into())),
         }
     }
 }
@@ -208,7 +220,7 @@ mod sql_tests {
         fn from_file(&self, _file: Box<dyn crate::traits::vfs::VirtualFile>) -> ForensicResult<Box<dyn SqlDb>> {
             match sqlite::open(":memory:") {
                 Ok(v) => Ok(Box::new(Self::new(v))),
-                Err(e) => Err(ForensicError::Other(e.to_string()))
+                Err(_) => Err(ForensicError::access_denied(":memory:", "Cannot access in memory SQLite"))
             }
         }
 
@@ -239,7 +251,7 @@ mod sql_tests {
         pub fn new(conn : &'conn Connection, statement : &str) -> ForensicResult<SqliteStatement<'conn>>{
             Ok(Self { stmt : match conn.prepare(statement) {
                     Ok(st) => st,
-                    Err(e) => return Err(ForensicError::Other(e.to_string()))
+                    Err(_) => return Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData))
                 }
             })
         }
@@ -274,7 +286,7 @@ mod sql_tests {
                     sqlite::State::Row => true,
                     sqlite::State::Done => false,
                 }),
-                Err(e) => Err(ForensicError::Other(e.to_string())),
+                Err(_) => Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData))
             }
         }
 
@@ -282,19 +294,19 @@ mod sql_tests {
             match self.stmt.column_type(i) {
                 sqlite::Type::Binary => match self.stmt.read(i) {
                     Ok(v) => Ok(ColumnValue::Binary(v)),
-                    Err(e) => Err(ForensicError::Other(e.to_string())),
+                    Err(_) => Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData))
                 },
                 sqlite::Type::Float => match self.stmt.read(i) {
                     Ok(v) => Ok(ColumnValue::Float(v)),
-                    Err(e) => Err(ForensicError::Other(e.to_string())),
+                    Err(_) => Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData))
                 },
                 sqlite::Type::Integer => match self.stmt.read(i) {
                     Ok(v) => Ok(ColumnValue::Integer(v)),
-                    Err(e) => Err(ForensicError::Other(e.to_string())),
+                    Err(_) => Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData))
                 },
                 sqlite::Type::String => match self.stmt.read(i) {
                     Ok(v) => Ok(ColumnValue::String(v)),
-                    Err(e) => Err(ForensicError::Other(e.to_string())),
+                    Err(_) => Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData))
                 },
                 sqlite::Type::Null => Ok(ColumnValue::Null),
             }

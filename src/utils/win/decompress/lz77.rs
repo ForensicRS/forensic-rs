@@ -1,4 +1,4 @@
-use crate::err::{ForensicError, ForensicResult};
+use crate::{ensure_min_length, err::ForensicResult};
 
 pub fn decompress(in_buf: &[u8], out_buf: &mut Vec<u8>) -> ForensicResult<()> {
     let mut buffered_flags = 0;
@@ -60,11 +60,7 @@ pub fn decompress(in_buf: &[u8], out_buf: &mut Vec<u8>) -> ForensicResult<()> {
                             );
                             input_position += 4;
                         }
-                        if match_length < 22 {
-                            return Err(ForensicError::bad_format_str(
-                                "decompress_LZ77(): Invalid match length, must be greater than 22",
-                            ));
-                        }
+                        ensure_min_length!(22, match_length, "decompress_LZ77");
                         match_length -= 22;
                     }
                     match_length += 15;

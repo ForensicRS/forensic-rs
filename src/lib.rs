@@ -11,6 +11,7 @@ pub mod field;
 pub mod dictionary;
 pub mod context;
 pub mod utils;
+pub mod scow;
 
 pub mod prelude {
     pub use crate::utils::time::{UnixTimestamp, WinFiletime, Filetime, filetime_to_unix_timestamp};
@@ -20,6 +21,7 @@ pub mod prelude {
     pub use crate::err::*;
     pub use crate::data::*;
     pub use crate::artifact::*;
+    pub use crate::scow::SCow;
     pub use crate::logging::{Message, Level, enabled_level, initialize_logger, max_level, set_max_level};
     pub use crate::notifications::{Notification, NotificationType, Priority, initialize_notifier};
     pub use crate::core::fs::{ChRootFileSystem, StdVirtualFS, StdVirtualFile};

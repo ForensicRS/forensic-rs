@@ -248,15 +248,12 @@ impl RegistryReader for TestingRegistry {
             Some(v) => {
                 let full_path = format!("{}\\{}", v, key_name);
                 if !self.contains(&full_path) {
-                    return Err(ForensicError::missing_string(format!(
-                        "Key path {} not found",
-                        full_path
-                    )));
+                    return ForensicError::registry_key_not_found(hkey, Some(full_path.into())).into()
                 }
                 let handle = self.increase_counter();
                 (handle, full_path)
             }
-            None => return Err(ForensicError::missing_str("Hkey not found")),
+            None => return ForensicError::registry_key_not_found(hkey, None).into()
         };
         borrowed.insert(RegHiveKey::Hkey(hkey), path);
         Ok(RegHiveKey::Hkey(hkey))
@@ -270,9 +267,9 @@ impl RegistryReader for TestingRegistry {
         let borrowed = self.cached.borrow();
         let key_path = borrowed
             .get(&hkey)
-            .ok_or_else(|| ForensicError::missing_str("HKey not found"))?;
+            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
         let value = self.get_value(key_path, value_name).ok_or_else(|| {
-            ForensicError::missing_string(format!("Value {}\\{} not found", key_path, value_name))
+            ForensicError::registry_value_not_found(hkey, Some(key_path.into()), value_name.to_string())
         })?;
         Ok(value)
     }
@@ -284,9 +281,9 @@ impl RegistryReader for TestingRegistry {
         let borrowed = self.cached.borrow();
         let key_path = borrowed
             .get(&hkey)
-            .ok_or_else(|| ForensicError::missing_str("HKey not found"))?;
+            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
         let value = self.get_values(key_path).ok_or_else(|| {
-            ForensicError::missing_string(format!("Values for {} not found", key_path))
+            ForensicError::registry_value_not_found(hkey, Some(key_path.into()), "")
         })?;
         Ok(value)
     }
@@ -298,9 +295,9 @@ impl RegistryReader for TestingRegistry {
         let borrowed = self.cached.borrow();
         let key_path = borrowed
             .get(&hkey)
-            .ok_or_else(|| ForensicError::missing_str("HKey not found"))?;
+            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
         let value = self.get_keys(key_path).ok_or_else(|| {
-            ForensicError::missing_string(format!("Keys for {} not found", key_path))
+            ForensicError::registry_key_not_found(hkey, Some(key_path.into()))
         })?;
         Ok(value)
     }
@@ -313,13 +310,13 @@ impl RegistryReader for TestingRegistry {
         let borrowed = self.cached.borrow();
         let key_path = borrowed
             .get(&hkey)
-            .ok_or_else(|| ForensicError::missing_str("HKey not found"))?;
+            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
         let mut value = self.get_keys(key_path).ok_or_else(|| {
-            ForensicError::missing_string(format!("Keys for {} not found", key_path))
+            ForensicError::registry_key_not_found(hkey, Some(key_path.into()))
         })?;
         let pos = pos as usize;
         if pos > value.len() {
-            return Err(ForensicError::NoMoreData);
+            return Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData));
         }
         Ok(value.remove(pos))
     }
@@ -332,13 +329,13 @@ impl RegistryReader for TestingRegistry {
         let borrowed = self.cached.borrow();
         let key_path = borrowed
             .get(&hkey)
-            .ok_or_else(|| ForensicError::missing_str("HKey not found"))?;
+            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
         let mut value = self.get_values(key_path).ok_or_else(|| {
-            ForensicError::missing_string(format!("Values for {} not found", key_path))
+            ForensicError::registry_value_not_found(hkey, Some(key_path.into()), "")
         })?;
         let pos = pos as usize;
         if pos > value.len() {
-            return Err(ForensicError::NoMoreData);
+            return Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData));
         }
         Ok(value.remove(pos))
     }
@@ -347,12 +344,12 @@ impl RegistryReader for TestingRegistry {
         let borrowed = self.cached.borrow();
         let key_path = borrowed
             .get(&hkey)
-            .ok_or_else(|| ForensicError::missing_str("HKey not found"))?;
+            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
         let value = self.get_values(key_path).ok_or_else(|| {
-            ForensicError::missing_string(format!("Values for {} not found", key_path))
+            ForensicError::registry_value_not_found(hkey, Some(key_path.into()), "")
         })?;
         let keys = self.get_keys(key_path).ok_or_else(|| {
-            ForensicError::missing_string(format!("Values for {} not found", key_path))
+            ForensicError::registry_key_not_found(hkey, Some(key_path.into()))
         })?;
         Ok(RegistryKeyInfo {
             last_write_time : Filetime::new(0),

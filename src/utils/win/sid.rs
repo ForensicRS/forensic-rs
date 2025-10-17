@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::prelude::{ForensicError, ForensicResult};
+use crate::{ensure_min_length, prelude::ForensicResult};
 
 pub const LOCAL_SYSTEM_SID_STR: &str = "S-1-5-18";
 pub const LOCAL_SYSTEM_SID_BIN: [u8; 12] = [
@@ -29,11 +29,7 @@ pub const BUILTIN_GUESTS_SID_BIN: [u8; 16] = [
 /// assert_eq!("S-1-5-32-544", to_string_sid(&[0x01,0x02,0x00,0x00,0x00,0x00,0x00,0x05,0x20,0x00,0x00,0x00,0x20,0x02,0x00,0x00]).unwrap());
 /// ```
 pub fn to_string_sid(sid: &[u8]) -> ForensicResult<String> {
-    if sid.len() < 8 {
-        return Err(ForensicError::bad_format_str(
-            "SID must have at least 8 bytes",
-        ));
-    }
+    ensure_min_length!(8, sid.len(), "Windows SID");
 
     let mut id = String::with_capacity(32);
 
