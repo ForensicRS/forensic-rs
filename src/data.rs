@@ -181,10 +181,69 @@ impl ForensicData {
         self.fields.contains_key(field_name)
     }
 
+    /// Ergonomic setter: insert a field using `Into<Field>` conversion.
+    pub fn set(&mut self, field_name: &'static str, value: impl Into<Field>) {
+        self.fields.insert(Text::Borrowed(field_name), value.into());
+    }
+
     /// Obtains the field value as a `Filetime`, if it is a `Field::Date`.
     pub fn get_date(&self, field_name: &str) -> Option<&Filetime> {
         match self.fields.get(field_name) {
             Some(Field::Date(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Read-only accessor: get the field as `u64` without mutating the container.
+    pub fn field_as_u64(&self, field_name: &str) -> Option<u64> {
+        match self.fields.get(field_name)? {
+            Field::U64(v) => Some(*v),
+            Field::I64(v) => Some(*v as u64),
+            Field::F64(v) => Some(*v as u64),
+            _ => None,
+        }
+    }
+
+    /// Read-only accessor: get the field as `i64` without mutating the container.
+    pub fn field_as_i64(&self, field_name: &str) -> Option<i64> {
+        match self.fields.get(field_name)? {
+            Field::I64(v) => Some(*v),
+            Field::U64(v) => Some(*v as i64),
+            Field::F64(v) => Some(*v as i64),
+            _ => None,
+        }
+    }
+
+    /// Read-only accessor: get the field as `f64` without mutating the container.
+    pub fn field_as_f64(&self, field_name: &str) -> Option<f64> {
+        match self.fields.get(field_name)? {
+            Field::F64(v) => Some(*v),
+            Field::U64(v) => Some(*v as f64),
+            Field::I64(v) => Some(*v as f64),
+            _ => None,
+        }
+    }
+
+    /// Read-only accessor: get the field as `&str` without mutating the container.
+    pub fn field_as_str(&self, field_name: &str) -> Option<&str> {
+        match self.fields.get(field_name)? {
+            Field::Text(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Read-only accessor: get the field as `Ip` without mutating the container.
+    pub fn field_as_ip(&self, field_name: &str) -> Option<Ip> {
+        match self.fields.get(field_name)? {
+            Field::Ip(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Read-only accessor: get the field as `&Filetime` without mutating the container.
+    pub fn field_as_date(&self, field_name: &str) -> Option<&Filetime> {
+        match self.fields.get(field_name)? {
+            Field::Date(v) => Some(v),
             _ => None,
         }
     }

@@ -19,6 +19,16 @@ fn field_cast_err(from: &'static str, to: &'static str) -> ForensicError {
 
 pub type Text = Cow<'static, str>;
 
+/// Create a `Text` from a static string literal (zero-copy).
+pub fn text(s: &'static str) -> Text {
+    Cow::Borrowed(s)
+}
+
+/// Create a `Text` from an owned `String`.
+pub fn text_owned(s: String) -> Text {
+    Cow::Owned(s)
+}
+
 #[derive(Clone, Default)]
 #[non_exhaustive]
 pub enum Field {
@@ -37,6 +47,45 @@ pub enum Field {
     ///A date in a decimal number format with 64 bits
     Date(Filetime),
     Array(Vec<Text>),
+}
+
+impl PartialEq for Field {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Field::Null, Field::Null) => true,
+            (Field::Text(a), Field::Text(b)) => a == b,
+            (Field::Ip(a), Field::Ip(b)) => a == b,
+            (Field::U64(a), Field::U64(b)) => a == b,
+            (Field::I64(a), Field::I64(b)) => a == b,
+            (Field::F64(a), Field::F64(b)) => a.to_bits() == b.to_bits(),
+            (Field::Date(a), Field::Date(b)) => a == b,
+            (Field::Array(a), Field::Array(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for Field {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Field::Null => write!(f, "null"),
+            Field::Text(v) => write!(f, "{}", v),
+            Field::Ip(v) => write!(f, "{}", v),
+            Field::U64(v) => write!(f, "{}", v),
+            Field::I64(v) => write!(f, "{}", v),
+            Field::F64(v) => write!(f, "{}", v),
+            Field::Date(v) => write!(f, "{}", v),
+            Field::Array(v) => {
+                for (i, item) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Field {
@@ -208,6 +257,26 @@ impl<T> FieldAccess<T> {
         match self {
             FieldAccess::Some(v) => v,
             _ => default,
+        }
+    }
+    pub fn unwrap_or_else<F: FnOnce() -> T>(self, f: F) -> T {
+        match self {
+            FieldAccess::Some(v) => v,
+            _ => f(),
+        }
+    }
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> FieldAccess<U> {
+        match self {
+            FieldAccess::Some(v) => FieldAccess::Some(f(v)),
+            FieldAccess::None => FieldAccess::None,
+            FieldAccess::InvalidCast => FieldAccess::InvalidCast,
+        }
+    }
+    pub fn and_then<U, F: FnOnce(T) -> FieldAccess<U>>(self, f: F) -> FieldAccess<U> {
+        match self {
+            FieldAccess::Some(v) => f(v),
+            FieldAccess::None => FieldAccess::None,
+            FieldAccess::InvalidCast => FieldAccess::InvalidCast,
         }
     }
 }

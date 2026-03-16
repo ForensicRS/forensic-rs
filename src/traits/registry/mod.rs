@@ -49,6 +49,74 @@ impl RegValue {
     pub fn from_u64(v : u64) -> RegValue {
         RegValue::QWord(v)
     }
+
+    /// Returns the string value if this is an `SZ` or `ExpandSZ` variant.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            RegValue::SZ(s) | RegValue::ExpandSZ(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Returns the `DWord` value.
+    pub fn as_dword(&self) -> Option<u32> {
+        match self {
+            RegValue::DWord(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Returns the `QWord` value.
+    pub fn as_qword(&self) -> Option<u64> {
+        match self {
+            RegValue::QWord(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Returns the binary data if this is a `Binary` variant.
+    pub fn as_binary(&self) -> Option<&[u8]> {
+        match self {
+            RegValue::Binary(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Returns the multi-string list if this is a `MultiSZ` variant.
+    pub fn as_multi_sz(&self) -> Option<&[String]> {
+        match self {
+            RegValue::MultiSZ(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RegValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegValue::SZ(s) | RegValue::ExpandSZ(s) => write!(f, "{}", s),
+            RegValue::DWord(v) => write!(f, "{}", v),
+            RegValue::QWord(v) => write!(f, "{}", v),
+            RegValue::Binary(v) => {
+                for (i, b) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{:02x}", b)?;
+                }
+                Ok(())
+            }
+            RegValue::MultiSZ(v) => {
+                for (i, s) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, "\n")?;
+                    }
+                    write!(f, "{}", s)?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl From<String> for RegValue {

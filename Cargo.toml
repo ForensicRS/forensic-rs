@@ -11,12 +11,24 @@ repository = "https://github.com/ForensicRS/forensic-rs"
 
 [features]
 default = ["serde"]
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 serde = {version = "1", optional = true}
+serde_json = {version = "1", optional = true}
 
 [dev-dependencies]
 sqlite = "0.28.1"
-serde_json = "1"
 anyhow = "1"
+
+[[example]]
+name = "triage_pipeline"
+path = "examples/triage_pipeline.rs"
+
+[[example]]
+name = "registry_and_vfs"
+path = "examples/registry_and_vfs.rs"
+
+[[example]]
+name = "event_gap_detector"
+path = "examples/event_gap_detector.rs"
