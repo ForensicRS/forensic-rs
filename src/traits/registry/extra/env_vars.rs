@@ -75,9 +75,7 @@ fn list_all_profiles(reg_reader: &dyn RegistryReader, system_root : &str) -> For
                 continue;
             }
         };
-        if profile_path.starts_with("%systemroot%") {
-            profile_path = format!("{}{}", system_root, &profile_path[12..])
-        }else if profile_path.starts_with("%SystemRoot%") {
+        if profile_path.starts_with("%systemroot%") || profile_path.starts_with("%SystemRoot%") {
             profile_path = format!("{}{}", system_root, &profile_path[12..])
         }
         if !profile_path.is_empty() {
@@ -185,10 +183,10 @@ fn user_specific_env_vars(
     reg_reader.close_key(shell_folders);
 
     if let Ok(env_key) = reg_reader.open_key(user_key, r"Environment") {
-        let tmp: String = reg_value(reg_reader, shell_folders, "TMP", || {
+        let tmp: String = reg_value(reg_reader, env_key, "TMP", || {
             format!("{}\\AppData\\Local\\Temp", user_profile)
         });
-        let temp: String = reg_value(reg_reader, shell_folders, "TEMP", || {
+        let temp: String = reg_value(reg_reader, env_key, "TEMP", || {
             format!("{}\\AppData\\Local\\Temp", user_profile)
         });
         reg_reader.close_key(env_key);
@@ -200,11 +198,7 @@ fn user_specific_env_vars(
     };
     reg_reader.close_key(user_key);
     if user_profile.len() > 3 {
-        let (home_drive, home_path) = if user_profile.starts_with('%') {
-            (user_profile[0..2].to_string(), user_profile[2..].to_string())
-        } else {
-            (user_profile[0..2].to_string(), user_profile[2..].to_string())
-        };
+        let (home_drive, home_path) = (user_profile[0..2].to_string(), user_profile[2..].to_string());
 
         let mut splited = user_profile.split('\\').rev();
         let username = splited
@@ -243,8 +237,8 @@ struct ProgramFiles {
 }
 
 fn replace_user_profile(txt : String, user_profile : &str) -> String {
-    if txt.starts_with("%USERPROFILE%") {
-        format!("{}{}", user_profile, &txt[13..])
+    if let Some(rest) = txt.strip_prefix("%USERPROFILE%") {
+        format!("{}{}", user_profile, rest)
     }else{
         txt
     }

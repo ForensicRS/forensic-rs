@@ -3,6 +3,7 @@ use std::{io::ErrorKind, path::Path, time::SystemTime};
 use crate::{
     err::{ForensicError, ForensicResult},
     traits::vfs::{VDirEntry, VFileType, VMetadata, VirtualFile, VirtualFileSystem},
+    utils::time::ForensicTimestamp,
 };
 
 /// this is an error handling routine.
@@ -12,12 +13,12 @@ use crate::{
 /// - if `ts_res` contains an error, then:
 ///    - if `kind() == Unsupported` then Ok(None) is returned (because this is not an error)
 ///    - otherwise, the error is returned
-fn timestamp_from(ts_res: std::io::Result<SystemTime>) -> ForensicResult<Option<usize>> {
+fn timestamp_from(ts_res: std::io::Result<SystemTime>) -> ForensicResult<Option<ForensicTimestamp>> {
     match ts_res {
         Ok(ts) => match ts.duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(v) => Ok(Some(v.as_secs() as usize)),
+            Ok(v) => Ok(Some(ForensicTimestamp::from_unix_micros(v.as_micros() as i64))),
             Err(_why) => Err(ForensicError::illegal_timestamp(
-                0, // We don't have the raw timestamp value here
+                0,
                 format!("timestamp {ts:?} cannot be converted into a unix timestamp").into()
             )),
         },
@@ -219,6 +220,6 @@ mod tst {
             _fs: Box<dyn VirtualFileSystem>,
         }
         let boxed = Box::new(StdVirtualFS::new());
-        Test { _fs: boxed };
+        let _test = Test { _fs: boxed };
     }
 }

@@ -4,7 +4,7 @@
 
 A Rust-based framework to build tools that analyze forensic artifacts and can be reused as libraries across multiple projects without changing anything.
 
-Note: still in Alpha version
+**Current version**: 0.14.0
 
 ## Community
 
@@ -23,9 +23,15 @@ In this way, the same tools can be used if we want to make a triage processor li
 
 ### Supported artifacts
 
-* Windows Registry: See [RegistryReader](./src/traits/registry.rs) trait.
-* SQL databases: See [SqlStatement](./src/traits/sql.rs) trait. There is also a basic wrapper example around the sqlite crate in [sql_tests](./src/traits/sql.rs).
-* File Systems: With this trait we can read files and directories. It is very useful because we can stack file systems: A file inside a OleObject inside a ZIP file that is also inside a ZIP. See [VirtualFileSystem](./src/traits/vfs.rs) and the implementation using the standard library (std::fs) in [StdVirtualFS](./src/core/fs.rs).
+* **Windows Registry**: See [`RegistryReader`](./src/traits/registry/mod.rs) trait. Includes `RegistryKeyGuard` for RAII-based key lifetime management, `auto_close_key()` for closure-scoped key cleanup, and `walk_keys()` for recursive registry traversal.
+* **SQL databases**: See [`SqlStatement`](./src/traits/sql.rs) trait and the richer [`ForensicDb`](./src/traits/db.rs) abstraction. A basic sqlite wrapper example is included in the SQL trait tests.
+* **File Systems**: Read files and directories with support for stacked virtual filesystems (e.g., a file inside a ZIP inside another ZIP). Includes `walk_dir()` for recursive directory traversal. See [`VirtualFileSystem`](./src/traits/vfs.rs) and the standard library implementation [`StdVirtualFS`](./src/core/fs/stdfs.rs).
+* **Timestamps**: `ForensicTimestamp` — a compact, bitpacked u64 timestamp (8 bytes, microsecond precision, year range 0–4095) with constructors for Windows FILETIME, Unix secs/millis/micros, OLE Automation dates, WebKit/Chrome, macOS HFS+, and Cocoa/Core Data timestamps. Bidirectional conversion with the existing `Filetime` type.
+* **Windows Decompression**: LZNT1, LZ77 and LZ77+Huffman algorithms per the MS-XCA specification. See [`decompress()`](./src/utils/win/decompress/mod.rs).
+* **Windows Utilities**: SID-to-string conversion, well-known shell folder ID constants (60+), and registry-based user environment variable resolution. See [`src/utils/win/`](./src/utils/win/).
+* **Binary Unpacking**: Safe integer extraction helpers for parsing binary forensic artifacts. See [`src/utils/unpack.rs`](./src/utils/unpack.rs).
+* **ECS Field Dictionary**: ~80 Elastic Common Schema field name constants for consistent artifact field naming. See [`src/dictionary.rs`](./src/dictionary.rs).
+* **User Activity Tracking**: `ForensicActivity` with enriched `ProgramExecution` (arguments, working directory, run count) and extended `FileSystemActivity` variants (Rename, Read, Write). See [`src/activity.rs`](./src/activity.rs).
 
 
 ### Registry Example
@@ -78,7 +84,7 @@ fn test_database_content<'a>(statement : &mut dyn SqlStatement) -> ForensicResul
 ```
 
 ### VFS Example
-Extracted from [StdVirtualFS](./src/core/fs.rs) tests using sqlite db.
+Extracted from [StdVirtualFS](./src/core/fs/stdfs.rs) tests.
 
 ```rust
 const CONTENT: &'static str = "File_Content_Of_VFS";
@@ -88,13 +94,86 @@ let mut file = std::fs::File::create(&tmp_file).unwrap();
 file.write_all(CONTENT.as_bytes()).unwrap();
 drop(file);
 
-let std_vfs = StdVirtualFS::new();
-test_file_content(&std_vfs,&tmp_file);
+let mut std_vfs = StdVirtualFS::new();
+let content = std_vfs.read_to_string(&tmp_file).unwrap();
+assert_eq!(CONTENT, content);
+```
 
-fn test_file_content(std_vfs : &impl VirtualFileSystem, tmp_file : &PathBuf) {
-    let content = std_vfs.read_to_string(tmp_file).unwrap();
-    assert_eq!(CONTENT, content);
-    
+VFS trait objects also accept `PathBuf` and `&str` via ergonomic `_path`-suffixed wrappers:
+
+```rust
+let mut vfs: Box<dyn VirtualFileSystem> = Box::new(StdVirtualFS::new());
+let bytes = vfs.read_all_path("/var/log/syslog")?;
+let entries = vfs.read_dir_path("/var/log")?;
+```
+
+### Error Handling Example
+
+All operations return `ForensicResult<T>`. Use the validation macros to produce categorized errors:
+
+```rust
+use forensic_rs::prelude::*;
+
+fn parse_header(buf: &[u8]) -> ForensicResult<u32> {
+    ensure_buffer_size!(buf, 8);                      // returns Err if buf.len() < 8
+    ensure_format!(buf[0] == 0x4D, "invalid magic"); // returns Err if magic is wrong
+    Ok(u32::from_le_bytes(buf[4..8].try_into().unwrap()))
+}
+```
+
+### Windows Decompression Example
+
+```rust
+use forensic_rs::utils::win::decompress::{CompressionAlgorithm, decompress};
+
+let mut output = Vec::new();
+decompress(&compressed_data, &mut output, CompressionAlgorithm::CompressionFormatLznt1)?;
+```
+
+Supported algorithms: `CompressionFormatNone`, `CompressionFormatLznt1`, `CompressionFormatXpress`, `CompressionFormatXpressHuff`.
+
+### ForensicTimestamp Example
+
+`ForensicTimestamp` is a compact bitpacked u64 (8 bytes) with microsecond precision. It can be created from many common forensic timestamp formats:
+
+```rust
+use forensic_rs::prelude::*;
+
+// From explicit components
+let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000);
+assert_eq!(2024, ts.year());
+assert_eq!(596, ts.milliseconds());
+
+// From common forensic formats
+let ts = ForensicTimestamp::from_win_filetime(133514430235959706); // Windows FILETIME
+let ts = ForensicTimestamp::from_unix_secs(1706969423);            // Unix seconds
+let ts = ForensicTimestamp::from_webkit(13351443023595970);        // Chrome/WebKit
+let ts = ForensicTimestamp::from_hfs_plus(3_789_814_223);          // macOS HFS+
+let ts = ForensicTimestamp::from_cocoa(728_662_223.0);             // macOS/iOS Cocoa
+let ts = ForensicTimestamp::from_ole_date(25569.0);                // OLE Automation
+
+// Output conversions
+let unix = ts.to_unix_secs();
+let win  = ts.to_win_filetime();
+
+// Bidirectional conversion with Filetime
+let ft: Filetime = ts.into();
+let ts2: ForensicTimestamp = ft.into();
+```
+
+### RegistryKeyGuard Example
+
+`RegistryKeyGuard` is an RAII wrapper that automatically closes registry keys when dropped:
+
+```rust
+use forensic_rs::prelude::*;
+
+fn read_user_profile(reader: &dyn RegistryReader, user_sid: &str) -> ForensicResult<String> {
+    let key = reader.open_key(HKU, user_sid)?;
+    let guard = RegistryKeyGuard::new(reader, key);
+    // key is automatically closed when `guard` goes out of scope
+    let profile: String = reader.read_value(*guard, "ProfileImagePath")?.try_into()?;
+    Ok(profile)
 }
 ```
 

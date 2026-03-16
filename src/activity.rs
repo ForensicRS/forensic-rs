@@ -1,4 +1,7 @@
 
+use std::collections::BTreeMap;
+
+use crate::field::Text;
 use crate::utils::time::Filetime;
 
 /// Activity of a user in a device
@@ -7,7 +10,9 @@ pub struct ForensicActivity {
     pub timestamp : Filetime,
     pub user : String,
     pub session_id : SessionId,
-    pub activity : ActivityType
+    pub activity : ActivityType,
+    /// Extensible key-value metadata for additional context.
+    pub extras : BTreeMap<Text, Text>,
 }
 #[derive(Clone, Debug, Default)]
 pub enum SessionId {
@@ -27,13 +32,19 @@ pub enum ActivityType {
 
 #[derive(Clone, Default)]
 pub struct ProgramExecution {
-    pub executable : String
+    pub executable : String,
+    pub arguments : Option<String>,
+    pub working_directory : Option<String>,
+    pub run_count : Option<u32>,
 }
 
 impl ProgramExecution {
     pub fn new(executable : String) -> Self {
         Self {
-            executable
+            executable,
+            arguments: None,
+            working_directory: None,
+            run_count: None,
         }
     }
 }
@@ -55,6 +66,9 @@ pub enum FileSystemActivity {
     Delete(String),
     Move((String, String)),
     Create(String),
+    Rename((String, String)),
+    Read(String),
+    Write(String),
     #[default]
     Unknown
 }

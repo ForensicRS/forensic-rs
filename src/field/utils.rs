@@ -19,7 +19,7 @@ pub fn ipv4_from_str(ipv4: &str) -> Result<u32, &'static str> {
 
 /// Check whether an ASCII character represents an hexadecimal digit
 fn is_hex_digit(byte: u8) -> bool {
-    matches!(byte, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+    byte.is_ascii_hexdigit()
 }
 /// Convert an ASCII character that represents an hexadecimal digit into this digit
 fn hex_to_digit(byte: u8) -> u8 {
@@ -342,23 +342,23 @@ mod tests {
     #[test]
     fn check_ip_is_local() {
         //192.168.1.1 = 3232235777
-        assert_eq!(is_local_ipv4(3232235777), true);
+        assert!(is_local_ipv4(3232235777));
         //8.8.8.8 = 134744072
-        assert_eq!(is_local_ipv4(134744072), false);
+        assert!(!is_local_ipv4(134744072));
         //10.127.222.21 = 176152085
-        assert_eq!(is_local_ipv4(176152085), true);
+        assert!(is_local_ipv4(176152085));
         //100.64.0.0 = 1681915904
-        assert_eq!(is_local_ipv4(1681915904), true);
+        assert!(is_local_ipv4(1681915904));
         //10.255.255.255 = 184549375
-        assert_eq!(is_local_ipv4(184549375), true);
+        assert!(is_local_ipv4(184549375));
     }
 
     #[test]
     fn should_parse_socket() {
-        assert_eq!(is_ipv4_port("192.168.0.1:1000"), true);
-        assert_eq!(is_ipv4_port("192.168.0.1:100000"), false);
-        assert_eq!(is_ipv4("256.168.0.1"), false);
-        assert_eq!(is_ipv4_port("800.168.0.1:10000"), false);
-        assert_eq!(is_ipv4_port("80.0.168.0.1:10000"), false);
+        assert!(is_ipv4_port("192.168.0.1:1000"));
+        assert!(!is_ipv4_port("192.168.0.1:100000"));
+        assert!(!is_ipv4("256.168.0.1"));
+        assert!(!is_ipv4_port("800.168.0.1:10000"));
+        assert!(!is_ipv4_port("80.0.168.0.1:10000"));
     }
 }

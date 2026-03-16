@@ -42,7 +42,7 @@ impl TestingRegistry {
         ret
     }
     pub fn add_value(&mut self, path: &str, value: &str, data: RegValue) {
-        let (hkey, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (hkey, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => {
                 return self
@@ -58,7 +58,7 @@ impl TestingRegistry {
             .add_value(rest, value, data);
     }
     pub fn contains(&self, path: &str) -> bool {
-        let (hkey, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (hkey, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => return self.cell.contains_key(path),
         };
@@ -69,36 +69,27 @@ impl TestingRegistry {
         hive.contains_key(rest)
     }
     pub fn get_value(&self, path: &str, value: &str) -> Option<RegValue> {
-        let (hkey, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (hkey, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => (path, ""),
         };
-        let hive = match self.cell.get(hkey) {
-            Some(v) => v,
-            None => return None,
-        };
+        let hive = self.cell.get(hkey)?;
         hive.get_value(rest, value)
     }
     pub fn get_values(&self, path: &str) -> Option<Vec<String>> {
-        let (hkey, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (hkey, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => (path, ""),
         };
-        let hive = match self.cell.get(hkey) {
-            Some(v) => v,
-            None => return None,
-        };
+        let hive = self.cell.get(hkey)?;
         Some(hive.get_values(rest))
     }
     pub fn get_keys(&self, path: &str) -> Option<Vec<String>> {
-        let (hkey, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (hkey, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => (path, ""),
         };
-        let hive = match self.cell.get(hkey) {
-            Some(v) => v,
-            None => return None,
-        };
+        let hive = self.cell.get(hkey)?;
         Some(hive.get_keys(rest))
     }
 }
@@ -121,7 +112,7 @@ impl MountedCell {
         if path.is_empty() {
             return;
         }
-        let (first, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (first, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => {
                 self.keys
@@ -137,7 +128,7 @@ impl MountedCell {
             .add_key(rest);
     }
     pub fn contains_key(&self, path: &str) -> bool {
-        let (first, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (first, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => return self.keys.contains_key(path),
         };
@@ -152,7 +143,7 @@ impl MountedCell {
             self.values.insert(value.into(), data);
             return;
         }
-        let (first, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (first, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => {
                 self.keys
@@ -171,7 +162,7 @@ impl MountedCell {
         if path.is_empty() {
             return self.values.get(value).cloned();
         }
-        let (first, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (first, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => return self.keys.get(path)?.get_value("", value),
         };
@@ -185,7 +176,7 @@ impl MountedCell {
                 .map(|v| v.to_string())
                 .collect();
         }
-        let (first, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (first, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => {
                 return match self.keys.get(path) {
@@ -207,7 +198,7 @@ impl MountedCell {
                 .map(|v| v.to_string())
                 .collect();
         }
-        let (first, rest) = match path.split_once(|v| v == '/' || v == '\\') {
+        let (first, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
             None => {
                 return match self.keys.get(path) {
@@ -385,27 +376,27 @@ fn basic_registry() -> BTreeMap<String, MountedCell> {
     hkcu_cell.add_value(
         "S-1-5-21-1366093794-4292800403-1155380978-513\\Volatile Environment",
         "USERPROFILE",
-        RegValue::from_str(r"C:\Users\Tester"),
+        RegValue::new_sz(r"C:\Users\Tester"),
     );
     hkcu_cell.add_value(
         "S-1-5-21-1366093794-4292800403-1155380978-513\\Volatile Environment",
         "APPDATA",
-        RegValue::from_str(r"C:\Users\Tester\AppData\Roaming"),
+        RegValue::new_sz(r"C:\Users\Tester\AppData\Roaming"),
     );
     hkcu_cell.add_value(
         "S-1-5-21-1366093794-4292800403-1155380978-513\\Volatile Environment",
         "LOCALAPPDATA",
-        RegValue::from_str(r"C:\Users\Tester\AppData\Local"),
+        RegValue::new_sz(r"C:\Users\Tester\AppData\Local"),
     );
     hkcu_cell.add_value(
         "S-1-5-21-1366093794-4292800403-1155380978-513\\Volatile Environment",
         "USERDOMAIN",
-        RegValue::from_str(r"TestMachine"),
+        RegValue::new_sz(r"TestMachine"),
     );
     hkcu_cell.add_value(
         "S-1-5-21-1366093794-4292800403-1155380978-513\\Volatile Environment",
         "USERNAME",
-        RegValue::from_str(r"Tester"),
+        RegValue::new_sz(r"Tester"),
     );
     map.insert("HKU".into(), hkcu_cell);
     map

@@ -3,22 +3,22 @@ use std::{borrow::Cow, collections::BTreeMap};
 #[cfg(feature="serde")]
 use serde::{Deserialize, Serialize, de::Visitor, Deserializer, ser::SerializeMap};
 
-use crate::{prelude::{Artifact, *}, field::{internal::{InternalField, PreStoredField}, Text, Field, Ip}, context::context};
+use crate::{prelude::{Artifact, *}, field::{FieldAccess, Text, Field, Ip}, context::context, utils::time::Filetime};
 
 /// Basic container for all Forensic Data inside an artifact
 #[derive(Debug, Clone)]
 pub struct ForensicData {
     artifact : Artifact,
-    pub(crate) fields: BTreeMap<Text, InternalField>,
+    pub(crate) fields: BTreeMap<Text, Field>,
 }
 
 impl Default for ForensicData {
     fn default() -> Self {
         let context = context();
         let mut fields = BTreeMap::new();
-        fields.insert(Text::Borrowed(ARTIFACT_HOST), Field::Text(Text::Owned(context.host)).into());
-        fields.insert(Text::Borrowed(ARTIFACT_TENANT), Field::Text(Text::Owned(context.tenant)).into());
-        fields.insert(Text::Borrowed(ARTIFACT_NAME), Field::Text(Text::Owned(context.artifact.to_string())).into());
+        fields.insert(Text::Borrowed(ARTIFACT_HOST), Field::Text(Text::Owned(context.host)));
+        fields.insert(Text::Borrowed(ARTIFACT_TENANT), Field::Text(Text::Owned(context.tenant)));
+        fields.insert(Text::Borrowed(ARTIFACT_NAME), Field::Text(Text::Owned(context.artifact.to_string())));
         Self {
             fields,
             artifact : context.artifact
@@ -27,11 +27,11 @@ impl Default for ForensicData {
 }
 
 
-impl<'a> ForensicData {
+impl ForensicData {
     pub fn new(host : &str, artifact : Artifact) -> Self {
         let mut fields = BTreeMap::new();
-        fields.insert(Text::Borrowed(ARTIFACT_HOST), Field::Text(Text::Owned(host.to_string())).into());
-        fields.insert(Text::Borrowed(ARTIFACT_NAME), Field::Text(Text::Owned(artifact.to_string())).into());
+        fields.insert(Text::Borrowed(ARTIFACT_HOST), Field::Text(Text::Owned(host.to_string())));
+        fields.insert(Text::Borrowed(ARTIFACT_NAME), Field::Text(Text::Owned(artifact.to_string())));
         Self {
             fields,
             artifact
@@ -42,20 +42,15 @@ impl<'a> ForensicData {
         &self.artifact
     }
 
-    pub fn host(&'a self) -> &'a str {
+    pub fn host(&self) -> &str {
         match self.field(ARTIFACT_HOST) {
-            Some(v) => {
-                match v {
-                    Field::Text(v) => v,
-                    _ => ""
-                }
-            },
-            None => ""
+            Some(Field::Text(v)) => v,
+            _ => ""
         }
     }
 
     pub fn field(&self, field_name : &str) -> Option<&Field> {
-        Some(&self.fields.get(field_name)?.original)
+        self.fields.get(field_name)
     }
 
     pub fn has_field(&self, field_name : &str) -> bool {
@@ -63,148 +58,100 @@ impl<'a> ForensicData {
     }
 
     pub fn field_mut(&mut self, field_name: &str) -> Option<&mut Field> {
-        Some(&mut self.fields.get_mut(field_name)?.original)
+        self.fields.get_mut(field_name)
     }
     pub fn add_field(&mut self, field_name: &'static str, field_value: Field) {
         self.insert(Text::Borrowed(field_name), field_value);
     }
     pub fn insert(&mut self, field_name: Text, field_value: Field) {
-        self.fields.insert(field_name, field_value.into());
+        self.fields.insert(field_name, field_value);
     }
-    /// Obtains the casted value of the field into i64 and caches it
-    pub fn i64_field(&'a mut self, field_name: &str) -> Option<i64> {
-        let field = self.fields.get_mut(field_name)?;
-        match field.ni64.as_ref() {
-            PreStoredField::Invalid => return None,
-            PreStoredField::None => {},
-            PreStoredField::Some(v) => return Some(*v)
+    /// Obtains the field value as `i64`, converting and storing in-place if needed.
+    pub fn get_i64(&mut self, field_name: &str) -> FieldAccess<i64> {
+        let field = match self.fields.get_mut(field_name) {
+            Some(f) => f,
+            None => return FieldAccess::None,
         };
-        let i64field : Option<i64> = (&field.original).try_into().ok();
-        let pfield = match i64field {
-            Some(v) => PreStoredField::Some(v),
-            None => PreStoredField::Invalid
-        };
-        field.ni64 = Box::new(pfield);
-        match field.ni64.as_ref() {
-            PreStoredField::Some(v) => Some(*v),
-            _ => None
+        if let Field::I64(v) = field { return FieldAccess::Some(*v); }
+        match (&*field).try_into() {
+            Ok(v) => { *field = Field::I64(v); FieldAccess::Some(v) }
+            Err(_) => FieldAccess::InvalidCast,
         }
     }
-    /// Obtains the casted value of the field into f64 and caches it
-    pub fn f64_field(&'a mut self, field_name: &str) -> Option<f64> {
-        let field = self.fields.get_mut(field_name)?;
-        match field.nf64.as_ref() {
-            PreStoredField::Invalid => return None,
-            PreStoredField::None => {},
-            PreStoredField::Some(v) => return Some(*v)
+    /// Obtains the field value as `f64`, converting and storing in-place if needed.
+    pub fn get_f64(&mut self, field_name: &str) -> FieldAccess<f64> {
+        let field = match self.fields.get_mut(field_name) {
+            Some(f) => f,
+            None => return FieldAccess::None,
         };
-        let i64field : Option<f64> = (&field.original).try_into().ok();
-        let pfield = match i64field {
-            Some(v) => PreStoredField::Some(v),
-            None => PreStoredField::Invalid
-        };
-        field.nf64 = Box::new(pfield);
-        match field.nf64.as_ref() {
-            PreStoredField::Some(v) => Some(*v),
-            _ => None
+        if let Field::F64(v) = field { return FieldAccess::Some(*v); }
+        match (&*field).try_into() {
+            Ok(v) => { *field = Field::F64(v); FieldAccess::Some(v) }
+            Err(_) => FieldAccess::InvalidCast,
         }
     }
-    /// Obtains the casted value of the field into u64 and caches it
-    pub fn u64_field(&'a mut self, field_name: &str) -> Option<u64> {
-        let field = self.fields.get_mut(field_name)?;
-        match field.nu64.as_ref() {
-            PreStoredField::Invalid => return None,
-            PreStoredField::None => {},
-            PreStoredField::Some(v) => return Some(*v)
+    /// Obtains the field value as `u64`, converting and storing in-place if needed.
+    pub fn get_u64(&mut self, field_name: &str) -> FieldAccess<u64> {
+        let field = match self.fields.get_mut(field_name) {
+            Some(f) => f,
+            None => return FieldAccess::None,
         };
-        let i64field : Option<u64> = (&field.original).try_into().ok();
-        let pfield = match i64field {
-            Some(v) => PreStoredField::Some(v),
-            None => PreStoredField::Invalid
-        };
-        field.nu64 = Box::new(pfield);
-        match field.nu64.as_ref() {
-            PreStoredField::Some(v) => Some(*v),
-            _ => None
+        if let Field::U64(v) = field { return FieldAccess::Some(*v); }
+        match (&*field).try_into() {
+            Ok(v) => { *field = Field::U64(v); FieldAccess::Some(v) }
+            Err(_) => FieldAccess::InvalidCast,
         }
     }
-    /// Obtains the casted value of the field into IP and caches it
-    pub fn ip_field(&'a mut self, field_name: &str) -> Option<Ip> {
-        let field = self.fields.get_mut(field_name)?;
-        match field.ip.as_ref() {
-            PreStoredField::Invalid => return None,
-            PreStoredField::None => {},
-            PreStoredField::Some(v) => return Some(*v)
+    /// Obtains the field value as `Ip`, converting and storing in-place if needed.
+    pub fn get_ip(&mut self, field_name: &str) -> FieldAccess<Ip> {
+        let field = match self.fields.get_mut(field_name) {
+            Some(f) => f,
+            None => return FieldAccess::None,
         };
-        let i64field : Option<Ip> = (&field.original).try_into().ok();
-        let pfield = match i64field {
-            Some(v) => PreStoredField::Some(v),
-            None => PreStoredField::Invalid
-        };
-        field.ip = Box::new(pfield);
-        match field.ip.as_ref() {
-            PreStoredField::Some(v) => Some(*v),
-            _ => None
+        if let Field::Ip(v) = field { return FieldAccess::Some(*v); }
+        match (&*field).try_into() {
+            Ok(v) => { *field = Field::Ip(v); FieldAccess::Some(v) }
+            Err(_) => FieldAccess::InvalidCast,
         }
     }
-    /// Obtains the casted value of the field into Text and caches it
-    pub fn txt_field(&mut self, field_name: &str) -> Option<&Text> {
-
-        let mut has_value = false;
-
-        let field = self.fields.get_mut(field_name)?;
-        match field.text.as_ref() {
-            PreStoredField::Invalid => return None,
-            PreStoredField::None => {},
-            PreStoredField::Some(_) => {
-                has_value = true;
+    /// Obtains the field value as `&str`, converting and storing in-place if needed.
+    pub fn get_str(&mut self, field_name: &str) -> FieldAccess<&str> {
+        let field = match self.fields.get_mut(field_name) {
+            Some(f) => f,
+            None => return FieldAccess::None,
+        };
+        if matches!(field, Field::Text(_)) {
+            let Field::Text(t) = field else { unreachable!() };
+            return FieldAccess::Some(&t[..]);
+        }
+        let val: Result<Text, _> = (&*field).try_into();
+        match val {
+            Ok(v) => {
+                *field = Field::Text(v);
+                let Field::Text(t) = field else { unreachable!() };
+                FieldAccess::Some(&t[..])
             }
-        };
-        if has_value {
-            match field.text.as_ref() {
-                PreStoredField::Some(v) => return Some(v),
-                _ => return None
-            }
-        }
-        let txtfield : Option<Text> = (&field.original).try_into().ok();
-        let pfield = match txtfield {
-            Some(v) => PreStoredField::Some(v),
-            None => PreStoredField::Invalid
-        };
-        field.text = Box::new(pfield);
-        match field.text.as_ref() {
-            PreStoredField::Some(v) => Some(v),
-            _ => None
+            Err(_) => FieldAccess::InvalidCast,
         }
     }
-    /// Obtains the casted value of the field into Vec<Text> and caches it
-    pub fn array_field(&mut self, field_name: &str) -> Option<&Vec<Text>> {
-
-        let mut has_value = false;
-
-        let field = self.fields.get_mut(field_name)?;
-        match field.array.as_ref() {
-            PreStoredField::Invalid => return None,
-            PreStoredField::None => {},
-            PreStoredField::Some(_) => {
-                has_value = true;
-            }
+    /// Obtains the field value as `&Vec<Text>`, converting and storing in-place if needed.
+    pub fn get_array(&mut self, field_name: &str) -> FieldAccess<&Vec<Text>> {
+        let field = match self.fields.get_mut(field_name) {
+            Some(f) => f,
+            None => return FieldAccess::None,
         };
-        if has_value {
-            match field.array.as_ref() {
-                PreStoredField::Some(v) => return Some(v),
-                _ => return None
-            }
+        if matches!(field, Field::Array(_)) {
+            let Field::Array(a) = field else { unreachable!() };
+            return FieldAccess::Some(a);
         }
-        let txtfield : Option<Vec<Text>> = (&field.original).try_into().ok();
-        let pfield = match txtfield {
-            Some(v) => PreStoredField::Some(v),
-            None => PreStoredField::Invalid
-        };
-        field.array = Box::new(pfield);
-        match field.array.as_ref() {
-            PreStoredField::Some(v) => Some(v),
-            _ => None
+        let val: Result<Vec<Text>, _> = (&*field).try_into();
+        match val {
+            Ok(v) => {
+                *field = Field::Array(v);
+                let Field::Array(a) = field else { unreachable!() };
+                FieldAccess::Some(a)
+            }
+            Err(_) => FieldAccess::InvalidCast,
         }
     }
 
@@ -224,6 +171,39 @@ impl<'a> ForensicData {
         }
     }
 
+    /// Remove a field by name, returning its value if it existed.
+    pub fn remove(&mut self, field_name: &str) -> Option<Field> {
+        self.fields.remove(field_name)
+    }
+
+    /// Check whether a field exists by name.
+    pub fn contains_key(&self, field_name: &str) -> bool {
+        self.fields.contains_key(field_name)
+    }
+
+    /// Obtains the field value as a `Filetime`, if it is a `Field::Date`.
+    pub fn get_date(&self, field_name: &str) -> Option<&Filetime> {
+        match self.fields.get(field_name) {
+            Some(Field::Date(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Merge all fields from another `ForensicData` into this one.
+    /// Existing keys are overwritten.
+    pub fn extend_from(&mut self, other: ForensicData) {
+        self.fields.extend(other.fields);
+    }
+
+    /// Number of fields stored.
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Whether this container has no fields.
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
 }
 
 
@@ -256,31 +236,29 @@ impl std::fmt::Display for ForensicData {
 }
 
 pub struct EventIter<'a> {
-    children: std::collections::btree_map::Iter<'a, Text, InternalField>,
+    children: std::collections::btree_map::Iter<'a, Text, Field>,
 }
 pub struct EventFieldIter<'a> {
     names: std::collections::btree_set::Iter<'a, Text>,
-    fields: &'a BTreeMap<Text, InternalField>,
+    fields: &'a BTreeMap<Text, Field>,
 }
 
 pub struct EventIterMut<'a> {
-    children: std::collections::btree_map::IterMut<'a, Text, InternalField>,
+    children: std::collections::btree_map::IterMut<'a, Text, Field>,
 }
 
 impl<'a> Iterator for EventIter<'a> {
     type Item = (&'a Text, &'a Field);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let evt = self.children.next()?;
-        Some((evt.0, &evt.1.original))
+        self.children.next()
     }
 }
 impl<'a> Iterator for EventIterMut<'a> {
     type Item = (&'a Text, &'a mut Field);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let evt = self.children.next()?;
-        Some((evt.0, &mut evt.1.original))
+        self.children.next()
     }
 }
 impl<'a> Iterator for EventFieldIter<'a> {
@@ -289,7 +267,7 @@ impl<'a> Iterator for EventFieldIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let field = self.names.next()?;
         let value = self.fields.get(field)?;
-        Some((field, &value.original))
+        Some((field, value))
     }
 }
 #[cfg(feature = "serde")]
@@ -308,7 +286,7 @@ impl Serialize for ForensicData {
         S: serde::Serializer {
         let mut map = serializer.serialize_map(Some(self.fields.len()))?;
         for (k,v) in &self.fields {
-            map.serialize_entry(k, &v.original)?;
+            map.serialize_entry(k, v)?;
         }
         map.end()
     }
@@ -329,10 +307,10 @@ impl<'de> Visitor<'de> for DataVisitor {
         let mut artifact = Artifact::default();
         let mut fields = BTreeMap::new();
         while let Some((key, value)) = map.next_entry()? {
-            fields.insert(Cow::Owned(key), InternalField::new(value));
+            fields.insert(Cow::Owned(key), value);
         }
         if let Some(artf) = fields.get(ARTIFACT_NAME) {
-            if let Field::Text(artf) = &artf.original {
+            if let Field::Text(artf) = artf {
                 artifact = (&artf[..]).into();
             }
         }

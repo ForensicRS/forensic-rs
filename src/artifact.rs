@@ -135,35 +135,35 @@ pub enum WebBrowsingArtifact {
     Unknown,
 }
 
-impl Into<Artifact> for WindowsArtifacts {
-    fn into(self) -> Artifact {
-        Artifact::Windows(self)
+impl From<WindowsArtifacts> for Artifact {
+    fn from(value: WindowsArtifacts) -> Artifact {
+        Artifact::Windows(value)
     }
 }
-impl Into<Artifact> for RegistryArtifacts {
-    fn into(self) -> Artifact {
-        Artifact::Windows(WindowsArtifacts::Registry(self))
+impl From<RegistryArtifacts> for Artifact {
+    fn from(value: RegistryArtifacts) -> Artifact {
+        Artifact::Windows(WindowsArtifacts::Registry(value))
     }
 }
-impl Into<Artifact> for WindowsEvents {
-    fn into(self) -> Artifact {
-        Artifact::Windows(WindowsArtifacts::WinEvt(self))
+impl From<WindowsEvents> for Artifact {
+    fn from(value: WindowsEvents) -> Artifact {
+        Artifact::Windows(WindowsArtifacts::WinEvt(value))
     }
 }
 
-impl Into<WindowsArtifacts> for String {
-    fn into(self) -> WindowsArtifacts {
-        WindowsArtifacts::Other(self)
+impl From<String> for WindowsArtifacts {
+    fn from(value: String) -> WindowsArtifacts {
+        WindowsArtifacts::Other(value)
     }
 }
-impl Into<RegistryArtifacts> for String {
-    fn into(self) -> RegistryArtifacts {
-        RegistryArtifacts::Other(self)
+impl From<String> for RegistryArtifacts {
+    fn from(value: String) -> RegistryArtifacts {
+        RegistryArtifacts::Other(value)
     }
 }
-impl Into<WindowsEvents> for String {
-    fn into(self) -> WindowsEvents {
-        WindowsEvents::Other(self)
+impl From<String> for WindowsEvents {
+    fn from(value: String) -> WindowsEvents {
+        WindowsEvents::Other(value)
     }
 }
 
@@ -616,7 +616,7 @@ pub fn artifact_from_str(txt : &str) -> Artifact {
 pub fn windows_artifacts_from_str(txt : &str) -> WindowsArtifacts {
     let (artifact, subartifact) = match txt.find("::") {
         Some(v) => (&txt[0..v], &txt[v+2..]),
-        None => (&txt[..], ""),
+        None => (txt, ""),
     };
     match artifact {
         "Unknown" => WindowsArtifacts::Unknown,

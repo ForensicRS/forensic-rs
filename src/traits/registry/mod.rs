@@ -37,11 +37,11 @@ pub enum RegValue {
 }
 
 impl RegValue {
-    pub fn from_str(v : &str) -> RegValue {
+    pub fn new_sz(v : &str) -> RegValue {
         RegValue::SZ(v.to_string())
     }
     pub fn from_string(v : String) -> RegValue {
-        RegValue::SZ(v.clone())
+        RegValue::SZ(v)
     }
     pub fn from_u32(v : u32) -> RegValue {
         RegValue::DWord(v)
@@ -51,60 +51,60 @@ impl RegValue {
     }
 }
 
-impl Into<RegValue> for String {
-    fn into(self) -> RegValue {
-        RegValue::SZ(self)
+impl From<String> for RegValue {
+    fn from(v: String) -> RegValue {
+        RegValue::SZ(v)
     }
 }
 
-impl Into<RegValue> for &str {
-    fn into(self) -> RegValue {
-        RegValue::SZ(self.to_string())
+impl From<&str> for RegValue {
+    fn from(v: &str) -> RegValue {
+        RegValue::SZ(v.to_string())
     }
 }
 
-impl Into<RegValue> for u32 {
-    fn into(self) -> RegValue {
-        RegValue::DWord(self)
+impl From<u32> for RegValue {
+    fn from(v: u32) -> RegValue {
+        RegValue::DWord(v)
     }
 }
 
-impl Into<RegValue> for u64 {
-    fn into(self) -> RegValue {
-        RegValue::QWord(self)
+impl From<u64> for RegValue {
+    fn from(v: u64) -> RegValue {
+        RegValue::QWord(v)
     }
 }
-impl Into<RegValue> for i32 {
-    fn into(self) -> RegValue {
-        RegValue::DWord(self as u32)
+impl From<i32> for RegValue {
+    fn from(v: i32) -> RegValue {
+        RegValue::DWord(v as u32)
     }
 }
 
-impl Into<RegValue> for i64 {
-    fn into(self) -> RegValue {
-        RegValue::QWord(self as u64)
+impl From<i64> for RegValue {
+    fn from(v: i64) -> RegValue {
+        RegValue::QWord(v as u64)
     }
 }
-impl Into<RegValue> for usize {
-    fn into(self) -> RegValue {
+impl From<usize> for RegValue {
+    fn from(v: usize) -> RegValue {
         #[cfg(target_pointer_width="32")] 
         {
-            RegValue::DWord(self as u32)
+            RegValue::DWord(v as u32)
         }
         #[cfg(target_pointer_width="16")] 
         {
-            RegValue::DWord(self as u32)
+            RegValue::DWord(v as u32)
         }
         #[cfg(target_pointer_width="64")] 
         {
-            RegValue::QWord(self as u64)
+            RegValue::QWord(v as u64)
         }
     }
 }
 
-impl Into<RegValue> for Vec<u8> {
-    fn into(self) -> RegValue {
-        RegValue::Binary(self)
+impl From<Vec<u8>> for RegValue {
+    fn from(v: Vec<u8>) -> RegValue {
+        RegValue::Binary(v)
     }
 }
 
@@ -220,6 +220,7 @@ pub struct RegistryKeyInfo {
 }
 
 /// It allows decoupling the registry access library from the analysis library.
+#[allow(clippy::wrong_self_convention)]
 pub trait RegistryReader {
     /// Mounts a registry reader in a hive file
     fn from_file(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn RegistryReader>>;
@@ -246,7 +247,7 @@ pub trait RegistryReader {
             "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
         )?;
         let value = self.read_value(key, "SystemRoot")?;
-        Ok(value.try_into()?)
+        value.try_into()
     }
 
     fn list_users(&self) -> ForensicResult<Vec<String>> {
@@ -262,7 +263,29 @@ pub trait RegistryReader {
             "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
         )?;
         let value = self.read_value(key, "CurrentBuild")?;
-        Ok(value.try_into()?)
+        value.try_into()
+    }
+}
+
+impl dyn RegistryReader {
+    /// Recursively walk registry keys starting from `root_key`, calling `visitor` for each subkey.
+    /// The visitor receives the full path and the opened key handle.
+    pub fn walk_keys(&self, root_key: RegHiveKey, root_path: &str, visitor: &mut dyn FnMut(&str, RegHiveKey)) -> ForensicResult<()> {
+        let subkeys = self.enumerate_keys(root_key)?;
+        for subkey_name in &subkeys {
+            let full_path = if root_path.is_empty() {
+                subkey_name.clone()
+            } else {
+                format!("{}\\{}", root_path, subkey_name)
+            };
+            if let Ok(child_key) = self.open_key(root_key, subkey_name) {
+                visitor(&full_path, child_key);
+                // Best-effort: ignore errors descending into subkeys
+                let _ = self.walk_keys(child_key, &full_path, visitor);
+                self.close_key(child_key);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -296,6 +319,48 @@ pub fn auto_close_key<F, T>(reader : &dyn RegistryReader, key : RegHiveKey, oper
         result
     }
 
+/// RAII guard that automatically closes a registry key when dropped.
+///
+/// ```rust
+/// use forensic_rs::prelude::*;
+/// use forensic_rs::utils::testing::TestingRegistry;
+/// let reader = TestingRegistry::new();
+/// let user_id = "S-1-5-21-1366093794-4292800403-1155380978-513";
+/// let key = reader.open_key(HKU, user_id).unwrap();
+/// let guard = RegistryKeyGuard::new(&reader, key);
+/// let volatile = reader.open_key(*guard, "Volatile Environment").unwrap();
+/// let _value = reader.read_value(volatile, "USERPROFILE");
+/// // key is closed when `guard` goes out of scope
+/// ```
+pub struct RegistryKeyGuard<'a> {
+    reader: &'a dyn RegistryReader,
+    key: RegHiveKey,
+}
+
+impl<'a> RegistryKeyGuard<'a> {
+    pub fn new(reader: &'a dyn RegistryReader, key: RegHiveKey) -> Self {
+        Self { reader, key }
+    }
+
+    /// Returns the underlying key without consuming the guard.
+    pub fn key(&self) -> RegHiveKey {
+        self.key
+    }
+}
+
+impl<'a> std::ops::Deref for RegistryKeyGuard<'a> {
+    type Target = RegHiveKey;
+    fn deref(&self) -> &RegHiveKey {
+        &self.key
+    }
+}
+
+impl<'a> Drop for RegistryKeyGuard<'a> {
+    fn drop(&mut self) {
+        self.reader.close_key(self.key);
+    }
+}
+
 #[cfg(test)]
 mod reg_value {
     use crate::{err::ForensicResult, traits::registry::{RegistryKeyInfo, RegistryReader}};
@@ -304,21 +369,21 @@ mod reg_value {
 
     #[test]
     fn should_convert_using_try_into() {
-        let _: String = RegValue::SZ(format!("String RegValue"))
+        let _: String = RegValue::SZ("String RegValue".to_string())
             .try_into()
             .expect("Must convert values");
-        let _: String = RegValue::MultiSZ(vec![format!("String RegValue")])
+        let _: String = RegValue::MultiSZ(vec!["String RegValue".to_string()])
             .try_into()
             .expect("Must convert values");
-        let _: String = RegValue::ExpandSZ(format!("String RegValue"))
+        let _: String = RegValue::ExpandSZ("String RegValue".to_string())
             .try_into()
             .expect("Must convert values");
 
-        let _ = TryInto::<u32>::try_into(RegValue::ExpandSZ(format!("String RegValue")))
+        let _ = TryInto::<u32>::try_into(RegValue::ExpandSZ("String RegValue".to_string()))
             .expect_err("Should return error");
-        let _ = TryInto::<u64>::try_into(RegValue::ExpandSZ(format!("String RegValue")))
+        let _ = TryInto::<u64>::try_into(RegValue::ExpandSZ("String RegValue".to_string()))
             .expect_err("Should return error");
-        let _ = TryInto::<Vec<u8>>::try_into(RegValue::ExpandSZ(format!("String RegValue")))
+        let _ = TryInto::<Vec<u8>>::try_into(RegValue::ExpandSZ("String RegValue".to_string()))
             .expect_err("Should return error");
 
         let _: u32 = RegValue::DWord(123)
@@ -386,21 +451,21 @@ mod reg_value {
                 _hkey: crate::traits::registry::RegHiveKey,
                 _value_name: &str,
             ) -> crate::err::ForensicResult<RegValue> {
-                Ok(RegValue::SZ(format!("123")))
+                Ok(RegValue::SZ("123".to_string()))
             }
 
             fn enumerate_values(
                 &self,
                 _hkey: crate::traits::registry::RegHiveKey,
             ) -> crate::err::ForensicResult<Vec<String>> {
-                Ok(vec![format!("123")])
+                Ok(vec!["123".to_string()])
             }
 
             fn enumerate_keys(
                 &self,
                 _hkey: crate::traits::registry::RegHiveKey,
             ) -> crate::err::ForensicResult<Vec<String>> {
-                Ok(vec![format!("123")])
+                Ok(vec!["123".to_string()])
             }
 
             fn key_at(
@@ -408,7 +473,7 @@ mod reg_value {
                 _hkey: crate::traits::registry::RegHiveKey,
                 _pos: u32,
             ) -> crate::err::ForensicResult<String> {
-                Ok(format!("123"))
+                Ok("123".to_string())
             }
 
             fn value_at(
@@ -416,7 +481,7 @@ mod reg_value {
                 _hkey: crate::traits::registry::RegHiveKey,
                 _pos: u32,
             ) -> crate::err::ForensicResult<String> {
-                Ok(format!("123"))
+                Ok("123".to_string())
             }
             fn key_info(&self, _hkey: crate::traits::registry::RegHiveKey) -> ForensicResult<crate::traits::registry::RegistryKeyInfo>{
                 Ok(RegistryKeyInfo::default())

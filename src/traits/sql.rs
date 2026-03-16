@@ -2,6 +2,7 @@ use crate::{prelude::ForensicResult, err::ForensicError};
 
 use super::vfs::VirtualFile;
 
+#[allow(clippy::wrong_self_convention)]
 pub trait SqlDb {
     fn list_tables(&self) -> ForensicResult<Vec<String>>;
     fn prepare<'a>(&'a self, statement : &'a str) -> ForensicResult<Box<dyn SqlStatement + 'a>>;
@@ -46,12 +47,12 @@ pub enum ColumnValue {
     Null,
 }
 
-impl TryInto<String> for ColumnValue {
+impl TryFrom<ColumnValue> for String {
     type Error = ForensicError;
 
-    fn try_into(self) -> Result<String, Self::Error> {
-        Ok(match self {
-            ColumnValue::String(v) => v.clone(),
+    fn try_from(value: ColumnValue) -> Result<String, Self::Error> {
+        Ok(match value {
+            ColumnValue::String(v) => v,
             ColumnValue::Binary(v) => format!("{:?}",v),
             ColumnValue::Float(v) => format!("{:?}",v),
             ColumnValue::Integer(v) => format!("{:?}",v),
@@ -60,11 +61,11 @@ impl TryInto<String> for ColumnValue {
     }
 }
 
-impl TryInto<i64> for ColumnValue {
+impl TryFrom<ColumnValue> for i64 {
     type Error = ForensicError;
 
-    fn try_into(self) -> Result<i64, Self::Error> {
-        match self {
+    fn try_from(value: ColumnValue) -> Result<i64, Self::Error> {
+        match value {
             ColumnValue::Integer(v) => Ok(v),
             ColumnValue::Binary(_) => Err(ForensicError::cast_error("Vec<u8>", "i64", "Incompatible column value type".into())),
             ColumnValue::Null => Err(ForensicError::cast_error("null", "i64", "Incompatible column value type".into())),
@@ -74,11 +75,11 @@ impl TryInto<i64> for ColumnValue {
     }
 }
 
-impl TryInto<usize> for ColumnValue {
+impl TryFrom<ColumnValue> for usize {
     type Error = ForensicError;
 
-    fn try_into(self) -> Result<usize, Self::Error> {
-        match self {
+    fn try_from(value: ColumnValue) -> Result<usize, Self::Error> {
+        match value {
             ColumnValue::Integer(v) => Ok(v as _),
             ColumnValue::Binary(_) => Err(ForensicError::cast_error("Vec<u8>", "usize", "Incompatible column value type".into())),
             ColumnValue::Null => Err(ForensicError::cast_error("null", "usize", "Incompatible column value type".into())),
@@ -88,11 +89,11 @@ impl TryInto<usize> for ColumnValue {
     }
 }
 
-impl TryInto<f64> for ColumnValue {
+impl TryFrom<ColumnValue> for f64 {
     type Error = ForensicError;
 
-    fn try_into(self) -> Result<f64, Self::Error> {
-        match self {
+    fn try_from(value: ColumnValue) -> Result<f64, Self::Error> {
+        match value {
             ColumnValue::Float(v) => Ok(v),
             ColumnValue::Integer(v) => Ok(v as _),
             ColumnValue::Binary(_) => Err(ForensicError::cast_error("Vec<u8>", "f64", "Incompatible column value type".into())),
@@ -102,93 +103,89 @@ impl TryInto<f64> for ColumnValue {
     }
 }
 
-impl TryInto<Vec<u8>> for ColumnValue {
+impl TryFrom<ColumnValue> for Vec<u8> {
     type Error = ForensicError;
 
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        match self {
+    fn try_from(value: ColumnValue) -> Result<Vec<u8>, Self::Error> {
+        match value {
             ColumnValue::Binary(v) => Ok(v),
             ColumnValue::Null => Err(ForensicError::cast_error("null", "Vec<u8>", "Incompatible column value type".into())),
             ColumnValue::String(_) => Err(ForensicError::cast_error("str", "Vec<u8>", "Incompatible column value type".into())),
             ColumnValue::Integer(_) => Err(ForensicError::cast_error("i64", "Vec<u8>", "Incompatible column value type".into())),
-            ColumnValue::Float(_) => Err(ForensicError::cast_error("f64", "Vec<u8", "Incompatible column value type".into())),
+            ColumnValue::Float(_) => Err(ForensicError::cast_error("f64", "Vec<u8>", "Incompatible column value type".into())),
         }
     }
 }
 
-impl Into<ColumnValue> for f32 {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Float(self as f64)
+impl From<f32> for ColumnValue {
+    fn from(value: f32) -> ColumnValue {
+        ColumnValue::Float(value as f64)
     }
 }
 
-impl Into<ColumnValue> for f64 {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Float(self)
+impl From<f64> for ColumnValue {
+    fn from(value: f64) -> ColumnValue {
+        ColumnValue::Float(value)
     }
 }
-impl Into<ColumnValue> for u64 {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Integer(self as i64)
+impl From<u64> for ColumnValue {
+    fn from(value: u64) -> ColumnValue {
+        ColumnValue::Integer(value as i64)
     }
 }
-impl Into<ColumnValue> for i64 {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Integer(self as i64)
+impl From<i64> for ColumnValue {
+    fn from(value: i64) -> ColumnValue {
+        ColumnValue::Integer(value as i64)
     }
 }
-impl Into<ColumnValue> for u32 {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Integer(self as i64)
+impl From<u32> for ColumnValue {
+    fn from(value: u32) -> ColumnValue {
+        ColumnValue::Integer(value as i64)
     }
 }
-impl Into<ColumnValue> for i32 {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Integer(self as i64)
+impl From<i32> for ColumnValue {
+    fn from(value: i32) -> ColumnValue {
+        ColumnValue::Integer(value as i64)
     }
 }
-impl Into<ColumnValue> for usize {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Integer(self as i64)
+impl From<usize> for ColumnValue {
+    fn from(value: usize) -> ColumnValue {
+        ColumnValue::Integer(value as i64)
     }
 }
-impl Into<ColumnValue> for Vec<u8> {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Binary(self)
+impl From<Vec<u8>> for ColumnValue {
+    fn from(value: Vec<u8>) -> ColumnValue {
+        ColumnValue::Binary(value)
     }
 }
-impl Into<ColumnValue> for &Vec<u8> {
-    fn into(self) -> ColumnValue {
-        ColumnValue::Binary(self.clone())
+impl From<&Vec<u8>> for ColumnValue {
+    fn from(value: &Vec<u8>) -> ColumnValue {
+        ColumnValue::Binary(value.clone())
     }
 }
-impl Into<ColumnValue> for () {
-    fn into(self) -> ColumnValue {
+impl From<()> for ColumnValue {
+    fn from(_value: ()) -> ColumnValue {
         ColumnValue::Null
     }
 }
-impl Into<ColumnValue> for &[u8] {
-    fn into(self) -> ColumnValue {
-        let mut vc = Vec::with_capacity(self.len());
-        for v in self {
-            vc.push(*v);
-        }
-        ColumnValue::Binary(vc)
+impl From<&[u8]> for ColumnValue {
+    fn from(value: &[u8]) -> ColumnValue {
+        ColumnValue::Binary(value.to_vec())
     }
 }
-impl Into<ColumnValue> for &str {
-    fn into(self) -> ColumnValue {
-        ColumnValue::String(self.to_string())
+impl From<&str> for ColumnValue {
+    fn from(value: &str) -> ColumnValue {
+        ColumnValue::String(value.to_string())
     }
 }
-impl Into<ColumnValue> for &String {
-    fn into(self) -> ColumnValue {
-        ColumnValue::String(self.to_string())
+impl From<&String> for ColumnValue {
+    fn from(value: &String) -> ColumnValue {
+        ColumnValue::String(value.to_string())
     }
 }
-impl Into<ColumnValue> for String {
-    fn into(self) -> ColumnValue {
-        ColumnValue::String(self)
+impl From<String> for ColumnValue {
+    fn from(value: String) -> ColumnValue {
+        ColumnValue::String(value)
     }
 }
 

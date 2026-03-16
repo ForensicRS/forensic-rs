@@ -328,7 +328,7 @@ pub fn interpolate_csidl_path(pth : &mut str, env_vars : &UserEnvVars) -> Option
         return Some(pth.to_string())
     }
     let pos = pth.as_bytes().iter().position(|&v| v == b'}')?;
-    (&mut pth[0..pos + 1]).make_ascii_uppercase();
+    pth[0..pos + 1].make_ascii_uppercase();
     let csidl = &pth[0..pos + 1];
     let rest = &pth[pos + 1..];
     let csidl_value = csidl_value(csidl)?;

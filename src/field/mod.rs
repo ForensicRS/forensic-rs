@@ -1,16 +1,21 @@
-use std::{borrow::Cow, path::PathBuf};
+use std::borrow::Cow;
 
 use serde::{de::Visitor, Deserializer};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-pub(crate) mod internal;
 pub mod ip;
 pub mod utils;
 
 pub use ip::Ip;
 
 use crate::utils::time::Filetime;
+use crate::err::ForensicError;
+use crate::scow::SCow;
+
+fn field_cast_err(from: &'static str, to: &'static str) -> ForensicError {
+    ForensicError::cast_error(from, to, SCow::Borrowed("incompatible field variant"))
+}
 
 pub type Text = Cow<'static, str>;
 
@@ -23,20 +28,6 @@ pub enum Field {
     Text(Text),
     /// IPv4 or IPv6
     Ip(Ip),
-    //Domain like contoso.com
-    Domain(String),
-    User(String),
-    ///This is a special field. Uniquely identifies an asset like a system, a
-    /// computer or a mobile phone. Reason: the network is dynamic, the IP address
-    /// is not fixed certain devices and the hostname of a system can be changed.
-    ///
-    /// This field should be used with a dataset to recover information about an asset
-    /// during the enchance phase:
-    /// Getting the IP address, the users logged in the system or another information.
-    ///
-    /// Can be multiple AssetsID associated with the same event because multiple virtual
-    /// machines can be running in the same asset.
-    AssetID(String),
     /// unsigned number with 64 bits
     U64(u64),
     /// signed number with 64 bits
@@ -46,7 +37,6 @@ pub enum Field {
     ///A date in a decimal number format with 64 bits
     Date(Filetime),
     Array(Vec<Text>),
-    Path(PathBuf),
 }
 
 impl std::fmt::Debug for Field {
@@ -55,92 +45,78 @@ impl std::fmt::Debug for Field {
             Self::Null => write!(f, "Null"),
             Self::Text(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
             Self::Ip(arg0) => f.write_fmt(format_args!("{}", arg0)),
-            Self::Domain(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
-            Self::User(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
-            Self::AssetID(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
             Self::U64(arg0) => f.write_fmt(format_args!("{}", arg0)),
             Self::I64(arg0) => f.write_fmt(format_args!("{}", arg0)),
             Self::F64(arg0) => f.write_fmt(format_args!("{}", arg0)),
             Self::Date(arg0) => f.write_fmt(format_args!("{:?}", arg0)),
             Self::Array(arg0) => f.debug_list().entries(arg0.iter()).finish(),
-            Self::Path(arg0) => f.write_fmt(format_args!("{:?}", arg0.to_string_lossy())),
         }
     }
 }
 
 impl<'a> TryInto<&'a str> for &'a Field {
-    type Error = &'static str;
+    type Error = ForensicError;
 
     fn try_into(self) -> Result<&'a str, Self::Error> {
         match self {
             Field::Text(v) => Ok(&v[..]),
-            Field::Domain(v) => Ok(&v[..]),
-            Field::User(v) => Ok(&v[..]),
-            Field::AssetID(v) => Ok(&v[..]),
-            _ => Err("Invalid text type"),
+            _ => Err(field_cast_err("Field", "&str")),
         }
     }
 }
 
-impl<'a> TryInto<Text> for &'a Field {
-    type Error = &'static str;
+impl TryInto<Text> for &Field {
+    type Error = ForensicError;
 
     fn try_into(self) -> Result<Text, Self::Error> {
         match self {
             Field::Text(v) => Ok(v.clone()),
-            Field::Domain(v) => Ok(Text::Owned(v.to_string())),
-            Field::User(v) => Ok(Text::Owned(v.to_string())),
-            Field::AssetID(v) => Ok(Text::Owned(v.to_string())),
-            _ => Err("Invalid type"),
+            _ => Err(field_cast_err("Field", "Text")),
         }
     }
 }
 impl<'a> TryInto<&'a Text> for &'a Field {
-    type Error = &'static str;
+    type Error = ForensicError;
 
     fn try_into(self) -> Result<&'a Text, Self::Error> {
         match self {
             Field::Text(v) => Ok(v),
-            _ => Err("Invalid type"),
+            _ => Err(field_cast_err("Field", "&Text")),
         }
     }
 }
 
 impl<'a> TryInto<&'a Vec<Text>> for &'a Field {
-    type Error = &'static str;
+    type Error = ForensicError;
 
     fn try_into(self) -> Result<&'a Vec<Text>, Self::Error> {
         match self {
             Field::Array(v) => Ok(v),
-            _ => Err("Invalid type"),
+            _ => Err(field_cast_err("Field", "&Vec<Text>")),
         }
     }
 }
 
-impl<'a> TryInto<Vec<Text>> for &'a Field {
-    type Error = &'static str;
+impl TryInto<Vec<Text>> for &Field {
+    type Error = ForensicError;
 
     fn try_into(self) -> Result<Vec<Text>, Self::Error> {
         let value = match self {
             Field::Array(v) => return Ok(v.clone()),
-            Field::AssetID(v) => Text::Owned(v.clone()),
             Field::Text(v) => v.clone(),
-            Field::Domain(v) => Text::Owned(v.clone()),
-            Field::User(v) => Text::Owned(v.clone()),
             Field::I64(v) => Text::Owned(v.to_string()),
             Field::F64(v) => Text::Owned(v.to_string()),
             Field::U64(v) => Text::Owned(v.to_string()),
             Field::Date(v) => Text::Owned(v.to_string()),
             Field::Ip(v) => Text::Owned(v.to_string()),
             Field::Null => Text::Borrowed(""),
-            Field::Path(v) => Text::Owned(v.to_string_lossy().to_string()),
         };
         Ok(vec![value])
     }
 }
 
-impl<'a> TryInto<u64> for &'a Field {
-    type Error = &'static str;
+impl TryInto<u64> for &Field {
+    type Error = ForensicError;
 
     fn try_into(self) -> Result<u64, Self::Error> {
         Ok(match self {
@@ -148,12 +124,13 @@ impl<'a> TryInto<u64> for &'a Field {
             Field::I64(v) => *v as u64,
             Field::U64(v) => *v,
             Field::Date(v) => v.filetime(),
-            _ => return Err("Invalid type"),
+            Field::Text(v) => v.parse::<u64>().map_err(|_| field_cast_err("Field::Text", "u64"))?,
+            _ => return Err(field_cast_err("Field", "u64")),
         })
     }
 }
-impl<'a> TryInto<i64> for &'a Field {
-    type Error = &'static str;
+impl TryInto<i64> for &Field {
+    type Error = ForensicError;
 
     fn try_into(self) -> Result<i64, Self::Error> {
         Ok(match self {
@@ -161,12 +138,13 @@ impl<'a> TryInto<i64> for &'a Field {
             Field::I64(v) => *v,
             Field::U64(v) => *v as i64,
             Field::Date(v) => v.filetime() as i64,
-            _ => return Err("Invalid type"),
+            Field::Text(v) => v.parse::<i64>().map_err(|_| field_cast_err("Field::Text", "i64"))?,
+            _ => return Err(field_cast_err("Field", "i64")),
         })
     }
 }
-impl<'a> TryInto<f64> for &'a Field {
-    type Error = &'static str;
+impl TryInto<f64> for &Field {
+    type Error = ForensicError;
 
     fn try_into(self) -> Result<f64, Self::Error> {
         Ok(match self {
@@ -174,19 +152,63 @@ impl<'a> TryInto<f64> for &'a Field {
             Field::I64(v) => *v as f64,
             Field::U64(v) => *v as f64,
             Field::Date(v) => v.filetime() as f64,
-            _ => return Err("Invalid type"),
+            Field::Text(v) => v.parse::<f64>().map_err(|_| field_cast_err("Field::Text", "f64"))?,
+            _ => return Err(field_cast_err("Field", "f64")),
         })
     }
 }
 
-impl<'a> TryInto<Ip> for &'a Field {
-    type Error = &'static str;
+impl TryInto<Ip> for &Field {
+    type Error = ForensicError;
     fn try_into(self) -> Result<Ip, Self::Error> {
         Ok(match self {
-            Field::Text(v) => Ip::from_ip_str(v).map_err(|_e| "Invalud ip format")?,
+            Field::Text(v) => Ip::from_ip_str(v).map_err(|_e| field_cast_err("Field::Text", "Ip"))?,
             Field::Ip(v) => *v,
-            _ => return Err("Type cannot be converted to Ip"),
+            _ => return Err(field_cast_err("Field", "Ip")),
         })
+    }
+}
+
+/// The result of accessing a field with a type expectation.
+///
+/// - `Some(T)` — the field exists and was successfully cast or converted to `T`
+/// - `None` — the field does not exist
+/// - `InvalidCast` — the field exists but cannot be converted to `T`
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldAccess<T> {
+    Some(T),
+    None,
+    InvalidCast,
+}
+
+impl<T> FieldAccess<T> {
+    pub fn is_some(&self) -> bool {
+        matches!(self, FieldAccess::Some(_))
+    }
+    pub fn is_none(&self) -> bool {
+        matches!(self, FieldAccess::None)
+    }
+    pub fn is_invalid(&self) -> bool {
+        matches!(self, FieldAccess::InvalidCast)
+    }
+    pub fn ok(self) -> Option<T> {
+        match self {
+            FieldAccess::Some(v) => Option::Some(v),
+            _ => Option::None,
+        }
+    }
+    pub fn unwrap(self) -> T {
+        match self {
+            FieldAccess::Some(v) => v,
+            FieldAccess::None => panic!("called unwrap on FieldAccess::None"),
+            FieldAccess::InvalidCast => panic!("called unwrap on FieldAccess::InvalidCast"),
+        }
+    }
+    pub fn unwrap_or(self, default: T) -> T {
+        match self {
+            FieldAccess::Some(v) => v,
+            _ => default,
+        }
     }
 }
 
@@ -278,6 +300,21 @@ impl From<&Vec<Text>> for Field {
         Field::Array(v.clone())
     }
 }
+impl From<bool> for Field {
+    fn from(v: bool) -> Field {
+        Field::U64(v as u64)
+    }
+}
+impl From<Filetime> for Field {
+    fn from(v: Filetime) -> Field {
+        Field::Date(v)
+    }
+}
+impl From<crate::utils::time::ForensicTimestamp> for Field {
+    fn from(v: crate::utils::time::ForensicTimestamp) -> Field {
+        Field::Date(v.into())
+    }
+}
 
 #[cfg(feature = "serde")]
 impl Serialize for Field {
@@ -289,15 +326,11 @@ impl Serialize for Field {
             Field::Null => serializer.serialize_none(),
             Field::Text(v) => serializer.serialize_str(&v[..]),
             Field::Ip(v) => v.serialize(serializer),
-            Field::Domain(v) => serializer.serialize_str(&v[..]),
-            Field::User(v) => serializer.serialize_str(&v[..]),
-            Field::AssetID(v) => serializer.serialize_str(&v[..]),
             Field::U64(v) => serializer.serialize_u64(*v),
             Field::I64(v) => serializer.serialize_i64(*v),
             Field::F64(v) => serializer.serialize_f64(*v),
             Field::Date(v) => serializer.serialize_str(&v.to_string()),
             Field::Array(v) => v.serialize(serializer),
-            Field::Path(v) => serializer.serialize_str(&v.to_string_lossy()[..]),
         }
     }
 }
@@ -421,5 +454,67 @@ impl<'de> Visitor<'de> for FieldVisitor {
             vc.push(value);
         }
         Ok(Field::Array(vc))
+    }
+}
+
+// ============================================================================
+// ForensicValue <-> Field conversions
+// ============================================================================
+//
+// Lossy conversion rules:
+//   Bool     -> U64 (0 or 1)
+//   I64      -> I64
+//   U64      -> U64
+//   F64      -> F64
+//   DateTime -> Date
+//   Guid     -> Text (formatted)
+//   Text     -> Text
+//   Binary   -> Null (no Field equivalent)
+//   Null     -> Null
+
+use crate::traits::db::ForensicValue;
+
+impl From<ForensicValue> for Field {
+    fn from(value: ForensicValue) -> Self {
+        match value {
+            ForensicValue::Null => Field::Null,
+            ForensicValue::Bool(v) => Field::U64(if v { 1 } else { 0 }),
+            ForensicValue::I64(v) => Field::I64(v),
+            ForensicValue::U64(v) => Field::U64(v),
+            ForensicValue::F64(v) => Field::F64(v),
+            ForensicValue::DateTime(v) => Field::Date(v),
+            ForensicValue::Guid(v) => {
+                Field::Text(Cow::Owned(format!(
+                    "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                    u32::from_le_bytes([v[0], v[1], v[2], v[3]]),
+                    u16::from_le_bytes([v[4], v[5]]),
+                    u16::from_le_bytes([v[6], v[7]]),
+                    v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]
+                )))
+            }
+            ForensicValue::Text(v) => Field::Text(Cow::Owned(v)),
+            ForensicValue::Binary(_) => Field::Null,
+        }
+    }
+}
+
+impl From<Field> for ForensicValue {
+    fn from(field: Field) -> Self {
+        match field {
+            Field::Null => ForensicValue::Null,
+            Field::Text(v) => ForensicValue::Text(v.into_owned()),
+            Field::Ip(v) => ForensicValue::Text(v.to_string()),
+            Field::U64(v) => ForensicValue::U64(v),
+            Field::I64(v) => ForensicValue::I64(v),
+            Field::F64(v) => ForensicValue::F64(v),
+            Field::Date(v) => ForensicValue::DateTime(v),
+            Field::Array(v) => {
+                if let Some(first) = v.into_iter().next() {
+                    ForensicValue::Text(first.into_owned())
+                } else {
+                    ForensicValue::Null
+                }
+            }
+        }
     }
 }

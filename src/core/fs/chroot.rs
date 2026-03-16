@@ -28,9 +28,9 @@ impl ChRootFileSystem {
 }
 fn normalize_prefix(path : &Path) -> PathBuf {
     let striped = strip_prefix(path);
-    let path_comps = striped.components().into_iter();
+    let path_comps = striped.components();
     let mut final_path = PathBuf::new();
-    for next in path_comps.into_iter() {
+    for next in path_comps {
         if let std::path::Component::RootDir = &next {
             continue
         }
@@ -39,7 +39,7 @@ fn normalize_prefix(path : &Path) -> PathBuf {
                 continue
             }
             if splt.contains(":") {
-                final_path.push(&splt.replace(":", ""));
+                final_path.push(splt.replace(":", ""));
             }else {
                 final_path.push(splt);
             }
@@ -116,14 +116,13 @@ impl VirtualFileSystem for ChRootFileSystem {
 
 #[cfg(test)]
 mod tst {
-    use std::path::PathBuf;
     use std::io::Write;
     use crate::core::fs::StdVirtualFS;
 
     use super::*;
 
-    const CONTENT: &'static str = "File_Content_Of_VFS";
-    const FILE_NAME: &'static str = "test_chrfs_file.txt";
+    const CONTENT: &str = "File_Content_Of_VFS";
+    const FILE_NAME: &str = "test_chrfs_file.txt";
 
     #[test]
     fn test_temp_file() {
@@ -141,7 +140,7 @@ mod tst {
         test_file_content(&mut chrfs,&file_path_in_chroot);
     }
 
-    fn test_file_content(std_vfs : &mut impl VirtualFileSystem, tmp_file : &PathBuf) {
+    fn test_file_content(std_vfs : &mut impl VirtualFileSystem, tmp_file : &Path) {
         let content = std_vfs.read_to_string(tmp_file).unwrap();
         assert_eq!(CONTENT, content);
         
@@ -153,7 +152,7 @@ mod tst {
             _fs : Box<dyn VirtualFileSystem>
         }
         let boxed = Box::new(StdVirtualFS::new());
-        Test {
+        let _test = Test {
             _fs : boxed
         };
 

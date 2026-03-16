@@ -129,18 +129,18 @@ impl From<Cow<'static, str>> for SCow {
 }
 
 // Into implementations
-impl Into<String> for SCow {
+impl From<SCow> for String {
     #[inline]
-    fn into(self) -> String {
-        self.into_owned()
+    fn from(value: SCow) -> String {
+        value.into_owned()
     }
 }
 
-impl Into<Cow<'static, str>> for SCow {
-    fn into(self) -> Cow<'static, str> {
-        match self {
-            Self::Borrowed(s) => Cow::Borrowed(s),
-            Self::Owned(s) => Cow::Owned(s),
+impl From<SCow> for Cow<'static, str> {
+    fn from(value: SCow) -> Cow<'static, str> {
+        match value {
+            SCow::Borrowed(s) => Cow::Borrowed(s),
+            SCow::Owned(s) => Cow::Owned(s),
         }
     }
 }

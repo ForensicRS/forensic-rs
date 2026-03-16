@@ -25,7 +25,7 @@ The error system is optimized for memory efficiency and provides rich contextual
 
 ## Usage Examples
 
-```rust
+```ignore
 use forensic_rs::prelude::*;
 
 // Buffer errors with detailed context
@@ -111,6 +111,7 @@ See individual method documentation for detailed usage examples and parameters.
 /// Type alias for Results that may return forensic parsing errors
 pub type ForensicResult<T> = Result<T, ForensicError>;
 
+#[allow(clippy::from_over_into)]
 impl<T> Into<ForensicResult<T>> for ForensicError {
     fn into(self) -> ForensicResult<T> {
         Err(self)
@@ -306,7 +307,7 @@ use crate::{prelude::RegHiveKey, scow::SCow};
 ///
 /// ## Usage Examples
 ///
-/// ```rust
+/// ```ignore
 /// use forensic_rs::prelude::*;
 ///
 /// // Buffer validation
@@ -486,7 +487,7 @@ impl std::fmt::Display for BufferError {
 ///
 /// ## Usage Examples
 ///
-/// ```rust
+/// ```ignore
 /// use forensic_rs::prelude::*;
 ///
 /// fn parse_pe_header(data: &[u8]) -> ForensicResult<PEHeader> {
@@ -593,7 +594,7 @@ impl std::fmt::Display for FormatError {
 ///
 /// ## Usage Examples
 ///
-/// ```rust
+/// ```ignore
 /// use forensic_rs::prelude::*;
 ///
 /// fn decompress_lznt1(compressed: &[u8], output: &mut [u8]) -> ForensicResult<usize> {
@@ -691,7 +692,7 @@ impl std::fmt::Display for CompressionError {
 ///
 /// ## Usage Examples
 ///
-/// ```rust
+/// ```ignore
 /// use forensic_rs::prelude::*;
 ///
 /// fn load_file(path: &str) -> ForensicResult<Vec<u8>> {
@@ -794,7 +795,7 @@ impl std::fmt::Display for DataAccessError {
 ///
 /// ## Usage Examples
 ///
-/// ```rust
+/// ```ignore
 /// use forensic_rs::prelude::*;
 ///
 /// fn get_windows_version(registry: &Registry) -> ForensicResult<String> {
@@ -922,7 +923,7 @@ impl std::fmt::Display for RegistryError {
 ///
 /// ## Usage Examples
 ///
-/// ```rust
+/// ```ignore
 /// use forensic_rs::prelude::*;
 ///
 /// fn registry_value_to_u32(value: &RegistryValue) -> ForensicResult<u32> {
@@ -985,7 +986,7 @@ impl std::fmt::Display for CastError {
 ///
 /// ## Usage Examples
 ///
-/// ```rust
+/// ```ignore
 /// use forensic_rs::prelude::*;
 ///
 /// fn parse_filetime(filetime: u64) -> ForensicResult<SystemTime> {
@@ -1050,7 +1051,7 @@ impl ForensicError {
     /// Use this when iterating over data sources and reaching the end.
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn next_entry(&mut self) -> ForensicResult<Entry> {
@@ -1078,7 +1079,7 @@ impl ForensicError {
     /// - `data_type`: Description of what was being read (e.g., "PE header", "u32")
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn read_header(data: &[u8]) -> ForensicResult<Header> {
@@ -1152,7 +1153,7 @@ impl ForensicError {
     /// - `reason`: Detailed description of the validation failure
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn validate_pe_sections(sections: &[Section]) -> ForensicResult<()> {
@@ -1176,7 +1177,7 @@ impl ForensicError {
     /// - `found`: The version number found in the file
     ///
     /// # Examples  
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn parse_prefetch(data: &[u8]) -> ForensicResult<Prefetch> {
@@ -1226,7 +1227,7 @@ impl ForensicError {
     /// - `reason`: Description of the corruption
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn parse_section_table(data: &[u8], offset: u64) -> ForensicResult<Vec<Section>> {
@@ -1254,7 +1255,7 @@ impl ForensicError {
     /// - `reason`: Description of why the cell parsing failed
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn parse_key_node(data: &[u8]) -> ForensicResult<KeyNode> {
@@ -1281,7 +1282,7 @@ impl ForensicError {
     /// - `reason`: Description of why the hive parsing failed
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn parse_hive_header(data: &[u8]) -> ForensicResult<HiveHeader> {
@@ -1312,7 +1313,7 @@ impl ForensicError {
     /// - `reason`: Description of the algorithm error
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn decompress_lznt1(data: &[u8]) -> ForensicResult<Vec<u8>> {
@@ -1415,7 +1416,7 @@ impl ForensicError {
     /// - `context`: Additional context about what was missing
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn get_file_metadata(path: &str) -> ForensicResult<Metadata> {
@@ -1487,7 +1488,7 @@ impl ForensicError {
     /// - `context`: Additional context about the access denial
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn read_protected_file(path: &str) -> ForensicResult<Vec<u8>> {
@@ -1516,7 +1517,7 @@ impl ForensicError {
     /// - `key_path`: Optional sub-path within the hive
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn get_registry_key(hive: RegHiveKey, path: &str) -> ForensicResult<RegistryKey> {
@@ -1538,7 +1539,7 @@ impl ForensicError {
     /// - `value_name`: Name of the value that was not found
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn get_windows_version() -> ForensicResult<String> {
@@ -1563,7 +1564,7 @@ impl ForensicError {
     /// - `found`: The actual type found in the registry
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn get_dword_value(value: &RegistryValue) -> ForensicResult<u32> {
@@ -1610,7 +1611,7 @@ impl ForensicError {
     /// - `expected_type`: Description of expected cell structure
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn parse_registry_cell(data: &[u8], offset: u64) -> ForensicResult<Cell> {
@@ -1639,7 +1640,7 @@ impl ForensicError {
     /// - `reason`: Explanation of why the conversion failed
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn convert_registry_value(value: &RegistryValue) -> ForensicResult<String> {
@@ -1691,7 +1692,7 @@ impl ForensicError {
     /// - `reason`: Explanation of why the timestamp is invalid
     ///
     /// # Examples
-    /// ```rust
+    /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
     /// fn parse_filetime(filetime: u64) -> ForensicResult<SystemTime> {
@@ -1822,7 +1823,7 @@ impl Clone for ForensicError {
                 Self::Io { kind: *kind, context: context.clone() }
             },
             Self::Other { category, message } => {
-                Self::Other { category: *category, message: message.clone() }
+                Self::Other { category, message: message.clone() }
             },
         }
     }

@@ -1,6 +1,8 @@
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use crate::artifact::Artifact;
+use crate::field::Text;
 
 thread_local! {
     pub(crate) static FORENSIC_CONTEXT : RefCell<ForensicContext> = RefCell::new(ForensicContext::default());
@@ -11,7 +13,9 @@ thread_local! {
 pub struct ForensicContext {
     pub host : String,
     pub artifact : Artifact,
-    pub tenant : String
+    pub tenant : String,
+    /// Extensible key-value metadata for custom analysis context.
+    pub metadata : BTreeMap<Text, Text>,
 }
 
 /// Simplifys the creation of new events with the context of the analysis: artifact being processed, name of the machine where the artifacts came from and the name of the client/tenant.
@@ -61,7 +65,8 @@ fn should_initialize_log_with_context() {
     let context = ForensicContext {
         artifact : RegistryArtifacts::AutoRuns.into(),
         host : "Agent007".into(),
-        tenant : "MI6".into()
+        tenant : "MI6".into(),
+        metadata : BTreeMap::new(),
     };
     initialize_context(context);
     let log = crate::data::ForensicData::default();

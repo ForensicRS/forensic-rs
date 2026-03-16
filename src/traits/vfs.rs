@@ -4,11 +4,13 @@ use std::{
 };
 
 use crate::err::ForensicResult;
+use crate::utils::time::ForensicTimestamp;
 
 pub trait VirtualFile: std::io::Seek + std::io::Read {
     fn metadata(&self) -> ForensicResult<VMetadata>;
 }
 
+#[allow(clippy::wrong_self_convention)]
 pub trait VirtualFileSystem {
     /// Initializes a virtual filesystem from a file. Ex: a Zip FS from a file
     fn from_file(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn VirtualFileSystem>>;
@@ -78,23 +80,32 @@ impl dyn VirtualFileSystem {
     pub fn exists_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<bool> {
         Ok(self.exists(path.as_ref()))
     }
+
+    /// Recursively walk a directory tree, calling `visitor` for each entry.
+    /// The visitor receives the full path of each entry found.
+    pub fn walk_dir(&mut self, root: &Path, visitor: &mut dyn FnMut(&Path, &VDirEntry)) -> ForensicResult<()> {
+        let entries = self.read_dir(root)?;
+        for entry in &entries {
+            let child = root.join(entry.to_string());
+            visitor(&child, entry);
+            if matches!(entry, VDirEntry::Directory(_)) {
+                // Best-effort: ignore errors descending into subdirectories
+                let _ = self.walk_dir(&child, visitor);
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct VMetadata {
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    ///
-    /// this is optional, because some filesystems might not support this timestamp
-    pub created: Option<usize>,
+    /// Creation timestamp (optional — some filesystems don't support it)
+    pub created: Option<ForensicTimestamp>,
 
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    ///
-    /// this is optional, because some filesystems might not support this timestamp
-    pub accessed: Option<usize>,
+    /// Last access timestamp (optional — some filesystems don't support it)
+    pub accessed: Option<ForensicTimestamp>,
 
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    ///
-    /// this is optional, because some filesystems might not support this timestamp
-    pub modified: Option<usize>,
+    /// Last modification timestamp (optional — some filesystems don't support it)
+    pub modified: Option<ForensicTimestamp>,
 
     pub file_type: VFileType,
     pub size: u64,
@@ -108,44 +119,41 @@ pub enum VFileType {
 }
 
 impl VMetadata {
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn created(&self) -> usize {
+    /// Returns the creation timestamp, or epoch if unsupported by the filesystem.
+    pub fn created(&self) -> ForensicTimestamp {
         self.created.unwrap_or_else(|| {
             crate::warn!(
                 "this filesystem has no support for creation time, using UNIX_EPOCH instead"
             );
-            0
+            ForensicTimestamp::from_unix_secs(0)
         })
     }
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn accessed(&self) -> usize {
+    /// Returns the last-access timestamp, or epoch if unsupported by the filesystem.
+    pub fn accessed(&self) -> ForensicTimestamp {
         self.accessed.unwrap_or_else(|| {
             crate::warn!(
                 "this filesystem has no support for access time, using UNIX_EPOCH instead"
             );
-            0
+            ForensicTimestamp::from_unix_secs(0)
         })
     }
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn modified(&self) -> usize {
+    /// Returns the last-modification timestamp, or epoch if unsupported by the filesystem.
+    pub fn modified(&self) -> ForensicTimestamp {
         self.modified.unwrap_or_else(|| {
             crate::warn!(
                 "this filesystem has no support for modification time, using UNIX_EPOCH instead"
             );
-            0
+            ForensicTimestamp::from_unix_secs(0)
         })
     }
 
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn created_opt(&self) -> Option<&usize> {
+    pub fn created_opt(&self) -> Option<&ForensicTimestamp> {
         self.created.as_ref()
     }
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn accessed_opt(&self) -> Option<&usize> {
+    pub fn accessed_opt(&self) -> Option<&ForensicTimestamp> {
         self.accessed.as_ref()
     }
-    /// Seconds elapsed since UNIX_EPOCH in UTC
-    pub fn modified_opt(&self) -> Option<&usize> {
+    pub fn modified_opt(&self) -> Option<&ForensicTimestamp> {
         self.modified.as_ref()
     }
     pub fn is_file(&self) -> bool {
@@ -159,6 +167,9 @@ impl VMetadata {
     }
     pub fn len(&self) -> u64 {
         self.size
+    }
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
     }
 }
 

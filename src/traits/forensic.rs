@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::{activity::ForensicActivity, prelude::ForensicData, utils::time::Filetime};
+use crate::{activity::ForensicActivity, prelude::{ForensicData, ForensicResult}, utils::time::Filetime};
 
 /// Quickly transform a structure into one or more events that are part of a timeline
 /// ```rust,ignore
@@ -16,7 +16,7 @@ use crate::{activity::ForensicActivity, prelude::ForensicData, utils::time::File
 /// }
 /// ```
 pub trait IntoTimeline<'a> {
-    type IntoIter: Iterator<Item = TimelineData> where Self: 'a;
+    type IntoIter: Iterator<Item = ForensicResult<TimelineData>> where Self: 'a;
     
     fn timeline(&'a self) -> Self::IntoIter;
 }
@@ -38,7 +38,7 @@ pub trait IntoTimeline<'a> {
 /// }
 /// ```
 pub trait IntoActivity<'a> {
-    type IntoIter: Iterator<Item = ForensicActivity> where Self: 'a;
+    type IntoIter: Iterator<Item = ForensicResult<ForensicActivity>> where Self: 'a;
     
     fn activity(&'a self) -> Self::IntoIter;
 }
@@ -59,7 +59,7 @@ pub struct TimelineData {
     pub time_context : TimeContext
 }
 
-pub trait ArtifactParser : IntoIterator<Item = ForensicData>  {
+pub trait ArtifactParser : IntoIterator<Item = ForensicResult<ForensicData>>  {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn version(&self) -> &'static str;
@@ -73,7 +73,7 @@ pub trait RegistryParser : ArtifactParser  {
 
 #[cfg(test)]
 mod artifacts {
-    use crate::{data::ForensicData, prelude::{RegistryArtifacts, Artifact}};
+    use crate::{data::ForensicData, prelude::{RegistryArtifacts, Artifact, ForensicResult}};
 
     use super::ArtifactParser;
 
@@ -94,15 +94,15 @@ mod artifacts {
     }
     struct IterParser123 {}
     impl Iterator for IterParser123 {
-        type Item = ForensicData;
+        type Item = ForensicResult<ForensicData>;
 
         fn next(&mut self) -> Option<Self::Item> {
-           Some(ForensicData::new("123",  RegistryArtifacts::ShellBags.into()))
+           Some(Ok(ForensicData::new("123",  RegistryArtifacts::ShellBags.into())))
         }
     }
 
     impl IntoIterator for Parser123 {
-        type Item = ForensicData;
+        type Item = ForensicResult<ForensicData>;
 
         type IntoIter = IterParser123;
 
@@ -116,7 +116,7 @@ mod artifacts {
         let parser = Parser123{};
         let mut iter = parser.into_iter();
         let artfct : Artifact = RegistryArtifacts::ShellBags.into();
-        assert_eq!(&artfct, iter.next().unwrap().artifact());
+        assert_eq!(&artfct, iter.next().unwrap().unwrap().artifact());
 
     }
 }
