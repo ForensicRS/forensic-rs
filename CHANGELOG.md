@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `EventLogReader` trait (`src/traits/events.rs`): abstract interface for querying Windows event logs with filtering, pagination, and fallible iteration. Includes `EventLogQuery` builder (filter by event ID, time range, provider, severity level, channel), `EventLogIterator` (fallible `next() -> ForensicResult<Option<EventRecord>>`), `EventRecord` (record_id, event_id, timestamp, provider, channel, level, computer, user_sid, extensible `data` map), and `EventLevel` enum (Critical=1..Verbose=5). `EventRecord` implements `Into<ForensicData>` mapping standard fields to ECS names.
+- `EventLogReader` ergonomic wrappers on `dyn EventLogReader`: `query_all()` and `query_channel(channel)`.
+- `EventLogReader` added to `TriageSources` and `TriageSourcesBuilder` as an optional artifact source.
+- `TestingEventLogReader` in `src/utils/testing.rs`: in-memory mock implementing `EventLogReader` for unit testing. `basic_event_log()` convenience constructor populates sample Security and System events.
+- `ForensicBridge` module (`src/bridge/`): channel-based multi-threaded bridge exposing all artifact domains as navigable trees for UI consumers (VSCode extensions, web frontends, etc.):
+  - `ForensicProvider` trait: object-safe interface with `name()`, `children()`, `read()`, `metadata()` methods supporting pagination and cooperative cancellation.
+  - `CancellationToken`: thread-safe `Arc<AtomicBool>` cooperative cancellation for long-running operations.
+  - `BridgeValue`: recursive value enum (`Null`, `Bool`, `I64`, `U64`, `F64`, `Text`, `Timestamp`, `Binary`, `Array`, `Map`). Implements `From<Field>` and `From<RegValue>`. Serializes to JSON via serde feature.
+  - `NodeEntry` / `NodeType`: tree node model (`Container`, `Leaf`, `Virtual`).
+  - `BridgeRequest` / `BridgeResponse`: channel-based protocol (ListProviders, Children, Read, Metadata, Shutdown).
+  - `BridgeClient`: cloneable `Send` handle to the bridge worker thread. Methods: `list_providers()`, `children()`, `children_page()`, `children_cancellable()`, `read()`, `metadata()`, `shutdown()`, configurable timeout via `request_timeout()`.
+  - `ForensicBridgeBuilder` / `ForensicBridge`: builder spawns a dedicated worker thread owning all providers; returns a `BridgeClient`.
+  - `RegistryProvider`, `VfsProvider`, `EventLogProvider`, `DatabaseProvider`: concrete `ForensicProvider` implementations wrapping each artifact trait behind a `Mutex`.
+  - `ProviderHook` trait (`src/bridge/hooks.rs`): postprocessing hooks that inject virtual parsed children into bridge tree nodes (e.g., parsed shellbag data inside registry binary values). Two-stage matching: `matches_path()` (fast) then `matches_value()` (content inspection). Virtual path convention: `[hookname]` bracketed segment avoids collisions with real children.
+  - Hook utilities: `virtual_segment(name)`, `is_virtual_segment(s)`, `split_virtual_path(path)`, `inject_hook_children()`.
 - `ForensicTimestamp`: Bitpacked u64 timestamp (8 bytes, microsecond precision, year 0-4095) with constructors for Windows FILETIME, Unix seconds/millis/micros, OLE Automation dates, WebKit/Chrome, HFS+, and Cocoa timestamps. Full bidirectional conversion with `Filetime`.
 - `VMetadata` timestamps migrated from `Option<usize>` (seconds) to `Option<ForensicTimestamp>` (microsecond precision).
 - `RegistryKeyGuard`: RAII wrapper that automatically calls `close_key()` on drop.

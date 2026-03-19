@@ -13,6 +13,7 @@ pub mod context;
 pub mod utils;
 pub mod scow;
 pub mod pipeline;
+pub mod bridge;
 
 pub mod prelude {
     pub use crate::utils::time::{UnixTimestamp, WinFiletime, Filetime, ForensicTimestamp, filetime_to_unix_timestamp};
@@ -48,4 +49,14 @@ pub mod prelude {
     #[cfg(feature = "serde")]
     pub use crate::pipeline::sinks::{JsonlTimelineSink, JsonlFindingSink};
     pub use crate::{trace, debug, info, warn, error, log, notify, notify_low, notify_info, notify_informational, notify_medium, notify_high, notify_critical};
+    // Events trait
+    pub use crate::traits::events::{EventLevel, EventLogIterator, EventLogQuery, EventLogReader, EventRecord};
+    // Bridge
+    pub use crate::bridge::{
+        BridgeResponse, BridgeValue, CancellationToken, DataOrigin, ForensicProvider, NodeEntry, NodeType,
+    };
+    pub use crate::bridge::hooks::ProviderHook;
+    pub use crate::bridge::client::BridgeClient;
+    pub use crate::bridge::server::{ForensicBridge, ForensicBridgeBuilder};
+    pub use crate::bridge::providers::{DatabaseProvider, EventLogProvider, RegistryProvider, VfsProvider};
 }

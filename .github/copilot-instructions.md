@@ -25,8 +25,16 @@ src/
     forensic.rs       — ArtifactParser, IntoTimeline, IntoActivity, RegistryParser
     sql.rs            — SqlStatement, SqlDb, ColumnValue
     db.rs             — ForensicDb, ForensicRows, ForensicValue, ForensicRow, RowIterator
+    events.rs         — EventLogReader, EventLogIterator, EventLogQuery, EventRecord, EventLevel
     registry/         — RegistryReader, RegValue, RegHiveKey, hive key constants
       extra/          — Registry helpers (e.g., get_env_vars_of_users())
+  bridge/             — Multi-provider UI bridge (channel-based, thread-safe)
+    mod.rs            — CancellationToken, BridgeValue, DataOrigin, NodeType, NodeEntry, BridgeResponse, ForensicProvider trait
+    client.rs         — BridgeClient: Clone+Send handle; list_providers, children, read, metadata, shutdown
+    server.rs         — ForensicBridge worker loop, ForensicBridgeBuilder
+    protocol.rs       — BridgeRequest enum (ListProviders, Children, Read, Metadata, Shutdown)
+    providers.rs      — RegistryProvider, VfsProvider, EventLogProvider, DatabaseProvider
+    hooks.rs          — ProviderHook trait, virtual_segment(), inject_hook_children(), path helpers
   core/
     fs/
       stdfs.rs        — StdVirtualFS: VFS over std::fs
@@ -38,7 +46,7 @@ src/
   utils/
     time.rs           — Filetime, ForensicTimestamp, WinFiletime, UnixTimestamp, filetime_to_unix_timestamp
     unpack.rs         — Binary unpacking helpers (u16/u32/u64_at_pos, safe variants)
-    testing.rs        — TestingRegistry mock, testing_logger_dummy, testing_notifier_dummy
+    testing.rs        — TestingRegistry mock, TestingEventLogReader, basic_event_log(), testing_logger_dummy, testing_notifier_dummy
     win/
       sid.rs          — to_string_sid(), SID constants (LOCAL_SYSTEM, BUILTIN_ADMINS, etc.)
       csidl.rs        — FOLDERID_* constants for 60+ Windows shell folders
@@ -75,6 +83,11 @@ Key prelude exports:
 - `StdVirtualFS`, `ChRootFileSystem`, `StdVirtualFile` — VFS implementations
 - `RegistryReader`, `RegValue`, `RegHiveKey`, `HKLM`, `HKCU`, `HKCR`, `HKU` — registry
 - `ForensicDb`, `ForensicTable`, `ForensicRows`, `ForensicValue`, `ForensicRow`, `RowIterator` — database
+- `EventLogReader`, `EventLogIterator`, `EventLogQuery`, `EventRecord`, `EventLevel` — event logs
+- `BridgeClient`, `ForensicBridge`, `ForensicBridgeBuilder` — bridge server/client
+- `ForensicProvider`, `BridgeValue`, `BridgeResponse`, `CancellationToken`, `DataOrigin`, `NodeEntry`, `NodeType` — bridge types
+- `RegistryProvider`, `VfsProvider`, `EventLogProvider`, `DatabaseProvider` — bridge provider impls
+- `ProviderHook` — bridge postprocessing hook trait
 - `Artifact` — artifact type categorization
 - `SCow` — static copy-on-write string
 - `Filetime`, `ForensicTimestamp`, `WinFiletime`, `UnixTimestamp`, `filetime_to_unix_timestamp` — time types
@@ -262,7 +275,16 @@ use forensic_rs::utils::testing::{basic_registry, TestingRegistry};
 let registry = basic_registry();
 ```
 
-Also available: `testing_logger_dummy()` and `testing_notifier_dummy()` for capturing logging/notification messages in tests.
+Also available: `TestingEventLogReader` with `basic_event_log()` for event log tests, and `testing_logger_dummy()` / `testing_notifier_dummy()` for capturing logging/notification messages in tests.
+
+```rust
+use forensic_rs::utils::testing::basic_event_log;
+let reader = basic_event_log();
+let mut iter = reader.query_all().unwrap();
+while let Some(record) = iter.next().unwrap() {
+    // process record
+}
+```
 
 ### In-Memory Databases
 

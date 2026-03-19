@@ -26,12 +26,14 @@ In this way, the same tools can be used if we want to make a triage processor li
 * **Windows Registry**: See [`RegistryReader`](./src/traits/registry/mod.rs) trait. Includes `RegistryKeyGuard` for RAII-based key lifetime management, `auto_close_key()` for closure-scoped key cleanup, and `walk_keys()` for recursive registry traversal.
 * **SQL databases**: See [`SqlStatement`](./src/traits/sql.rs) trait and the richer [`ForensicDb`](./src/traits/db.rs) abstraction. A basic sqlite wrapper example is included in the SQL trait tests.
 * **File Systems**: Read files and directories with support for stacked virtual filesystems (e.g., a file inside a ZIP inside another ZIP). Includes `walk_dir()` for recursive directory traversal. See [`VirtualFileSystem`](./src/traits/vfs.rs) and the standard library implementation [`StdVirtualFS`](./src/core/fs/stdfs.rs).
+* **Windows Event Logs**: Abstract `EventLogReader` trait for querying event log records with filtering by event ID, time range, provider, severity, and channel. Includes a fallible `EventLogIterator` and `EventLogQuery` builder. See [`src/traits/events.rs`](./src/traits/events.rs).
 * **Timestamps**: `ForensicTimestamp` — a compact, bitpacked u64 timestamp (8 bytes, microsecond precision, year range 0–4095) with constructors for Windows FILETIME, Unix secs/millis/micros, OLE Automation dates, WebKit/Chrome, macOS HFS+, and Cocoa/Core Data timestamps. Bidirectional conversion with the existing `Filetime` type.
 * **Windows Decompression**: LZNT1, LZ77 and LZ77+Huffman algorithms per the MS-XCA specification. See [`decompress()`](./src/utils/win/decompress/mod.rs).
 * **Windows Utilities**: SID-to-string conversion, well-known shell folder ID constants (60+), and registry-based user environment variable resolution. See [`src/utils/win/`](./src/utils/win/).
 * **Binary Unpacking**: Safe integer extraction helpers for parsing binary forensic artifacts. See [`src/utils/unpack.rs`](./src/utils/unpack.rs).
 * **ECS Field Dictionary**: ~80 Elastic Common Schema field name constants for consistent artifact field naming. See [`src/dictionary.rs`](./src/dictionary.rs).
 * **User Activity Tracking**: `ForensicActivity` with enriched `ProgramExecution` (arguments, working directory, run count) and extended `FileSystemActivity` variants (Rename, Read, Write). See [`src/activity.rs`](./src/activity.rs).
+* **ForensicBridge**: A channel-based multi-threaded bridge that exposes all artifact domains (registry, VFS, event logs, databases) as navigable trees for UI consumers such as VSCode extensions. Supports pagination, cooperative cancellation, and extensible `ProviderHook`s for injecting virtual parsed nodes. See [`src/bridge/`](./src/bridge/).
 
 
 ### Registry Example
@@ -175,6 +177,98 @@ fn read_user_profile(reader: &dyn RegistryReader, user_sid: &str) -> ForensicRes
     let profile: String = reader.read_value(*guard, "ProfileImagePath")?.try_into()?;
     Ok(profile)
 }
+```
+
+### EventLogReader Example
+
+`EventLogReader` is the abstract interface for querying Windows event logs — works identically against live Event Log API, parsed `.evtx` files, or in-memory mocks.
+
+```rust
+use forensic_rs::prelude::*;
+use forensic_rs::traits::events::{EventLogQuery, EventLevel};
+
+fn count_failed_logons(reader: &dyn EventLogReader) -> ForensicResult<u32> {
+    let query = EventLogQuery::new()
+        .with_channels(&["Security"])
+        .with_event_ids(&[4625])                    // Logon failure event
+        .with_levels(&[EventLevel::Information]);
+
+    let mut iter = reader.query(&query)?;
+    let mut count = 0u32;
+    while let Some(_record) = iter.next()? {
+        count += 1;
+    }
+    Ok(count)
+}
+```
+
+Query filters are optional and combinable — an empty `EventLogQuery::new()` matches all events. Multiple values within one filter are OR'd; distinct filter fields are AND'd.
+
+### ForensicBridge Example
+
+`ForensicBridge` exposes all artifact domains (registry, VFS, event logs, databases) as navigable trees consumable by any UI layer (VSCode extensions, web frontends, etc.) via a thread-safe channel-based protocol.
+
+```rust
+use forensic_rs::bridge::server::ForensicBridgeBuilder;
+use forensic_rs::bridge::providers::{RegistryProvider, VfsProvider};
+use forensic_rs::core::fs::stdfs::StdVirtualFS;
+
+// Build the bridge — all providers are owned by the worker thread
+let client = ForensicBridgeBuilder::new()
+    .add_provider(RegistryProvider::new(my_registry_reader))
+    .add_provider(VfsProvider::new(StdVirtualFS::new()))
+    .spawn();              // → BridgeClient (Clone + Send)
+
+// The client can be cloned and sent across threads
+let providers = client.list_providers()?;       // ["Registry", "FileSystem"]
+let (children, total) = client.children("Registry", "HKLM\\SOFTWARE", 0, 50)?;
+let value = client.read("Registry", "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProductName")?;
+let meta  = client.metadata("Registry", "HKLM\\SOFTWARE")?;
+
+client.shutdown();
+```
+
+**ProviderHooks** let you inject virtual parsed children into bridge tree nodes. This is useful for domain-specific interpretation of raw artifact data — for example, a shellbag hook can parse the binary contents of `BagMRU` registry values and expose them as decoded folder tree entries in the bridge UI without any changes to the provider itself:
+
+```rust
+use forensic_rs::bridge::hooks::{ProviderHook, virtual_segment};
+use forensic_rs::bridge::{BridgeValue, NodeEntry, NodeType};
+
+struct ShellbagHook;
+
+impl ProviderHook for ShellbagHook {
+    fn name(&self) -> &str { "shellbag" }
+
+    fn matches_path(&self, path: &str) -> bool {
+        path.contains("BagMRU")
+    }
+
+    fn matches_value(&self, _path: &str, value: &BridgeValue) -> bool {
+        matches!(value, BridgeValue::Binary(_))
+    }
+
+    fn virtual_children(&self, parent_path: &str, parent_value: &BridgeValue,
+                         offset: u64, limit: u64) -> ForensicResult<(Vec<NodeEntry>, u64)> {
+        // parse `parent_value` binary data and return decoded folder entries
+        // virtual child paths: `{parent_path}\[shellbag]\Desktop` etc.
+        todo!()
+    }
+
+    fn read_virtual(&self, parent_path: &str, virtual_child: &str) -> ForensicResult<BridgeValue> {
+        todo!()
+    }
+}
+
+let client = ForensicBridgeBuilder::new()
+    .add_provider(RegistryProvider::new(my_registry).with_hook(Box::new(ShellbagHook)))
+    .spawn();
+```
+
+Virtual path segments use the `[hookname]` convention so they never collide with real children:
+```
+HKCU\Software\Microsoft\Windows\Shell\BagMRU\0             ← real key
+HKCU\Software\Microsoft\Windows\Shell\BagMRU\0\[shellbag]  ← hook root (virtual)
+HKCU\Software\Microsoft\Windows\Shell\BagMRU\0\[shellbag]\Desktop  ← decoded entry
 ```
 
 ## Logs
