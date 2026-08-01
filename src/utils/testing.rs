@@ -5,15 +5,19 @@ use crate::{
         registry::{RegHiveKey, RegValue, RegistryKeyInfo, RegistryReader},
     },
 };
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
-use super::time::{Filetime, ForensicTimestamp};
+use super::time::ForensicTimestamp;
 
 /// Basic Registry for testing. Includes the user profile "S-1-5-21-1366093794-4292800403-1155380978-513"
 #[derive(Clone, Debug)]
 pub struct TestingRegistry {
     pub cell: BTreeMap<String, MountedCell>,
-    pub cached: RefCell<BTreeMap<RegHiveKey, String>>,
+    pub cached: Arc<Mutex<BTreeMap<isize, String>>>,
     pub counter: RefCell<isize>,
 }
 
@@ -27,14 +31,14 @@ impl TestingRegistry {
     pub fn empty() -> Self {
         Self {
             cell: BTreeMap::new(),
-            cached: RefCell::new(basic_cache()),
+            cached: Arc::new(Mutex::new(basic_cache())),
             counter: RefCell::default(),
         }
     }
     pub fn new() -> Self {
         Self {
             cell: basic_registry(),
-            cached: RefCell::new(basic_cache()),
+            cached: Arc::new(Mutex::new(basic_cache())),
             counter: RefCell::new(0),
         }
     }
@@ -78,6 +82,15 @@ impl TestingRegistry {
         };
         let hive = self.cell.get(hkey)?;
         hive.get_value(rest, value)
+    }
+
+    pub fn get_value_ref<'a>(&'a self, path: &str, value: &str) -> Option<&'a RegValue> {
+        let (hkey, rest) = match path.split_once(['/', '\\']) {
+            Some(v) => v,
+            None => (path, ""),
+        };
+        let hive = self.cell.get(hkey)?;
+        hive.get_value_ref(rest, value)
     }
     pub fn get_values(&self, path: &str) -> Option<Vec<String>> {
         let (hkey, rest) = match path.split_once(['/', '\\']) {
@@ -171,13 +184,20 @@ impl MountedCell {
         };
         self.keys.get(first)?.get_value(rest, value)
     }
+
+    pub fn get_value_ref<'a>(&'a self, path: &str, value: &str) -> Option<&'a RegValue> {
+        if path.is_empty() {
+            return self.values.get(value);
+        }
+        let (first, rest) = match path.split_once(['/', '\\']) {
+            Some(v) => v,
+            None => return self.keys.get(path)?.get_value_ref("", value),
+        };
+        self.keys.get(first)?.get_value_ref(rest, value)
+    }
     pub fn get_values(&self, path: &str) -> Vec<String> {
         if path.is_empty() {
-            return self
-                .values
-                .keys()
-                .map(|v| v.to_string())
-                .collect();
+            return self.values.keys().map(|v| v.to_string()).collect();
         }
         let (first, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
@@ -195,11 +215,7 @@ impl MountedCell {
     }
     pub fn get_keys(&self, path: &str) -> Vec<String> {
         if path.is_empty() {
-            return self
-                .keys
-                .keys()
-                .map(|v| v.to_string())
-                .collect();
+            return self.keys.keys().map(|v| v.to_string()).collect();
         }
         let (first, rest) = match path.split_once(['/', '\\']) {
             Some(v) => v,
@@ -218,156 +234,281 @@ impl MountedCell {
 }
 
 impl RegistryReader for TestingRegistry {
-    fn from_file(
+    fn mount_file(
         &self,
         _file: Box<dyn crate::traits::vfs::VirtualFile>,
     ) -> crate::err::ForensicResult<Box<dyn RegistryReader>> {
-        Ok(Box::new(TestingRegistry::new()))
+        Err(ForensicError::other(
+            "TestingRegistry",
+            "mount_file is not supported by the in-memory registry".to_string(),
+        ))
     }
 
-    fn from_fs(
+    fn mount_fs(
         &self,
         _fs: Box<dyn crate::traits::vfs::VirtualFileSystem>,
     ) -> crate::err::ForensicResult<Box<dyn RegistryReader>> {
-        Ok(Box::new(TestingRegistry::new()))
+        Err(ForensicError::other(
+            "TestingRegistry",
+            "mount_fs is not supported by the in-memory registry".to_string(),
+        ))
     }
 
     fn open_key(
         &self,
         hkey: crate::traits::registry::RegHiveKey,
         key_name: &str,
-    ) -> crate::err::ForensicResult<crate::traits::registry::RegHiveKey> {
-        let mut borrowed = self.cached.borrow_mut();
-        let (hkey, path) = match borrowed.get(&hkey) {
-            Some(v) => {
-                let full_path = format!("{}\\{}", v, key_name);
-                if !self.contains(&full_path) {
-                    return ForensicError::registry_key_not_found(hkey, Some(full_path.into())).into()
-                }
-                let handle = self.increase_counter();
-                (handle, full_path)
-            }
-            None => return ForensicError::registry_key_not_found(hkey, None).into()
+    ) -> crate::err::ForensicResult<crate::traits::registry::RegKeyHandle> {
+        let mut borrowed = self
+            .cached
+            .lock()
+            .expect("TestingRegistry cache lock poisoned");
+
+        // Map the hive discriminant to its short prefix string.
+        let hive_prefix = match hkey {
+            RegHiveKey::HkeyLocalMachine => "HKLM",
+            RegHiveKey::HkeyCurrentUser => "HKCU",
+            RegHiveKey::HkeyUsers => "HKU",
+            RegHiveKey::HkeyClassesRoot => "HKCR",
+            _ => return Err(ForensicError::registry_key_not_found(hkey, None)),
         };
-        borrowed.insert(RegHiveKey::Hkey(hkey), path);
-        Ok(RegHiveKey::Hkey(hkey))
+
+        // Build the canonical full path: always "HIVE\key_name".
+        // Strip any existing hive prefix from key_name for backward compatibility
+        // (callers that previously passed e.g. r"HKU\S-1-5-...\Foo" still work).
+        let full_path = if key_name.is_empty() {
+            hive_prefix.to_string()
+        } else {
+            let strip_prefix = format!("{}\\", hive_prefix);
+            let normalized = if key_name.starts_with(&strip_prefix) {
+                &key_name[strip_prefix.len()..]
+            } else {
+                key_name
+            };
+            format!("{}\\{}", hive_prefix, normalized)
+        };
+
+        // Check that the path exists
+        if !self.contains(&full_path) {
+            return Err(ForensicError::registry_key_not_found(
+                hkey,
+                Some(full_path.into()),
+            ));
+        }
+
+        // Create a new handle
+        let handle_id = self.increase_counter();
+        let cached = Arc::clone(&self.cached);
+        let handle = crate::traits::registry::RegKeyHandle::new(handle_id, move |handle_id| {
+            cached
+                .lock()
+                .expect("TestingRegistry cache lock poisoned")
+                .remove(&handle_id);
+            Ok(())
+        });
+
+        // Store the path mapping
+        borrowed.insert(handle_id, full_path);
+        Ok(handle)
+    }
+
+    fn open_subkey(
+        &self,
+        parent: &crate::traits::registry::RegKeyHandle,
+        subkey: &str,
+    ) -> crate::err::ForensicResult<crate::traits::registry::RegKeyHandle> {
+        let borrowed = self
+            .cached
+            .lock()
+            .expect("TestingRegistry cache lock poisoned");
+        let parent_path = borrowed
+            .get(parent.resource::<isize>()?)
+            .ok_or_else(|| {
+                ForensicError::registry_key_not_found(RegHiveKey::HkeyClassesRoot, None)
+            })?
+            .clone();
+        drop(borrowed);
+
+        let full_path = if parent_path.is_empty() {
+            subkey.to_string()
+        } else {
+            format!("{}\\{}", parent_path, subkey)
+        };
+
+        if !self.contains(&full_path) {
+            return Err(ForensicError::registry_key_not_found(
+                RegHiveKey::HkeyClassesRoot,
+                Some(full_path.into()),
+            ));
+        }
+
+        let handle_id = self.increase_counter();
+        let cached = Arc::clone(&self.cached);
+        let handle = crate::traits::registry::RegKeyHandle::new(handle_id, move |handle_id| {
+            cached
+                .lock()
+                .expect("TestingRegistry cache lock poisoned")
+                .remove(&handle_id);
+            Ok(())
+        });
+        self.cached
+            .lock()
+            .expect("TestingRegistry cache lock poisoned")
+            .insert(handle_id, full_path);
+        Ok(handle)
     }
 
     fn read_value(
         &self,
-        hkey: crate::traits::registry::RegHiveKey,
+        key: &crate::traits::registry::RegKeyHandle,
         value_name: &str,
     ) -> crate::err::ForensicResult<RegValue> {
-        let borrowed = self.cached.borrow();
-        let key_path = borrowed
-            .get(&hkey)
-            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
+        let borrowed = self
+            .cached
+            .lock()
+            .expect("TestingRegistry cache lock poisoned");
+        let key_path = borrowed.get(key.resource::<isize>()?).ok_or_else(|| {
+            ForensicError::registry_key_not_found(RegHiveKey::HkeyClassesRoot, None)
+        })?;
         let value = self.get_value(key_path, value_name).ok_or_else(|| {
-            ForensicError::registry_value_not_found(hkey, Some(key_path.into()), value_name.to_string())
+            ForensicError::registry_value_not_found(
+                RegHiveKey::HkeyClassesRoot,
+                Some(key_path.into()),
+                value_name.to_string(),
+            )
         })?;
         Ok(value)
+    }
+
+    fn read_raw_value_into(
+        &self,
+        key: &crate::traits::registry::RegKeyHandle,
+        value_name: &str,
+        buf: &mut [u8],
+    ) -> crate::err::ForensicResult<(crate::traits::registry::RegValueType, usize)> {
+        let borrowed = self
+            .cached
+            .lock()
+            .expect("TestingRegistry cache lock poisoned");
+        let key_path = borrowed.get(key.resource::<isize>()?).ok_or_else(|| {
+            ForensicError::registry_key_not_found(RegHiveKey::HkeyClassesRoot, None)
+        })?;
+        let value = self.get_value_ref(key_path, value_name).ok_or_else(|| {
+            ForensicError::registry_value_not_found(
+                RegHiveKey::HkeyClassesRoot,
+                Some(key_path.into()),
+                value_name.to_string(),
+            )
+        })?;
+        let written = value.write_into(buf)?;
+        Ok((value.value_type(), written))
     }
 
     fn enumerate_values(
         &self,
-        hkey: crate::traits::registry::RegHiveKey,
-    ) -> crate::err::ForensicResult<Vec<String>> {
-        let borrowed = self.cached.borrow();
-        let key_path = borrowed
-            .get(&hkey)
-            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
-        let value = self.get_values(key_path).ok_or_else(|| {
-            ForensicError::registry_value_not_found(hkey, Some(key_path.into()), "")
+        key: &crate::traits::registry::RegKeyHandle,
+        visitor: &mut dyn FnMut(
+            &str,
+        ) -> crate::err::ForensicResult<
+            crate::traits::registry::RegistryVisit,
+        >,
+    ) -> crate::err::ForensicResult<()> {
+        let borrowed = self
+            .cached
+            .lock()
+            .expect("TestingRegistry cache lock poisoned");
+        let key_path = borrowed.get(key.resource::<isize>()?).ok_or_else(|| {
+            ForensicError::registry_key_not_found(RegHiveKey::HkeyClassesRoot, None)
         })?;
-        Ok(value)
+        let values = self.get_values(key_path).ok_or_else(|| {
+            ForensicError::registry_value_not_found(
+                RegHiveKey::HkeyClassesRoot,
+                Some(key_path.into()),
+                "",
+            )
+        })?;
+        drop(borrowed);
+
+        for value_name in values {
+            if visitor(&value_name)? == crate::traits::registry::RegistryVisit::Break {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn enumerate_keys(
         &self,
-        hkey: crate::traits::registry::RegHiveKey,
-    ) -> crate::err::ForensicResult<Vec<String>> {
-        let borrowed = self.cached.borrow();
-        let key_path = borrowed
-            .get(&hkey)
-            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
-        let value = self.get_keys(key_path).ok_or_else(|| {
-            ForensicError::registry_key_not_found(hkey, Some(key_path.into()))
-        })?;
-        Ok(value)
-    }
-
-    fn key_at(
-        &self,
-        hkey: crate::traits::registry::RegHiveKey,
-        pos: u32,
-    ) -> crate::err::ForensicResult<String> {
-        let borrowed = self.cached.borrow();
-        let key_path = borrowed
-            .get(&hkey)
-            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
-        let mut value = self.get_keys(key_path).ok_or_else(|| {
-            ForensicError::registry_key_not_found(hkey, Some(key_path.into()))
-        })?;
-        let pos = pos as usize;
-        if pos > value.len() {
-            return Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData));
-        }
-        Ok(value.remove(pos))
-    }
-
-    fn value_at(
-        &self,
-        hkey: crate::traits::registry::RegHiveKey,
-        pos: u32,
-    ) -> crate::err::ForensicResult<String> {
-        let borrowed = self.cached.borrow();
-        let key_path = borrowed
-            .get(&hkey)
-            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
-        let mut value = self.get_values(key_path).ok_or_else(|| {
-            ForensicError::registry_value_not_found(hkey, Some(key_path.into()), "")
-        })?;
-        let pos = pos as usize;
-        if pos > value.len() {
-            return Err(ForensicError::DataAccess(crate::err::DataAccessError::NoMoreData));
-        }
-        Ok(value.remove(pos))
-    }
-
-    fn key_info(&self, hkey: RegHiveKey) -> crate::err::ForensicResult<crate::traits::registry::RegistryKeyInfo> {
-        let borrowed = self.cached.borrow();
-        let key_path = borrowed
-            .get(&hkey)
-            .ok_or_else(|| ForensicError::registry_key_not_found(hkey, None))?;
-        let value = self.get_values(key_path).ok_or_else(|| {
-            ForensicError::registry_value_not_found(hkey, Some(key_path.into()), "")
+        key: &crate::traits::registry::RegKeyHandle,
+        visitor: &mut dyn FnMut(
+            &str,
+        ) -> crate::err::ForensicResult<
+            crate::traits::registry::RegistryVisit,
+        >,
+    ) -> crate::err::ForensicResult<()> {
+        let borrowed = self
+            .cached
+            .lock()
+            .expect("TestingRegistry cache lock poisoned");
+        let key_path = borrowed.get(key.resource::<isize>()?).ok_or_else(|| {
+            ForensicError::registry_key_not_found(RegHiveKey::HkeyClassesRoot, None)
         })?;
         let keys = self.get_keys(key_path).ok_or_else(|| {
-            ForensicError::registry_key_not_found(hkey, Some(key_path.into()))
+            ForensicError::registry_key_not_found(
+                RegHiveKey::HkeyClassesRoot,
+                Some(key_path.into()),
+            )
+        })?;
+        drop(borrowed);
+
+        for key_name in keys {
+            if visitor(&key_name)? == crate::traits::registry::RegistryVisit::Break {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn key_info(
+        &self,
+        key: &crate::traits::registry::RegKeyHandle,
+    ) -> crate::err::ForensicResult<crate::traits::registry::RegistryKeyInfo> {
+        let borrowed = self
+            .cached
+            .lock()
+            .expect("TestingRegistry cache lock poisoned");
+        let key_path = borrowed.get(key.resource::<isize>()?).ok_or_else(|| {
+            ForensicError::registry_key_not_found(RegHiveKey::HkeyClassesRoot, None)
+        })?;
+        let values = self.get_values(key_path).ok_or_else(|| {
+            ForensicError::registry_value_not_found(
+                RegHiveKey::HkeyClassesRoot,
+                Some(key_path.into()),
+                "",
+            )
+        })?;
+        let keys = self.get_keys(key_path).ok_or_else(|| {
+            ForensicError::registry_key_not_found(
+                RegHiveKey::HkeyClassesRoot,
+                Some(key_path.into()),
+            )
         })?;
         Ok(RegistryKeyInfo {
-            last_write_time : Filetime::new(0),
-            subkeys : keys.len() as u32,
-            values : value.len() as u32,
-            max_subkey_name_length : keys.iter().map(|v| v.len()).fold(0, |acc, e| e.max(acc)) as u32,
-            max_value_name_length: value.iter().map(|v| v.len()).fold(0, |acc, e| e.max(acc)) as u32,
+            last_write_time: ForensicTimestamp::from_win_filetime(0),
+            subkeys: keys.len() as u32,
+            values: values.len() as u32,
+            max_subkey_name_length: keys.iter().map(|v| v.len()).fold(0, |acc, e| e.max(acc))
+                as u32,
+            max_value_name_length: values.iter().map(|v| v.len()).fold(0, |acc, e| e.max(acc))
+                as u32,
             max_value_length: 0,
         })
     }
 }
-fn basic_cache() -> BTreeMap<RegHiveKey, String> {
-    {
-        let mut map = BTreeMap::new();
-        for (k, p) in [
-            (RegHiveKey::HkeyLocalMachine, "HKLM"),
-            (RegHiveKey::HkeyCurrentUser, "HKCU"),
-            (RegHiveKey::HkeyUsers, "HKU"),
-            (RegHiveKey::HkeyClassesRoot, "HKCR"),
-        ] {
-            map.insert(k, p.to_string());
-        }
-        map
-    }
+fn basic_cache() -> BTreeMap<isize, String> {
+    // With the new API, handles are created dynamically on open_key
+    // No initial root mappings needed
+    BTreeMap::new()
 }
 
 fn basic_registry() -> BTreeMap<String, MountedCell> {
@@ -485,7 +626,10 @@ impl EventLogReader for TestingEventLogReader {
         Ok(self.events.keys().cloned().collect())
     }
 
-    fn query(&self, query: &EventLogQuery) -> crate::err::ForensicResult<Box<dyn EventLogIterator + '_>> {
+    fn query(
+        &self,
+        query: &EventLogQuery,
+    ) -> crate::err::ForensicResult<Box<dyn EventLogIterator + '_>> {
         let mut matched: Vec<EventRecord> = Vec::new();
         for events in self.events.values() {
             for event in events {
@@ -495,7 +639,11 @@ impl EventLogReader for TestingEventLogReader {
             }
         }
         // Sort by timestamp then record_id for deterministic output
-        matched.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.record_id.cmp(&b.record_id)));
+        matched.sort_by(|a, b| {
+            a.timestamp
+                .cmp(&b.timestamp)
+                .then(a.record_id.cmp(&b.record_id))
+        });
         Ok(Box::new(TestingEventLogIteratorInner {
             events: matched,
             pos: 0,
@@ -505,7 +653,10 @@ impl EventLogReader for TestingEventLogReader {
     fn event_count(&self, channel: &str) -> crate::err::ForensicResult<u64> {
         match self.events.get(channel) {
             Some(v) => Ok(v.len() as u64),
-            None => Err(ForensicError::other("TestingEventLogReader", "channel not found".to_string())),
+            None => Err(ForensicError::other(
+                "TestingEventLogReader",
+                "channel not found".to_string(),
+            )),
         }
     }
 }

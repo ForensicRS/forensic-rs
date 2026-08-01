@@ -1,7 +1,7 @@
 //! Core types and direct API usage (no pipeline).
 //!
 //! Demonstrates:
-//! - `RegistryReader` with `TestingRegistry`, `RegistryKeyGuard`, `auto_close_key`
+//! - `RegistryReader` with `TestingRegistry` and RAII key handles
 //! - `VirtualFileSystem` with `StdVirtualFS` and `ChRootFileSystem`
 //! - `ForensicData` container: inserting fields, typed accessors, ECS dictionary
 //! - `Field` enum and `Into` conversions
@@ -18,7 +18,7 @@ use forensic_rs::utils::testing::TestingRegistry;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
-    // 1. Registry: TestingRegistry, open/read/close, RegistryKeyGuard
+    // 1. Registry: TestingRegistry and RAII key handles
     // -----------------------------------------------------------------------
     println!("=== Registry Operations ===\n");
 
@@ -39,30 +39,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         RegValue::DWord(22631),
     );
 
-    // Method 1: Manual open/read/close
     let key = registry.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid))?;
-    let profile: String = registry.read_value(key, "USERPROFILE")?.try_into()?;
-    let username: String = registry.read_value(key, "USERNAME")?.try_into()?;
-    registry.close_key(key);
+    let profile: String = registry.read_value(&key, "USERPROFILE")?.try_into()?;
+    let username: String = registry.read_value(&key, "USERNAME")?.try_into()?;
     println!("User profile: {}", profile);
     println!("Username: {}", username);
 
-    // Method 2: auto_close_key (closure-based RAII)
-    let app_data = auto_close_key(&registry, key, || {
-        let vol_key = registry.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid))?;
-        let val: String = registry.read_value(vol_key, "APPDATA")?.try_into()?;
-        registry.close_key(vol_key);
-        Ok(val)
-    })?;
+    // A key closes automatically at the end of its scope.
+    let app_data = {
+        let key = registry.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid))?;
+        let val: String = registry.read_value(&key, "APPDATA")?.try_into()?;
+        val
+    };
     println!("AppData: {}", app_data);
 
-    // Method 3: RegistryKeyGuard (RAII, auto-closes on drop)
+    // One handle can be used for multiple reads.
     {
-        let vol_key = registry.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid))?;
-        let guard = RegistryKeyGuard::new(&registry, vol_key);
-        let domain: String = registry.read_value(*guard, "USERDOMAIN")?.try_into()?;
+        let key = registry.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid))?;
+        let domain: String = registry.read_value(&key, "USERDOMAIN")?.try_into()?;
         println!("Domain: {}", domain);
-        // vol_key is automatically closed when `guard` drops here
     }
 
     // List users and get system info
@@ -136,7 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Insert a timestamp
     data.add_field("@timestamp",
-        Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 14, 30, 0, 0)));
+        Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 14, 30, 0, 0).into()));
 
     // Typed accessors (with lazy coercion)
     if let FieldAccess::Some(code) = data.get_u64(EVENT_CODE) {
@@ -165,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let f1: Field = "hello".into();
     let f2: Field = 42u64.into();
-    let f3: Field = 3.14f64.into();
+    let f3: Field = std::f64::consts::PI.into();
     let f4: Field = true.into();   // -> Field::U64(1)
     let f5: Field = false.into();  // -> Field::U64(0)
 
@@ -180,7 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     println!("\n=== ForensicTimestamp ===\n");
 
-    let ts1 = ForensicTimestamp::with_ymd_and_hms(2024, 6, 15, 14, 30, 0, 0);
+    let ts1 = ForensicTimestamp::with_ymd_and_hms(2024, 6, 15, 14, 30, 0, 0)?;
     let ts2 = ForensicTimestamp::from_unix_secs(1718458200);
     let ts3 = ForensicTimestamp::from_win_filetime(133_514_430_235_959_706);
     let ts4 = ForensicTimestamp::from_webkit(13_351_443_023_595_970);
@@ -198,7 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Output conversions
     println!("ts1 -> unix_secs:    {}", ts1.to_unix_secs());
     println!("ts1 -> unix_millis:  {}", ts1.to_unix_millis());
-    println!("ts1 -> win_filetime: {}", ts1.to_win_filetime());
+    println!("ts1 -> win_filetime: {}", ts1.to_win_filetime()?);
 
     // Comparison (implements Ord)
     if ts1 < ts3 {

@@ -2,10 +2,7 @@ use crate::{
     artifact::Artifact,
     data::ForensicData,
     err::ForensicResult,
-    pipeline::{
-        context::TriageContext,
-        finding::Finding,
-    },
+    pipeline::{context::TriageContext, finding::Finding},
 };
 
 /// Enriches `ForensicData` records with additional context during pipeline execution.
@@ -19,7 +16,11 @@ pub trait Enricher {
     /// Short identifier for this enricher.
     fn name(&self) -> &str;
     /// Enrich a single record. May modify both the data and the shared context.
-    fn enrich(&mut self, data: &mut ForensicData, context: &mut TriageContext) -> ForensicResult<()>;
+    fn enrich(
+        &mut self,
+        data: &mut ForensicData,
+        context: &mut TriageContext,
+    ) -> ForensicResult<()>;
 }
 
 /// Analyzes `ForensicData` records to detect anomalies, integrity issues, and suspicious patterns.

@@ -1,6 +1,6 @@
+use crate::channel::{self, Receiver, Sender};
 use std::borrow::Cow;
 use std::cell::RefCell;
-use crate::channel::{self, Receiver, Sender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(usize)]
@@ -8,7 +8,7 @@ pub enum NotificationType {
     Informational,
     SuspiciousArtifact,
     AntiForensicsDetected,
-    DeletedArtifact
+    DeletedArtifact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -18,39 +18,52 @@ pub enum Priority {
     Low,
     Medium,
     High,
-    Critical
+    Critical,
 }
 
 #[derive(Clone)]
 pub struct Notifier {
-    pub channel : Sender<Notification>
+    pub channel: Sender<Notification>,
 }
 
 impl Default for Notifier {
     fn default() -> Self {
-        let (sender,_reveiver) = channel::channel();
+        let (sender, _reveiver) = channel::channel();
         Self { channel: sender }
     }
 }
 impl Notifier {
-    pub fn new(sender : Sender<Notification>) -> Self {
-        Self {
-            channel : sender
-        }
+    pub fn new(sender: Sender<Notification>) -> Self {
+        Self { channel: sender }
     }
-    pub fn notify(&self, priority: Priority, r#type : NotificationType, module : &'static str, file : &'static str, line : u32, data : Cow<'static, str>) {
-        let _ = self.channel.send(Notification { r#type,priority, module, file, line, data });
+    pub fn notify(
+        &self,
+        priority: Priority,
+        r#type: NotificationType,
+        module: &'static str,
+        file: &'static str,
+        line: u32,
+        data: Cow<'static, str>,
+    ) {
+        let _ = self.channel.send(Notification {
+            r#type,
+            priority,
+            module,
+            file,
+            line,
+            data,
+        });
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Notification {
-    pub r#type : NotificationType,
-    pub priority : Priority,
-    pub module : &'static str,
-    pub line : u32,
-    pub file : &'static str,
-    pub data : Cow<'static, str>,
+    pub r#type: NotificationType,
+    pub priority: Priority,
+    pub module: &'static str,
+    pub line: u32,
+    pub file: &'static str,
+    pub data: Cow<'static, str>,
 }
 
 #[macro_use]

@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    data::ForensicData,
-    err::ForensicResult,
-    field::Field,
-    utils::time::ForensicTimestamp,
+    data::ForensicData, err::ForensicResult, field::Field, utils::time::ForensicTimestamp,
 };
 
 use super::{
@@ -62,7 +59,9 @@ impl TimelineSink {
 }
 
 impl TriageSink for TimelineSink {
-    fn name(&self) -> &str { "timeline_sink" }
+    fn name(&self) -> &str {
+        "timeline_sink"
+    }
 
     fn on_data(&mut self, data: &ForensicData) -> ForensicResult<()> {
         if let Some(Field::Date(ft)) = data.field(&self.timestamp_field) {
@@ -131,7 +130,9 @@ impl FindingCollector {
 }
 
 impl TriageSink for FindingCollector {
-    fn name(&self) -> &str { "finding_collector" }
+    fn name(&self) -> &str {
+        "finding_collector"
+    }
 
     fn on_data(&mut self, _data: &ForensicData) -> ForensicResult<()> {
         Ok(())
@@ -165,22 +166,34 @@ pub struct JsonlTimelineSink<W: Write> {
 #[cfg(feature = "serde")]
 impl<W: Write> JsonlTimelineSink<W> {
     pub fn new(writer: W) -> Self {
-        Self { writer, record_count: 0, errors: 0 }
+        Self {
+            writer,
+            record_count: 0,
+            errors: 0,
+        }
     }
 
     /// Total records successfully written.
-    pub fn record_count(&self) -> u64 { self.record_count }
+    pub fn record_count(&self) -> u64 {
+        self.record_count
+    }
 
     /// Number of serialization errors encountered.
-    pub fn error_count(&self) -> u64 { self.errors }
+    pub fn error_count(&self) -> u64 {
+        self.errors
+    }
 
     /// Consume the sink and return the underlying writer.
-    pub fn into_inner(self) -> W { self.writer }
+    pub fn into_inner(self) -> W {
+        self.writer
+    }
 }
 
 #[cfg(feature = "serde")]
 impl<W: Write + 'static> TriageSink for JsonlTimelineSink<W> {
-    fn name(&self) -> &str { "jsonl_timeline_sink" }
+    fn name(&self) -> &str {
+        "jsonl_timeline_sink"
+    }
 
     fn on_data(&mut self, data: &ForensicData) -> ForensicResult<()> {
         match serde_json::to_writer(&mut self.writer, data) {
@@ -221,27 +234,45 @@ pub struct JsonlFindingSink<W: Write> {
 impl<W: Write> JsonlFindingSink<W> {
     /// Write all findings regardless of severity.
     pub fn new(writer: W) -> Self {
-        Self { writer, min_severity: FindingSeverity::Info, total_count: 0, errors: 0 }
+        Self {
+            writer,
+            min_severity: FindingSeverity::Info,
+            total_count: 0,
+            errors: 0,
+        }
     }
 
     /// Only write findings at or above the given severity.
     pub fn with_min_severity(writer: W, severity: FindingSeverity) -> Self {
-        Self { writer, min_severity: severity, total_count: 0, errors: 0 }
+        Self {
+            writer,
+            min_severity: severity,
+            total_count: 0,
+            errors: 0,
+        }
     }
 
     /// Total findings successfully written.
-    pub fn total_count(&self) -> u64 { self.total_count }
+    pub fn total_count(&self) -> u64 {
+        self.total_count
+    }
 
     /// Number of serialization errors encountered.
-    pub fn error_count(&self) -> u64 { self.errors }
+    pub fn error_count(&self) -> u64 {
+        self.errors
+    }
 
     /// Consume the sink and return the underlying writer.
-    pub fn into_inner(self) -> W { self.writer }
+    pub fn into_inner(self) -> W {
+        self.writer
+    }
 }
 
 #[cfg(feature = "serde")]
 impl<W: Write + 'static> TriageSink for JsonlFindingSink<W> {
-    fn name(&self) -> &str { "jsonl_finding_sink" }
+    fn name(&self) -> &str {
+        "jsonl_finding_sink"
+    }
 
     fn on_data(&mut self, _data: &ForensicData) -> ForensicResult<()> {
         Ok(())
@@ -272,9 +303,7 @@ impl<W: Write + 'static> TriageSink for JsonlFindingSink<W> {
 mod tests {
     use super::*;
     use crate::{
-        artifact::Artifact,
-        data::ForensicData,
-        pipeline::finding::FindingCategory,
+        artifact::Artifact, data::ForensicData, pipeline::finding::FindingCategory,
         utils::time::Filetime,
     };
 
@@ -283,10 +312,16 @@ mod tests {
         let mut sink = TimelineSink::new("@timestamp");
 
         let mut data_late = ForensicData::new("h", Artifact::Unknown);
-        data_late.add_field("@timestamp", Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 14, 0, 0, 0)));
+        data_late.add_field(
+            "@timestamp",
+            Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 14, 0, 0, 0).into()),
+        );
 
         let mut data_early = ForensicData::new("h", Artifact::Unknown);
-        data_early.add_field("@timestamp", Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 8, 0, 0, 0)));
+        data_early.add_field(
+            "@timestamp",
+            Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 8, 0, 0, 0).into()),
+        );
 
         sink.on_data(&data_late).unwrap();
         sink.on_data(&data_early).unwrap();
@@ -320,7 +355,11 @@ mod tests {
     fn finding_collector_should_filter_by_severity() {
         let mut collector = FindingCollector::with_min_severity(FindingSeverity::High);
         let low = Finding::new(FindingSeverity::Low, FindingCategory::MissingData, "low");
-        let high = Finding::new(FindingSeverity::High, FindingCategory::AntiForensics, "high");
+        let high = Finding::new(
+            FindingSeverity::High,
+            FindingCategory::AntiForensics,
+            "high",
+        );
         collector.on_finding(&low).unwrap();
         collector.on_finding(&high).unwrap();
         assert_eq!(collector.total_count(), 1);
@@ -333,7 +372,10 @@ mod tests {
     fn jsonl_timeline_should_write_records() {
         let mut sink = JsonlTimelineSink::new(Vec::new());
         let mut data = ForensicData::new("h", Artifact::Unknown);
-        data.add_field("@timestamp", Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0)));
+        data.add_field(
+            "@timestamp",
+            Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()),
+        );
         sink.on_data(&data).unwrap();
         sink.finalize().unwrap();
         assert_eq!(sink.record_count(), 1);
@@ -347,7 +389,11 @@ mod tests {
     #[test]
     fn jsonl_finding_should_write_findings() {
         let mut sink = JsonlFindingSink::new(Vec::new());
-        let finding = Finding::new(FindingSeverity::High, FindingCategory::AntiForensics, "test finding");
+        let finding = Finding::new(
+            FindingSeverity::High,
+            FindingCategory::AntiForensics,
+            "test finding",
+        );
         sink.on_finding(&finding).unwrap();
         sink.finalize().unwrap();
         assert_eq!(sink.total_count(), 1);
@@ -363,7 +409,11 @@ mod tests {
     fn jsonl_finding_should_filter_by_severity() {
         let mut sink = JsonlFindingSink::with_min_severity(Vec::new(), FindingSeverity::High);
         let low = Finding::new(FindingSeverity::Low, FindingCategory::MissingData, "low");
-        let high = Finding::new(FindingSeverity::High, FindingCategory::AntiForensics, "high");
+        let high = Finding::new(
+            FindingSeverity::High,
+            FindingCategory::AntiForensics,
+            "high",
+        );
         sink.on_finding(&low).unwrap();
         sink.on_finding(&high).unwrap();
         sink.finalize().unwrap();

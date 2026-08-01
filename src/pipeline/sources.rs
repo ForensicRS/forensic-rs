@@ -1,21 +1,17 @@
-use crate::traits::{
-    events::EventLogReader,
-    registry::RegistryReader,
-    vfs::VirtualFileSystem,
-};
+use crate::traits::{registry::RegistryReader, vfs::VirtualFileSystem};
 
 /// Holds the data sources available to parsers during pipeline execution.
 ///
-/// Provides unified access to the forensic data sources (filesystem, registry)
-/// that parsers need to extract artifacts. Each source is accessed through its
-/// trait interface, keeping parsers decoupled from specific implementations.
+/// Provides access to the evidence containers that parsers inspect. Database,
+/// event-log, and registry-hive files discovered inside a VFS are opened with
+/// reader factories rather than stored here as already-open readers.
 ///
-/// Sources are optional — a parser that only needs the registry does not
-/// require a VFS and vice versa.
+/// Sources are optional. `registry` is retained for live-system and legacy
+/// callers that already own a reader. Registry hives discovered in a VFS
+/// should be opened through `RegistryReaderFactory`, like other derived files.
 pub struct TriageSources {
     vfs: Option<Box<dyn VirtualFileSystem>>,
     registry: Option<Box<dyn RegistryReader>>,
-    event_log: Option<Box<dyn EventLogReader>>,
 }
 
 impl TriageSources {
@@ -24,7 +20,6 @@ impl TriageSources {
         Self {
             vfs: Some(vfs),
             registry: Some(registry),
-            event_log: None,
         }
     }
 
@@ -41,10 +36,10 @@ impl TriageSources {
         }
     }
 
-    /// Access the registry reader, if available.
-    pub fn registry(&mut self) -> Option<&mut dyn RegistryReader> {
-        match &mut self.registry {
-            Some(r) => Some(&mut **r),
+    /// Access a pre-opened live or compatibility registry reader, if available.
+    pub fn registry(&self) -> Option<&dyn RegistryReader> {
+        match &self.registry {
+            Some(r) => Some(&**r),
             None => None,
         }
     }
@@ -54,31 +49,17 @@ impl TriageSources {
         self.vfs.is_some()
     }
 
-    /// Whether a registry source has been configured.
+    /// Whether a pre-opened registry source has been configured.
     pub fn has_registry(&self) -> bool {
         self.registry.is_some()
     }
-
-    /// Access the event log reader, if available.
-    pub fn event_log(&mut self) -> Option<&mut dyn EventLogReader> {
-        match &mut self.event_log {
-            Some(e) => Some(&mut **e),
-            None => None,
-        }
-    }
-
-    /// Whether an event log source has been configured.
-    pub fn has_event_log(&self) -> bool {
-        self.event_log.is_some()
-    }
 }
 
-/// Builder for constructing `TriageSources` with only the needed data sources.
+/// Builder for constructing `TriageSources` with the available evidence.
 #[derive(Default)]
 pub struct TriageSourcesBuilder {
     vfs: Option<Box<dyn VirtualFileSystem>>,
     registry: Option<Box<dyn RegistryReader>>,
-    event_log: Option<Box<dyn EventLogReader>>,
 }
 
 impl TriageSourcesBuilder {
@@ -92,16 +73,10 @@ impl TriageSourcesBuilder {
         self
     }
 
-    pub fn event_log(mut self, event_log: Box<dyn EventLogReader>) -> Self {
-        self.event_log = Some(event_log);
-        self
-    }
-
     pub fn build(self) -> TriageSources {
         TriageSources {
             vfs: self.vfs,
             registry: self.registry,
-            event_log: self.event_log,
         }
     }
 }

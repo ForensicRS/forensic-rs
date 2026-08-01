@@ -38,7 +38,7 @@ use super::{BridgeValue, NodeEntry, NodeType};
 /// The trait is object-safe — all methods take `&self` with concrete argument types.
 /// Register hooks via `.add_hook(Box<dyn ProviderHook>)` on concrete provider structs
 /// (not on the `ForensicProvider` trait, which keeps the latter object-safe).
-pub trait ProviderHook: Send {
+pub trait ProviderHook: Send + Sync {
     /// Stable identifier for this hook. Used as the virtual path namespace segment.
     /// Must be unique among hooks registered on the same provider.
     ///
@@ -124,14 +124,10 @@ pub fn split_virtual_path(path: &str) -> Option<(&str, &str, &str)> {
     // Try both separators
     for sep in ['\\', '/'] {
         let parts: Vec<&str> = path.split(sep).collect();
-        for (i, component) in parts.iter().enumerate() {
+        for (_i, component) in parts.iter().enumerate() {
             if let Some(hook_name) = is_virtual_segment(component) {
-                let real_parent = &path[..path
-                    .find(*component)
-                    .unwrap_or(0)
-                    .saturating_sub(1)];
-                let tail_start = path.find(*component).unwrap_or(0)
-                    + component.len();
+                let real_parent = &path[..path.find(*component).unwrap_or(0).saturating_sub(1)];
+                let tail_start = path.find(*component).unwrap_or(0) + component.len();
                 let virtual_tail = if tail_start < path.len() {
                     &path[tail_start + 1..]
                 } else {
@@ -198,7 +194,9 @@ mod tests {
     struct MockShellbagHook;
 
     impl ProviderHook for MockShellbagHook {
-        fn name(&self) -> &str { "shellbag" }
+        fn name(&self) -> &str {
+            "shellbag"
+        }
 
         fn matches_path(&self, path: &str) -> bool {
             path.contains("BagMRU")
@@ -216,17 +214,36 @@ mod tests {
             limit: u64,
         ) -> ForensicResult<(Vec<NodeEntry>, u64)> {
             let all = vec![
-                NodeEntry { name: Text::Borrowed("Desktop"), node_type: NodeType::Leaf, description: None },
-                NodeEntry { name: Text::Borrowed("Downloads"), node_type: NodeType::Leaf, description: None },
+                NodeEntry {
+                    name: Text::Borrowed("Desktop"),
+                    node_type: NodeType::Leaf,
+                    description: None,
+                },
+                NodeEntry {
+                    name: Text::Borrowed("Downloads"),
+                    node_type: NodeType::Leaf,
+                    description: None,
+                },
             ];
             let total = all.len() as u64;
-            let page: Vec<NodeEntry> = all.into_iter().skip(offset as usize).take(limit as usize).collect();
+            let page: Vec<NodeEntry> = all
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
             Ok((page, total))
         }
 
-        fn read_virtual(&self, _parent_path: &str, virtual_child: &str) -> ForensicResult<BridgeValue> {
+        fn read_virtual(
+            &self,
+            _parent_path: &str,
+            virtual_child: &str,
+        ) -> ForensicResult<BridgeValue> {
             let mut map = BTreeMap::new();
-            map.insert(Text::Borrowed("path"), BridgeValue::Text(Text::Owned(virtual_child.to_string())));
+            map.insert(
+                Text::Borrowed("path"),
+                BridgeValue::Text(Text::Owned(virtual_child.to_string())),
+            );
             Ok(BridgeValue::Map(map))
         }
     }
@@ -234,9 +251,11 @@ mod tests {
     #[test]
     fn inject_hook_children_appends_virtual_entries() {
         let hooks: Vec<Box<dyn ProviderHook>> = vec![Box::new(MockShellbagHook)];
-        let mut children: Vec<NodeEntry> = vec![
-            NodeEntry { name: Text::Borrowed("0"), node_type: NodeType::Leaf, description: None },
-        ];
+        let mut children: Vec<NodeEntry> = vec![NodeEntry {
+            name: Text::Borrowed("0"),
+            node_type: NodeType::Leaf,
+            description: None,
+        }];
         let path = r"HKCU\Shell\BagMRU";
         let value = BridgeValue::Binary(vec![0xDE, 0xAD]);
         inject_hook_children(&mut children, &hooks, path, &value);

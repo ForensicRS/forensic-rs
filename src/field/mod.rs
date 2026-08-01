@@ -1,20 +1,45 @@
 use std::borrow::Cow;
 
-use serde::{de::Visitor, Deserializer};
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
 
 pub mod ip;
 pub mod utils;
 
 pub use ip::Ip;
 
-use crate::utils::time::Filetime;
 use crate::err::ForensicError;
 use crate::scow::SCow;
+use crate::utils::time::{Filetime, ForensicTimestamp};
 
 fn field_cast_err(from: &'static str, to: &'static str) -> ForensicError {
     ForensicError::cast_error(from, to, SCow::Borrowed("incompatible field variant"))
+}
+
+fn field_range_err(from: &'static str, to: &'static str) -> ForensicError {
+    ForensicError::cast_error(
+        from,
+        to,
+        SCow::Borrowed("value is outside the target range"),
+    )
+}
+
+fn f64_to_u64(value: f64) -> Result<u64, ForensicError> {
+    if !value.is_finite() || value.fract() != 0.0 || value < 0.0 || value >= u64::MAX as f64 {
+        return Err(field_range_err("Field::F64", "u64"));
+    }
+    Ok(value as u64)
+}
+
+fn f64_to_i64(value: f64) -> Result<i64, ForensicError> {
+    if !value.is_finite()
+        || value.fract() != 0.0
+        || value < i64::MIN as f64
+        || value >= i64::MAX as f64
+    {
+        return Err(field_range_err("Field::F64", "i64"));
+    }
+    Ok(value as i64)
 }
 
 pub type Text = Cow<'static, str>;
@@ -44,8 +69,8 @@ pub enum Field {
     I64(i64),
     /// decimal number with 64 bits
     F64(f64),
-    ///A date in a decimal number format with 64 bits
-    Date(Filetime),
+    /// A canonical nanosecond-precision forensic timestamp.
+    Date(ForensicTimestamp),
     Array(Vec<Text>),
 }
 
@@ -169,11 +194,14 @@ impl TryInto<u64> for &Field {
 
     fn try_into(self) -> Result<u64, Self::Error> {
         Ok(match self {
-            Field::F64(v) => *v as u64,
-            Field::I64(v) => *v as u64,
+            Field::F64(v) => f64_to_u64(*v)?,
+            Field::I64(v) => u64::try_from(*v).map_err(|_| field_range_err("Field::I64", "u64"))?,
             Field::U64(v) => *v,
-            Field::Date(v) => v.filetime(),
-            Field::Text(v) => v.parse::<u64>().map_err(|_| field_cast_err("Field::Text", "u64"))?,
+            Field::Date(v) => u64::try_from(v.to_unix_nanos())
+                .map_err(|_| field_range_err("Field::Date", "u64"))?,
+            Field::Text(v) => v
+                .parse::<u64>()
+                .map_err(|_| field_cast_err("Field::Text", "u64"))?,
             _ => return Err(field_cast_err("Field", "u64")),
         })
     }
@@ -183,11 +211,14 @@ impl TryInto<i64> for &Field {
 
     fn try_into(self) -> Result<i64, Self::Error> {
         Ok(match self {
-            Field::F64(v) => *v as i64,
+            Field::F64(v) => f64_to_i64(*v)?,
             Field::I64(v) => *v,
-            Field::U64(v) => *v as i64,
-            Field::Date(v) => v.filetime() as i64,
-            Field::Text(v) => v.parse::<i64>().map_err(|_| field_cast_err("Field::Text", "i64"))?,
+            Field::U64(v) => i64::try_from(*v).map_err(|_| field_range_err("Field::U64", "i64"))?,
+            Field::Date(v) => i64::try_from(v.to_unix_nanos())
+                .map_err(|_| field_range_err("Field::Date", "i64"))?,
+            Field::Text(v) => v
+                .parse::<i64>()
+                .map_err(|_| field_cast_err("Field::Text", "i64"))?,
             _ => return Err(field_cast_err("Field", "i64")),
         })
     }
@@ -200,8 +231,10 @@ impl TryInto<f64> for &Field {
             Field::F64(v) => *v,
             Field::I64(v) => *v as f64,
             Field::U64(v) => *v as f64,
-            Field::Date(v) => v.filetime() as f64,
-            Field::Text(v) => v.parse::<f64>().map_err(|_| field_cast_err("Field::Text", "f64"))?,
+            Field::Date(v) => v.to_unix_nanos() as f64,
+            Field::Text(v) => v
+                .parse::<f64>()
+                .map_err(|_| field_cast_err("Field::Text", "f64"))?,
             _ => return Err(field_cast_err("Field", "f64")),
         })
     }
@@ -211,7 +244,9 @@ impl TryInto<Ip> for &Field {
     type Error = ForensicError;
     fn try_into(self) -> Result<Ip, Self::Error> {
         Ok(match self {
-            Field::Text(v) => Ip::from_ip_str(v).map_err(|_e| field_cast_err("Field::Text", "Ip"))?,
+            Field::Text(v) => {
+                Ip::from_ip_str(v).map_err(|_e| field_cast_err("Field::Text", "Ip"))?
+            }
             Field::Ip(v) => *v,
             _ => return Err(field_cast_err("Field", "Ip")),
         })
@@ -376,12 +411,12 @@ impl From<bool> for Field {
 }
 impl From<Filetime> for Field {
     fn from(v: Filetime) -> Field {
-        Field::Date(v)
+        Field::Date(v.into())
     }
 }
-impl From<crate::utils::time::ForensicTimestamp> for Field {
-    fn from(v: crate::utils::time::ForensicTimestamp) -> Field {
-        Field::Date(v.into())
+impl From<ForensicTimestamp> for Field {
+    fn from(v: ForensicTimestamp) -> Field {
+        Field::Date(v)
     }
 }
 
@@ -398,7 +433,7 @@ impl Serialize for Field {
             Field::U64(v) => serializer.serialize_u64(*v),
             Field::I64(v) => serializer.serialize_i64(*v),
             Field::F64(v) => serializer.serialize_f64(*v),
-            Field::Date(v) => serializer.serialize_str(&v.to_string()),
+            Field::Date(v) => v.serialize(serializer),
             Field::Array(v) => v.serialize(serializer),
         }
     }
@@ -505,19 +540,22 @@ impl<'de> Visitor<'de> for FieldVisitor {
         Ok(Field::U64(v as _))
     }
     fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         Ok(Field::Null)
     }
     fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         Ok(Field::Null)
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: serde::de::SeqAccess<'de>, {
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
         let mut vc = Vec::with_capacity(32);
         while let Some(value) = seq.next_element()? {
             vc.push(value);
@@ -552,15 +590,20 @@ impl From<ForensicValue> for Field {
             ForensicValue::U64(v) => Field::U64(v),
             ForensicValue::F64(v) => Field::F64(v),
             ForensicValue::DateTime(v) => Field::Date(v),
-            ForensicValue::Guid(v) => {
-                Field::Text(Cow::Owned(format!(
-                    "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-                    u32::from_le_bytes([v[0], v[1], v[2], v[3]]),
-                    u16::from_le_bytes([v[4], v[5]]),
-                    u16::from_le_bytes([v[6], v[7]]),
-                    v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]
-                )))
-            }
+            ForensicValue::Guid(v) => Field::Text(Cow::Owned(format!(
+                "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                u32::from_le_bytes([v[0], v[1], v[2], v[3]]),
+                u16::from_le_bytes([v[4], v[5]]),
+                u16::from_le_bytes([v[6], v[7]]),
+                v[8],
+                v[9],
+                v[10],
+                v[11],
+                v[12],
+                v[13],
+                v[14],
+                v[15]
+            ))),
             ForensicValue::Text(v) => Field::Text(Cow::Owned(v)),
             ForensicValue::Binary(_) => Field::Null,
         }
@@ -585,5 +628,34 @@ impl From<Field> for ForensicValue {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_lossy_integer_conversions() {
+        let negative = Field::I64(-1);
+        let oversized = Field::U64(i64::MAX as u64 + 1);
+        let fractional = Field::F64(1.5);
+        let non_finite = Field::F64(f64::NAN);
+
+        assert!(TryInto::<u64>::try_into(&negative).is_err());
+        assert!(TryInto::<i64>::try_into(&oversized).is_err());
+        assert!(TryInto::<u64>::try_into(&fractional).is_err());
+        assert!(TryInto::<i64>::try_into(&non_finite).is_err());
+    }
+
+    #[test]
+    fn accepts_integral_numeric_conversions_in_range() {
+        let signed = Field::I64(42);
+        let unsigned = Field::U64(42);
+        let decimal = Field::F64(42.0);
+
+        assert_eq!(TryInto::<u64>::try_into(&signed).unwrap(), 42);
+        assert_eq!(TryInto::<i64>::try_into(&unsigned).unwrap(), 42);
+        assert_eq!(TryInto::<u64>::try_into(&decimal).unwrap(), 42);
     }
 }

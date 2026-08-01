@@ -1,7 +1,16 @@
-use std::{ops::{Add, AddAssign, Sub}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    ops::{Add, AddAssign, Sub},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize, Serializer, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+mod timestamp128;
+
+pub use timestamp128::{
+    ForensicTimestamp, Timestamp128, TimestampFlags, TimestampPrecision, TimestampSource,
+};
 
 /// Simplifies handling Windows filetime dates. Use only with UTC dates as it does not take time zones into account. Eliminates the need to use the chrono library.
 /// ```rust
@@ -14,9 +23,8 @@ use serde::{Serialize, Deserialize, Serializer, Deserializer};
 #[derive(Clone, Default, Copy)]
 pub struct WinFiletime(pub u64);
 
-
 /// Simplifies handling unix timestamp dates. Use only with UTC dates as it does not take time zones into account. Eliminates the need to use the chrono library.
-/// 
+///
 /// ```rust
 /// use forensic_rs::prelude::*;
 /// assert_eq!("01-01-1970 00:00:00", format!("{:?}", UnixTimestamp(0)));
@@ -26,7 +34,7 @@ pub struct WinFiletime(pub u64);
 pub struct UnixTimestamp(pub u64);
 
 /// Simplifies handling Windows filetime dates. Use only with UTC dates as it does not take time zones into account. Eliminates the need to use the chrono library.
-/// Its more complex than WinFiletime and uses more space, but its much faster when getting date parameters like hour,minute,day... as it parses the date when created. 
+/// Its more complex than WinFiletime and uses more space, but its much faster when getting date parameters like hour,minute,day... as it parses the date when created.
 /// ```rust
 /// use forensic_rs::prelude::*;
 /// assert_eq!("01-01-1601 00:00:00", format!("{:?}", Filetime::new(0)));
@@ -38,22 +46,24 @@ pub struct UnixTimestamp(pub u64);
 /// ```
 #[derive(Clone, Default, Copy)]
 pub struct Filetime {
-    original : u64,
-    year : u16,
-    month : u8,
-    day : u8,
-    hour : u8,
-    minute : u8,
-    second : u8,
-    nanos : u32
+    original: u64,
+    year: u16,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    nanos: u32,
 }
 
 impl Filetime {
     /// Makes a new Filetime from windows u64 filetime
-    pub fn new(timestap : u64) -> Self {
+    pub fn new(timestap: u64) -> Self {
         let nanoseconds_since_beginning = (timestap as u128) * 100;
-        let days_since_beginning = nanoseconds_since_beginning.div_euclid(60 * 60 * 24 * 1_000_000_000);
-        let nanoseconds_in_day = nanoseconds_since_beginning - days_since_beginning *60 * 60 * 24 * 1_000_000_000;
+        let days_since_beginning =
+            nanoseconds_since_beginning.div_euclid(60 * 60 * 24 * 1_000_000_000);
+        let nanoseconds_in_day =
+            nanoseconds_since_beginning - days_since_beginning * 60 * 60 * 24 * 1_000_000_000;
         let (year, restant_days) = to_years(days_since_beginning);
         let (month, acumulated_day_month) = if is_leap_year(year) {
             [0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
@@ -79,13 +89,13 @@ impl Filetime {
         .unwrap_or((12, 335));
         let day = restant_days.saturating_sub(acumulated_day_month) + 1;
         let hour = nanoseconds_in_day.div_euclid(60 * 60 * 1_000_000_000);
-        let rest_nanos = nanoseconds_in_day - hour * 60*60*1_000_000_000;
+        let rest_nanos = nanoseconds_in_day - hour * 60 * 60 * 1_000_000_000;
         let minute = rest_nanos.div_euclid(60 * 1_000_000_000);
         let rest_nanos = rest_nanos - minute * 60 * 1_000_000_000;
         let second = rest_nanos.div_euclid(1_000_000_000);
-        let nanos = rest_nanos - second*1_000_000_000;
+        let nanos = rest_nanos - second * 1_000_000_000;
         Self {
-            original : timestap,
+            original: timestap,
             year,
             month: month as u8,
             day: day as u8,
@@ -136,12 +146,22 @@ impl Filetime {
     }
 
     /// Make a new Filetime from year, month, day, time components assuming UTC.
-    pub fn with_ymd_and_hms(year : u16, month : u8, day : u8, hour : u8, minute : u8, second : u8, nanos : u32 ) -> Self {
+    pub fn with_ymd_and_hms(
+        year: u16,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+        nanos: u32,
+    ) -> Self {
         let days_since_begining = days_from_year(year) as u64;
         let days_since_start_year = acumulated_day_month(month, year) as u64;
         let days = days_since_begining + days_since_start_year + day as u64 - 1;
-        let original = (nanos as u64 / 100) + ((second as u64 + (60u64 * (minute as u64 + (60u64 * (hour as u64 + 24 * days))))) * 10_000_000u64);
-        
+        let original = (nanos as u64 / 100)
+            + ((second as u64 + (60u64 * (minute as u64 + (60u64 * (hour as u64 + 24 * days)))))
+                * 10_000_000u64);
+
         Self {
             year,
             month,
@@ -150,12 +170,12 @@ impl Filetime {
             minute,
             second,
             nanos,
-            original 
+            original,
         }
     }
 
-    /// Returns the year number 
-    /// 
+    /// Returns the year number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
@@ -164,8 +184,8 @@ impl Filetime {
     pub fn year(&self) -> u16 {
         self.year
     }
-    /// Returns the month number 
-    /// 
+    /// Returns the month number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
@@ -174,8 +194,8 @@ impl Filetime {
     pub fn month(&self) -> u8 {
         self.month
     }
-    /// Returns the day number 
-    /// 
+    /// Returns the day number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
@@ -184,8 +204,8 @@ impl Filetime {
     pub fn day(&self) -> u8 {
         self.day
     }
-    /// Returns the hour number 
-    /// 
+    /// Returns the hour number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
@@ -194,8 +214,8 @@ impl Filetime {
     pub fn hour(&self) -> u8 {
         self.hour
     }
-    /// Returns the minute number 
-    /// 
+    /// Returns the minute number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
@@ -204,8 +224,8 @@ impl Filetime {
     pub fn minute(&self) -> u8 {
         self.minute
     }
-    /// Returns the second number 
-    /// 
+    /// Returns the second number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
@@ -214,8 +234,8 @@ impl Filetime {
     pub fn second(&self) -> u8 {
         self.second
     }
-    /// Returns the second number 
-    /// 
+    /// Returns the second number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
@@ -224,8 +244,8 @@ impl Filetime {
     pub fn millis(&self) -> u32 {
         self.nanos / 1_000_000
     }
-    /// Returns the nanoseconds number 
-    /// 
+    /// Returns the nanoseconds number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
@@ -245,19 +265,21 @@ impl Filetime {
     }
 
     /// Returns the amount of time elapsed from an earlier point in time.
-    /// 
+    ///
     /// This function may fail because measurements taken earlier are not guaranteed to always be before later measurements (due to anomalies such as the system clock being adjusted either forwards or backwards). Instant can be used to measure elapsed time without this risk of failure.
-    /// 
+    ///
     /// If successful, Ok(Duration) is returned where the duration represents the amount of time elapsed from the specified measurement to this one.
-    /// 
+    ///
     /// Returns an Err if earlier is later than self, and the error contains how far from self the time is.
-    pub fn duration_since(&self, earlier : SystemTime) -> Result<Duration, Duration> {
-        let nano_epoch = earlier.duration_since(UNIX_EPOCH).map_err(|e| e.duration())?;
+    pub fn duration_since(&self, earlier: SystemTime) -> Result<Duration, Duration> {
+        let nano_epoch = earlier
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.duration())?;
         let nanos = nano_epoch.as_nanos();
         let self_nanos = self.original as u128 * 100;
 
         if nanos > self_nanos {
-            return Err(Duration::from_nanos((nanos - self_nanos) as u64))
+            return Err(Duration::from_nanos((nanos - self_nanos) as u64));
         }
         Ok(Duration::from_nanos((self_nanos - nanos) as u64))
     }
@@ -267,11 +289,19 @@ impl std::fmt::Debug for Filetime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.nanos == 0 {
             f.write_fmt(format_args!(
-                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}", self.day, self.month, self.year, self.hour, self.minute, self.second
+                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}",
+                self.day, self.month, self.year, self.hour, self.minute, self.second
             ))
-        }else {
+        } else {
             f.write_fmt(format_args!(
-                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}.{:03}", self.day, self.month, self.year, self.hour, self.minute, self.second, self.nanos / 1_000_000
+                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}.{:03}",
+                self.day,
+                self.month,
+                self.year,
+                self.hour,
+                self.minute,
+                self.second,
+                self.nanos / 1_000_000
             ))
         }
     }
@@ -339,9 +369,9 @@ impl Sub<Duration> for Filetime {
 ///
 /// ```rust
 /// use forensic_rs::prelude::*;
-/// assert_eq!(8, std::mem::size_of::<ForensicTimestamp>());
+/// assert_eq!(16, std::mem::size_of::<ForensicTimestamp>());
 ///
-/// let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000);
+/// let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000).unwrap();
 /// assert_eq!(2024, ts.year());
 /// assert_eq!(2, ts.month());
 /// assert_eq!(3, ts.day());
@@ -352,7 +382,7 @@ impl Sub<Duration> for Filetime {
 /// assert_eq!(596, ts.milliseconds());
 /// ```
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ForensicTimestamp(u64);
+struct LegacyForensicTimestamp(u64);
 
 // Bit layout constants
 const YEAR_SHIFT: u32 = 52;
@@ -364,9 +394,9 @@ const SECOND_SHIFT: u32 = 26;
 const MICROS_SHIFT: u32 = 4;
 
 const YEAR_MASK: u64 = 0xFFF; // 12 bits
-const MONTH_MASK: u64 = 0xF;  // 4 bits
-const DAY_MASK: u64 = 0x1F;   // 5 bits
-const HOUR_MASK: u64 = 0x1F;  // 5 bits
+const MONTH_MASK: u64 = 0xF; // 4 bits
+const DAY_MASK: u64 = 0x1F; // 5 bits
+const HOUR_MASK: u64 = 0x1F; // 5 bits
 const MINUTE_MASK: u64 = 0x3F; // 6 bits
 const SECOND_MASK: u64 = 0x3F; // 6 bits
 const MICROS_MASK: u64 = 0x3FFFFF; // 22 bits
@@ -384,7 +414,15 @@ const COCOA_EPOCH_UNIX_OFFSET_SECS: i64 = 978_307_200;
 const OLE_EPOCH_UNIX_OFFSET_DAYS: f64 = 25_569.0;
 
 #[inline]
-fn pack_forensic_ts(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8, micros: u32) -> u64 {
+fn pack_forensic_ts(
+    year: u16,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    micros: u32,
+) -> u64 {
     ((year as u64 & YEAR_MASK) << YEAR_SHIFT)
         | ((month as u64 & MONTH_MASK) << MONTH_SHIFT)
         | ((day as u64 & DAY_MASK) << DAY_SHIFT)
@@ -395,11 +433,11 @@ fn pack_forensic_ts(year: u16, month: u8, day: u8, hour: u8, minute: u8, second:
 }
 
 /// Break total microseconds since Unix epoch into date/time components and pack.
-fn forensic_ts_from_unix_micros(unix_micros: i64) -> ForensicTimestamp {
+fn forensic_ts_from_unix_micros(unix_micros: i64) -> LegacyForensicTimestamp {
     // Convert to microseconds since 1601-01-01 to reuse the existing calendar logic
     let win_micros = unix_micros as i128 + WIN_EPOCH_UNIX_OFFSET_MICROS;
     if win_micros < 0 {
-        return ForensicTimestamp(0);
+        return LegacyForensicTimestamp(0);
     }
     let total_micros = win_micros as u128;
     let total_seconds = total_micros / 1_000_000;
@@ -417,9 +455,13 @@ fn forensic_ts_from_unix_micros(unix_micros: i64) -> ForensicTimestamp {
     let minute = rest / 60;
     let second = rest % 60;
 
-    ForensicTimestamp(pack_forensic_ts(
-        year, month as u8, day as u8,
-        hour as u8, minute as u8, second as u8,
+    LegacyForensicTimestamp(pack_forensic_ts(
+        year,
+        month as u8,
+        day as u8,
+        hour as u8,
+        minute as u8,
+        second as u8,
         sub_second_micros,
     ))
 }
@@ -441,12 +483,12 @@ fn month_and_acum(year: u16, remaining_days: u128) -> (usize, usize) {
     }
 }
 
-impl ForensicTimestamp {
+impl LegacyForensicTimestamp {
     /// Create a timestamp from explicit date/time components.
     ///
     /// ```rust
     /// use forensic_rs::prelude::*;
-    /// let ts = ForensicTimestamp::with_ymd_and_hms(2000, 2, 29, 18, 27, 59, 1_000);
+    /// let ts = ForensicTimestamp::with_ymd_and_hms(2000, 2, 29, 18, 27, 59, 1_000).unwrap();
     /// assert_eq!(2000, ts.year());
     /// assert_eq!(2, ts.month());
     /// assert_eq!(29, ts.day());
@@ -455,8 +497,18 @@ impl ForensicTimestamp {
     /// assert_eq!(59, ts.second());
     /// assert_eq!(1_000, ts.microseconds());
     /// ```
-    pub fn with_ymd_and_hms(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8, micros: u32) -> Self {
-        Self(pack_forensic_ts(year, month, day, hour, minute, second, micros))
+    pub fn with_ymd_and_hms(
+        year: u16,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+        micros: u32,
+    ) -> Self {
+        Self(pack_forensic_ts(
+            year, month, day, hour, minute, second, micros,
+        ))
     }
 
     /// Create from a Windows FILETIME value (100-nanosecond intervals since 1601-01-01 UTC).
@@ -523,7 +575,7 @@ impl ForensicTimestamp {
     ///
     /// ```rust
     /// use forensic_rs::prelude::*;
-    /// let ts = ForensicTimestamp::from_ole_date(25569.0); // 1970-01-01
+    /// let ts = ForensicTimestamp::try_from_ole_date(25569.0).unwrap(); // 1970-01-01
     /// assert_eq!(1970, ts.year());
     /// assert_eq!(1, ts.month());
     /// assert_eq!(1, ts.day());
@@ -566,7 +618,7 @@ impl ForensicTimestamp {
     ///
     /// ```rust
     /// use forensic_rs::prelude::*;
-    /// let ts = ForensicTimestamp::from_cocoa(728_662_223.0); // 2024-02-03 14:10:23
+    /// let ts = ForensicTimestamp::try_from_cocoa(728_662_223.0).unwrap(); // 2024-02-03 14:10:23
     /// assert_eq!(2024, ts.year());
     /// assert_eq!(2, ts.month());
     /// assert_eq!(3, ts.day());
@@ -674,43 +726,57 @@ impl ForensicTimestamp {
     }
 }
 
-impl std::fmt::Debug for ForensicTimestamp {
+impl std::fmt::Debug for LegacyForensicTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let micros = self.microseconds();
         if micros == 0 {
-            write!(f, "{:02}-{:02}-{:04} {:02}:{:02}:{:02}",
-                self.day(), self.month(), self.year(),
-                self.hour(), self.minute(), self.second())
+            write!(
+                f,
+                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}",
+                self.day(),
+                self.month(),
+                self.year(),
+                self.hour(),
+                self.minute(),
+                self.second()
+            )
         } else {
-            write!(f, "{:02}-{:02}-{:04} {:02}:{:02}:{:02}.{:03}",
-                self.day(), self.month(), self.year(),
-                self.hour(), self.minute(), self.second(),
-                micros / 1_000)
+            write!(
+                f,
+                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}.{:03}",
+                self.day(),
+                self.month(),
+                self.year(),
+                self.hour(),
+                self.minute(),
+                self.second(),
+                micros / 1_000
+            )
         }
     }
 }
 
-impl std::fmt::Display for ForensicTimestamp {
+impl std::fmt::Display for LegacyForensicTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
     }
 }
 
-impl PartialOrd for ForensicTimestamp {
+impl PartialOrd for LegacyForensicTimestamp {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for ForensicTimestamp {
+impl Ord for LegacyForensicTimestamp {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Bit layout has year as MSB, so raw u64 comparison gives chronological order
         self.0.cmp(&other.0)
     }
 }
 
-impl Add<Duration> for ForensicTimestamp {
-    type Output = ForensicTimestamp;
+impl Add<Duration> for LegacyForensicTimestamp {
+    type Output = LegacyForensicTimestamp;
 
     fn add(self, rhs: Duration) -> Self::Output {
         let micros = self.to_unix_micros().saturating_add(rhs.as_micros() as i64);
@@ -718,8 +784,8 @@ impl Add<Duration> for ForensicTimestamp {
     }
 }
 
-impl Sub<Duration> for ForensicTimestamp {
-    type Output = ForensicTimestamp;
+impl Sub<Duration> for LegacyForensicTimestamp {
+    type Output = LegacyForensicTimestamp;
 
     fn sub(self, rhs: Duration) -> Self::Output {
         let micros = self.to_unix_micros().saturating_sub(rhs.as_micros() as i64);
@@ -727,28 +793,36 @@ impl Sub<Duration> for ForensicTimestamp {
     }
 }
 
-impl From<Filetime> for ForensicTimestamp {
+impl From<Filetime> for LegacyForensicTimestamp {
     fn from(ft: Filetime) -> Self {
         Self::with_ymd_and_hms(
-            ft.year(), ft.month(), ft.day(),
-            ft.hour(), ft.minute(), ft.second(),
+            ft.year(),
+            ft.month(),
+            ft.day(),
+            ft.hour(),
+            ft.minute(),
+            ft.second(),
             ft.nanoseconds() / 1_000, // nanoseconds → microseconds
         )
     }
 }
 
-impl From<ForensicTimestamp> for Filetime {
-    fn from(ts: ForensicTimestamp) -> Self {
+impl From<LegacyForensicTimestamp> for Filetime {
+    fn from(ts: LegacyForensicTimestamp) -> Self {
         Filetime::with_ymd_and_hms(
-            ts.year(), ts.month(), ts.day(),
-            ts.hour(), ts.minute(), ts.second(),
+            ts.year(),
+            ts.month(),
+            ts.day(),
+            ts.hour(),
+            ts.minute(),
+            ts.second(),
             ts.microseconds() * 1_000, // microseconds → nanoseconds
         )
     }
 }
 
-impl From<ForensicTimestamp> for SystemTime {
-    fn from(ts: ForensicTimestamp) -> Self {
+impl From<LegacyForensicTimestamp> for SystemTime {
+    fn from(ts: LegacyForensicTimestamp) -> Self {
         let unix_micros = ts.to_unix_micros();
         if unix_micros >= 0 {
             UNIX_EPOCH + Duration::from_micros(unix_micros as u64)
@@ -759,22 +833,28 @@ impl From<ForensicTimestamp> for SystemTime {
 }
 
 #[cfg(feature = "serde")]
-impl Serialize for ForensicTimestamp {
+impl Serialize for LegacyForensicTimestamp {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    where
+        S: Serializer,
+    {
         serializer.serialize_str(&self.to_string())
     }
 }
 
 #[cfg(feature = "serde")]
-impl<'de> Deserialize<'de> for ForensicTimestamp {
+impl<'de> Deserialize<'de> for LegacyForensicTimestamp {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         let s = String::deserialize(deserializer)?;
         // Parse "DD-MM-YYYY HH:MM:SS" or "DD-MM-YYYY HH:MM:SS.mmm"
         let parts: Vec<&str> = s.split(' ').collect();
         if parts.len() != 2 {
-            return Err(serde::de::Error::custom("expected 'DD-MM-YYYY HH:MM:SS[.mmm]'"));
+            return Err(serde::de::Error::custom(
+                "expected 'DD-MM-YYYY HH:MM:SS[.mmm]'",
+            ));
         }
         let date_parts: Vec<&str> = parts[0].split('-').collect();
         if date_parts.len() != 3 {
@@ -793,16 +873,24 @@ impl<'de> Deserialize<'de> for ForensicTimestamp {
         let minute: u8 = time_parts[1].parse().map_err(serde::de::Error::custom)?;
         let second: u8 = time_parts[2].parse().map_err(serde::de::Error::custom)?;
         let millis: u32 = if time_and_millis.len() > 1 {
-            time_and_millis[1].parse().map_err(serde::de::Error::custom)?
+            time_and_millis[1]
+                .parse()
+                .map_err(serde::de::Error::custom)?
         } else {
             0
         };
 
-        Ok(ForensicTimestamp::with_ymd_and_hms(year, month, day, hour, minute, second, millis * 1_000))
+        Ok(LegacyForensicTimestamp::with_ymd_and_hms(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millis * 1_000,
+        ))
     }
 }
-
-
 
 ///
 /// ```rust
@@ -839,12 +927,12 @@ impl From<u64> for UnixTimestamp {
     }
 }
 
-
 impl std::fmt::Debug for WinFiletime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let milliseconds_since_beginning = (self.0 as u128).div_euclid(10_000u128);
         let days_since_beginning = milliseconds_since_beginning.div_euclid(60 * 60 * 24 * 1000);
-        let milliseconds_in_day = milliseconds_since_beginning - days_since_beginning *60 * 60 * 24 * 1000;
+        let milliseconds_in_day =
+            milliseconds_since_beginning - days_since_beginning * 60 * 60 * 24 * 1000;
         let (year, restant_days) = to_years(days_since_beginning);
         let (month, acumulated_day_month) = if is_leap_year(year) {
             [0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
@@ -870,18 +958,20 @@ impl std::fmt::Debug for WinFiletime {
         .unwrap_or((12, 335));
         let day = restant_days.saturating_sub(acumulated_day_month) + 1;
         let hours = milliseconds_in_day.div_euclid(60 * 60 * 1000);
-        let rest_millis = milliseconds_in_day - hours * 60*60*1000;
+        let rest_millis = milliseconds_in_day - hours * 60 * 60 * 1000;
         let minute = rest_millis.div_euclid(60 * 1000);
         let rest_millis = rest_millis - minute * 60 * 1000;
         let seconds = rest_millis.div_euclid(1000);
-        let millis = rest_millis - seconds*1000;
+        let millis = rest_millis - seconds * 1000;
         if millis == 0 {
             f.write_fmt(format_args!(
-                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}", day, month,year, hours, minute, seconds
+                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}",
+                day, month, year, hours, minute, seconds
             ))
-        }else {
+        } else {
             f.write_fmt(format_args!(
-                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}.{:03}", day, month,year, hours, minute, seconds, millis
+                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}.{:03}",
+                day, month, year, hours, minute, seconds, millis
             ))
         }
     }
@@ -891,7 +981,8 @@ impl std::fmt::Debug for UnixTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let milliseconds_since_beginning = self.0 as u128;
         let days_since_beginning = milliseconds_since_beginning.div_euclid(60 * 60 * 24 * 1000);
-        let milliseconds_in_day = milliseconds_since_beginning - days_since_beginning *60 * 60 * 24 * 1000;
+        let milliseconds_in_day =
+            milliseconds_since_beginning - days_since_beginning * 60 * 60 * 24 * 1000;
         let (year, restant_days) = to_years_unix(days_since_beginning);
         let (month, acumulated_day_month) = if is_leap_year(year) {
             [0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
@@ -917,47 +1008,50 @@ impl std::fmt::Debug for UnixTimestamp {
         .unwrap_or((12, 335));
         let day = restant_days.saturating_sub(acumulated_day_month) + 1;
         let hours = milliseconds_in_day.div_euclid(60 * 60 * 1000);
-        let rest_millis = milliseconds_in_day - hours * 60*60*1000;
+        let rest_millis = milliseconds_in_day - hours * 60 * 60 * 1000;
         let minute = rest_millis.div_euclid(60 * 1000);
         let rest_millis = rest_millis - minute * 60 * 1000;
         let seconds = rest_millis.div_euclid(1000);
-        let millis = rest_millis - seconds*1000;
+        let millis = rest_millis - seconds * 1000;
         if millis == 0 {
             f.write_fmt(format_args!(
-                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}", day, month,year, hours, minute, seconds
+                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}",
+                day, month, year, hours, minute, seconds
             ))
-        }else {
+        } else {
             f.write_fmt(format_args!(
-                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}.{:03}", day, month,year, hours, minute, seconds, millis
+                "{:02}-{:02}-{:04} {:02}:{:02}:{:02}.{:03}",
+                day, month, year, hours, minute, seconds, millis
             ))
         }
     }
 }
 
-fn acumulated_day_month(month : u8, year : u16) -> u16 {
+fn acumulated_day_month(month: u8, year: u16) -> u16 {
     if is_leap_year(year) {
         if month >= 12 {
-            return 366u16
+            return 366u16;
         }
-        [0,0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335][month as usize]
+        [0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335][month as usize]
     } else {
         if month >= 12 {
-            return 365u16
+            return 365u16;
         }
-        [0,0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334][month as usize]
+        [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334][month as usize]
     }
 }
 
 fn is_leap_year(year: u16) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || (year.is_multiple_of(100) && year.is_multiple_of(400))
+    (year.is_multiple_of(4) && !year.is_multiple_of(100))
+        || (year.is_multiple_of(100) && year.is_multiple_of(400))
 }
-fn to_years(mut days : u128) -> (u16, u128) {
+fn to_years(mut days: u128) -> (u16, u128) {
     let mut year = 1601;
     while days >= 365 {
         days -= 365;
         year += 1;
         if days < 365 {
-            break
+            break;
         }
         if is_leap_year(year) {
             days -= 1;
@@ -965,10 +1059,10 @@ fn to_years(mut days : u128) -> (u16, u128) {
     }
     (year, days)
 }
-fn days_from_year(year : u16) -> u128 {
+fn days_from_year(year: u16) -> u128 {
     let mut days = 0;
     if year <= 1601 {
-        return 0
+        return 0;
     }
     for yr in 1601..year {
         if is_leap_year(yr) {
@@ -978,13 +1072,13 @@ fn days_from_year(year : u16) -> u128 {
     }
     days
 }
-fn to_years_unix(mut days : u128) -> (u16, u128) {
+fn to_years_unix(mut days: u128) -> (u16, u128) {
     let mut year = 1970;
     while days >= 365 {
         days -= 365;
         year += 1;
         if days < 365 {
-            break
+            break;
         }
         if is_leap_year(year) {
             days -= 1;
@@ -1019,8 +1113,8 @@ impl WinFiletime {
         Self(0)
     }
 
-    /// Returns the year number 
-    /// 
+    /// Returns the year number
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = WinFiletime(125963224790010000); // 29-02-2000 18:27:59.001
@@ -1034,7 +1128,7 @@ impl WinFiletime {
     }
 
     /// Returns the month number starting from 1
-    /// 
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = WinFiletime(125963224790010000); // 29-02-2000 18:27:59.001
@@ -1070,7 +1164,7 @@ impl WinFiletime {
     }
 
     /// Returns the day of month starting from 1
-    /// 
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = WinFiletime(125963224790010000); // 29-02-2000 18:27:59.001
@@ -1107,7 +1201,7 @@ impl WinFiletime {
     }
 
     /// Returns the hour number from 0 to 23.
-    /// 
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = WinFiletime(125963224790010000); // 29-02-2000 18:27:59.001
@@ -1116,13 +1210,14 @@ impl WinFiletime {
     pub fn hour(&self) -> u32 {
         let milliseconds_since_beginning = (self.0 as u128).div_euclid(10_000u128);
         let days_since_beginning = milliseconds_since_beginning.div_euclid(60 * 60 * 24 * 1000);
-        let milliseconds_in_day = milliseconds_since_beginning - days_since_beginning *60 * 60 * 24 * 1000;
+        let milliseconds_in_day =
+            milliseconds_since_beginning - days_since_beginning * 60 * 60 * 24 * 1000;
         let hours = milliseconds_in_day.div_euclid(60 * 60 * 1000);
         hours as u32
     }
 
     /// Returns the minute number from 0 to 59.
-    /// 
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = WinFiletime(125963224790010000); // 29-02-2000 18:27:59.001
@@ -1131,14 +1226,15 @@ impl WinFiletime {
     pub fn minute(&self) -> u32 {
         let milliseconds_since_beginning = (self.0 as u128).div_euclid(10_000u128);
         let days_since_beginning = milliseconds_since_beginning.div_euclid(60 * 60 * 24 * 1000);
-        let milliseconds_in_day = milliseconds_since_beginning - days_since_beginning *60 * 60 * 24 * 1000;
+        let milliseconds_in_day =
+            milliseconds_since_beginning - days_since_beginning * 60 * 60 * 24 * 1000;
         let hours = milliseconds_in_day.div_euclid(60 * 60 * 1000);
-        let rest_millis = milliseconds_in_day - hours * 60*60*1000;
+        let rest_millis = milliseconds_in_day - hours * 60 * 60 * 1000;
         let minute = rest_millis.div_euclid(60 * 1000);
         minute as u32
     }
     /// Returns the second number from 0 to 59.
-    /// 
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = WinFiletime(125963224790010000); // 29-02-2000 18:27:59.001
@@ -1147,16 +1243,17 @@ impl WinFiletime {
     pub fn second(&self) -> u32 {
         let milliseconds_since_beginning = (self.0 as u128).div_euclid(10_000u128);
         let days_since_beginning = milliseconds_since_beginning.div_euclid(60 * 60 * 24 * 1000);
-        let milliseconds_in_day = milliseconds_since_beginning - days_since_beginning *60 * 60 * 24 * 1000;
+        let milliseconds_in_day =
+            milliseconds_since_beginning - days_since_beginning * 60 * 60 * 24 * 1000;
         let hours = milliseconds_in_day.div_euclid(60 * 60 * 1000);
-        let rest_millis = milliseconds_in_day - hours * 60*60*1000;
+        let rest_millis = milliseconds_in_day - hours * 60 * 60 * 1000;
         let minute = rest_millis.div_euclid(60 * 1000);
         let rest_millis = rest_millis - minute * 60 * 1000;
         let seconds = rest_millis.div_euclid(1000);
         seconds as u32
     }
     /// Obtain the millisecond part
-    /// 
+    ///
     /// ```rust
     /// use forensic_rs::prelude::*;
     /// let time = WinFiletime(125963224790010000); // 29-02-2000 18:27:59.001
@@ -1165,16 +1262,16 @@ impl WinFiletime {
     pub fn milliseconds(&self) -> u32 {
         let milliseconds_since_beginning = (self.0 as u128).div_euclid(10_000u128);
         let days_since_beginning = milliseconds_since_beginning.div_euclid(60 * 60 * 24 * 1000);
-        let milliseconds_in_day = milliseconds_since_beginning - days_since_beginning *60 * 60 * 24 * 1000;
+        let milliseconds_in_day =
+            milliseconds_since_beginning - days_since_beginning * 60 * 60 * 24 * 1000;
         let hours = milliseconds_in_day.div_euclid(60 * 60 * 1000);
-        let rest_millis = milliseconds_in_day - hours * 60*60*1000;
+        let rest_millis = milliseconds_in_day - hours * 60 * 60 * 1000;
         let minute = rest_millis.div_euclid(60 * 1000);
         let rest_millis = rest_millis - minute * 60 * 1000;
         let seconds = rest_millis.div_euclid(1000);
-        let millis = rest_millis - seconds*1000;
+        let millis = rest_millis - seconds * 1000;
         millis as u32
     }
-    
 }
 
 impl PartialEq for Filetime {
@@ -1216,20 +1313,53 @@ fn should_generate_valid_windows_timestamps() {
 
 #[test]
 fn should_transform_to_calendar() {
-    assert_eq!("01-02-2024 00:00:00", format!("{:?}", WinFiletime(133512192000000000)));
-    assert_eq!("01-01-2024 14:10:23", format!("{:?}", WinFiletime(133485918230000000)));
-    assert_eq!("03-02-2024 14:10:23", format!("{:?}", WinFiletime(133514430230000000)));
-    assert_eq!("03-02-2024 14:10:23", format!("{:?}", WinFiletime(133514430230000000)));
+    assert_eq!(
+        "01-02-2024 00:00:00",
+        format!("{:?}", WinFiletime(133512192000000000))
+    );
+    assert_eq!(
+        "01-01-2024 14:10:23",
+        format!("{:?}", WinFiletime(133485918230000000))
+    );
+    assert_eq!(
+        "03-02-2024 14:10:23",
+        format!("{:?}", WinFiletime(133514430230000000))
+    );
+    assert_eq!(
+        "03-02-2024 14:10:23",
+        format!("{:?}", WinFiletime(133514430230000000))
+    );
     assert_eq!("01-01-1601 00:00:00", format!("{:?}", WinFiletime(0)));
-    assert_eq!("01-01-1602 00:00:00", format!("{:?}", WinFiletime(315360000000000)));
-    assert_eq!("01-01-1605 00:00:00", format!("{:?}", WinFiletime(1262304000000000)));
-    assert_eq!("14-11-1999 18:27:59", format!("{:?}", WinFiletime(125870776790000000)));
-    assert_eq!("14-11-2000 18:27:59", format!("{:?}", WinFiletime(126187000790000000)));
+    assert_eq!(
+        "01-01-1602 00:00:00",
+        format!("{:?}", WinFiletime(315360000000000))
+    );
+    assert_eq!(
+        "01-01-1605 00:00:00",
+        format!("{:?}", WinFiletime(1262304000000000))
+    );
+    assert_eq!(
+        "14-11-1999 18:27:59",
+        format!("{:?}", WinFiletime(125870776790000000))
+    );
+    assert_eq!(
+        "14-11-2000 18:27:59",
+        format!("{:?}", WinFiletime(126187000790000000))
+    );
     // 2000 is a leap year
-    assert_eq!("29-02-2000 18:27:59.001", format!("{:?}", WinFiletime(125963224790010000)));
+    assert_eq!(
+        "29-02-2000 18:27:59.001",
+        format!("{:?}", WinFiletime(125963224790010000))
+    );
     // 1900 not a leap year
-    assert_eq!("01-03-1900 18:27:59", format!("{:?}", WinFiletime(94406488790000000)));
-    assert_eq!("28-02-1900 18:27:59", format!("{:?}", WinFiletime(94405624790000000)));
+    assert_eq!(
+        "01-03-1900 18:27:59",
+        format!("{:?}", WinFiletime(94406488790000000))
+    );
+    assert_eq!(
+        "28-02-1900 18:27:59",
+        format!("{:?}", WinFiletime(94405624790000000))
+    );
 
     let time = WinFiletime(125963224790010000);
     assert_eq!(29, time.day());
@@ -1243,39 +1373,67 @@ fn should_transform_to_calendar() {
 
 #[test]
 fn should_transform_unix_to_calendar() {
-    assert_eq!("01-02-2024 00:00:00", format!("{:?}", UnixTimestamp(1706745600000)));
-    assert_eq!("01-01-2024 14:10:23", format!("{:?}", UnixTimestamp(1704118223000)));
-    assert_eq!("03-02-2024 14:10:23", format!("{:?}", UnixTimestamp(1706969423000)));
+    assert_eq!(
+        "01-02-2024 00:00:00",
+        format!("{:?}", UnixTimestamp(1706745600000))
+    );
+    assert_eq!(
+        "01-01-2024 14:10:23",
+        format!("{:?}", UnixTimestamp(1704118223000))
+    );
+    assert_eq!(
+        "03-02-2024 14:10:23",
+        format!("{:?}", UnixTimestamp(1706969423000))
+    );
     assert_eq!("01-01-1970 00:00:00", format!("{:?}", UnixTimestamp(0)));
-    assert_eq!("01-01-1972 00:00:00", format!("{:?}", UnixTimestamp(63072000000)));
-    assert_eq!("14-11-1999 18:27:59", format!("{:?}", UnixTimestamp(942604079000)));
-    assert_eq!("14-11-2000 18:27:59", format!("{:?}", UnixTimestamp(974226479000)));
+    assert_eq!(
+        "01-01-1972 00:00:00",
+        format!("{:?}", UnixTimestamp(63072000000))
+    );
+    assert_eq!(
+        "14-11-1999 18:27:59",
+        format!("{:?}", UnixTimestamp(942604079000))
+    );
+    assert_eq!(
+        "14-11-2000 18:27:59",
+        format!("{:?}", UnixTimestamp(974226479000))
+    );
     // 2000 is a leap year
-    assert_eq!("29-02-2000 18:27:59.001", format!("{:?}", UnixTimestamp(951848879001)));
+    assert_eq!(
+        "29-02-2000 18:27:59.001",
+        format!("{:?}", UnixTimestamp(951848879001))
+    );
 }
 
 #[test]
 fn should_generate_valid_filetime() {
     let time = Filetime::new(125963224790010000);
     assert_eq!("29-02-2000 18:27:59.001", &format!("{}", time));
-    assert_eq!(time, Filetime::with_ymd_and_hms(2000, 2, 29, 18, 27, 59, 1000000));
+    assert_eq!(
+        time,
+        Filetime::with_ymd_and_hms(2000, 2, 29, 18, 27, 59, 1000000)
+    );
     let time = Filetime::new(94405624790010000);
-    assert_eq!(time, Filetime::with_ymd_and_hms(1900, 2, 28, 18, 27, 59, 1000000));
+    assert_eq!(
+        time,
+        Filetime::with_ymd_and_hms(1900, 2, 28, 18, 27, 59, 1000000)
+    );
     assert_eq!("28-02-1900 18:27:59.001", format!("{}", time));
 }
 
 // ============================================================================
-// ForensicTimestamp tests
+// Canonical ForensicTimestamp layout tests
 // ============================================================================
 
 #[test]
-fn forensic_timestamp_size_is_8_bytes() {
-    assert_eq!(8, std::mem::size_of::<ForensicTimestamp>());
+fn forensic_timestamp_size_and_alignment_are_16_bytes() {
+    assert_eq!(16, std::mem::size_of::<ForensicTimestamp>());
+    assert_eq!(16, std::mem::align_of::<ForensicTimestamp>());
 }
 
 #[test]
 fn forensic_timestamp_pack_unpack_roundtrip() {
-    let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000);
+    let ts = LegacyForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000);
     assert_eq!(2024, ts.year());
     assert_eq!(2, ts.month());
     assert_eq!(3, ts.day());
@@ -1289,7 +1447,7 @@ fn forensic_timestamp_pack_unpack_roundtrip() {
 #[test]
 fn forensic_timestamp_from_win_filetime() {
     // 133514430235959706 = 2024-02-03 14:10:23.595 (known FILETIME)
-    let ts = ForensicTimestamp::from_win_filetime(133514430235959706);
+    let ts = LegacyForensicTimestamp::from_win_filetime(133514430235959706);
     assert_eq!(2024, ts.year());
     assert_eq!(2, ts.month());
     assert_eq!(3, ts.day());
@@ -1301,7 +1459,7 @@ fn forensic_timestamp_from_win_filetime() {
 
 #[test]
 fn forensic_timestamp_from_win_filetime_epoch() {
-    let ts = ForensicTimestamp::from_win_filetime(0);
+    let ts = LegacyForensicTimestamp::from_win_filetime(0);
     assert_eq!(1601, ts.year());
     assert_eq!(1, ts.month());
     assert_eq!(1, ts.day());
@@ -1309,14 +1467,14 @@ fn forensic_timestamp_from_win_filetime_epoch() {
 
 #[test]
 fn forensic_timestamp_from_unix_secs() {
-    let ts = ForensicTimestamp::from_unix_secs(0);
+    let ts = LegacyForensicTimestamp::from_unix_secs(0);
     assert_eq!(1970, ts.year());
     assert_eq!(1, ts.month());
     assert_eq!(1, ts.day());
     assert_eq!(0, ts.hour());
 
     // 1706969423 = 2024-02-03 14:10:23
-    let ts = ForensicTimestamp::from_unix_secs(1706969423);
+    let ts = LegacyForensicTimestamp::from_unix_secs(1706969423);
     assert_eq!(2024, ts.year());
     assert_eq!(2, ts.month());
     assert_eq!(3, ts.day());
@@ -1327,7 +1485,7 @@ fn forensic_timestamp_from_unix_secs() {
 
 #[test]
 fn forensic_timestamp_from_unix_millis() {
-    let ts = ForensicTimestamp::from_unix_millis(1706969423596);
+    let ts = LegacyForensicTimestamp::from_unix_millis(1706969423596);
     assert_eq!(2024, ts.year());
     assert_eq!(2, ts.month());
     assert_eq!(3, ts.day());
@@ -1337,7 +1495,7 @@ fn forensic_timestamp_from_unix_millis() {
 
 #[test]
 fn forensic_timestamp_from_unix_micros() {
-    let ts = ForensicTimestamp::from_unix_micros(1706969423596123);
+    let ts = LegacyForensicTimestamp::from_unix_micros(1706969423596123);
     assert_eq!(2024, ts.year());
     assert_eq!(596_123, ts.microseconds());
 }
@@ -1345,13 +1503,13 @@ fn forensic_timestamp_from_unix_micros() {
 #[test]
 fn forensic_timestamp_from_ole_date() {
     // OLE 25569.0 = 1970-01-01
-    let ts = ForensicTimestamp::from_ole_date(25569.0);
+    let ts = LegacyForensicTimestamp::from_ole_date(25569.0);
     assert_eq!(1970, ts.year());
     assert_eq!(1, ts.month());
     assert_eq!(1, ts.day());
 
     // OLE 0.0 = 1899-12-30
-    let ts = ForensicTimestamp::from_ole_date(0.0);
+    let ts = LegacyForensicTimestamp::from_ole_date(0.0);
     assert_eq!(1899, ts.year());
     assert_eq!(12, ts.month());
     assert_eq!(30, ts.day());
@@ -1361,7 +1519,7 @@ fn forensic_timestamp_from_ole_date() {
 fn forensic_timestamp_from_webkit() {
     // WebKit uses microseconds since 1601-01-01
     // 13351443023595970 µs from 1601 = 2024-02-03 14:10:23.595
-    let ts = ForensicTimestamp::from_webkit(13351443023595970);
+    let ts = LegacyForensicTimestamp::from_webkit(13351443023595970);
     assert_eq!(2024, ts.year());
     assert_eq!(2, ts.month());
     assert_eq!(3, ts.day());
@@ -1374,7 +1532,7 @@ fn forensic_timestamp_from_webkit() {
 fn forensic_timestamp_from_hfs_plus() {
     // HFS+ epoch is 1904-01-01
     // 3789814223 seconds from 1904-01-01 = 2024-02-03 14:10:23
-    let ts = ForensicTimestamp::from_hfs_plus(3_789_814_223);
+    let ts = LegacyForensicTimestamp::from_hfs_plus(3_789_814_223);
     assert_eq!(2024, ts.year());
     assert_eq!(2, ts.month());
     assert_eq!(3, ts.day());
@@ -1387,7 +1545,7 @@ fn forensic_timestamp_from_hfs_plus() {
 fn forensic_timestamp_from_cocoa() {
     // Cocoa epoch is 2001-01-01
     // 728662223.0 seconds from 2001-01-01 = 2024-02-03 14:10:23
-    let ts = ForensicTimestamp::from_cocoa(728_662_223.0);
+    let ts = LegacyForensicTimestamp::from_cocoa(728_662_223.0);
     assert_eq!(2024, ts.year());
     assert_eq!(2, ts.month());
     assert_eq!(3, ts.day());
@@ -1398,13 +1556,13 @@ fn forensic_timestamp_from_cocoa() {
 
 #[test]
 fn forensic_timestamp_output_conversions() {
-    let ts = ForensicTimestamp::from_unix_secs(1706969423);
+    let ts = LegacyForensicTimestamp::from_unix_secs(1706969423);
     assert_eq!(1706969423, ts.to_unix_secs());
 
-    let ts = ForensicTimestamp::from_unix_millis(1706969423596);
+    let ts = LegacyForensicTimestamp::from_unix_millis(1706969423596);
     assert_eq!(1706969423596, ts.to_unix_millis());
 
-    let ts = ForensicTimestamp::from_unix_micros(1706969423596123);
+    let ts = LegacyForensicTimestamp::from_unix_micros(1706969423596123);
     assert_eq!(1706969423596123, ts.to_unix_micros());
 }
 
@@ -1412,26 +1570,30 @@ fn forensic_timestamp_output_conversions() {
 fn forensic_timestamp_win_filetime_roundtrip() {
     // Small precision loss is expected (100ns → µs), so we compare within ±5 ticks
     let original: u64 = 133514430235959706;
-    let ts = ForensicTimestamp::from_win_filetime(original);
+    let ts = LegacyForensicTimestamp::from_win_filetime(original);
     let back = ts.to_win_filetime();
-    assert!((original as i64 - back as i64).unsigned_abs() < 10,
-        "expected ~{}, got {}", original, back);
+    assert!(
+        (original as i64 - back as i64).unsigned_abs() < 10,
+        "expected ~{}, got {}",
+        original,
+        back
+    );
 }
 
 #[test]
 fn forensic_timestamp_display() {
-    let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000);
+    let ts = LegacyForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000);
     assert_eq!("03-02-2024 14:10:23.596", format!("{}", ts));
 
-    let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 0);
+    let ts = LegacyForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 0);
     assert_eq!("03-02-2024 14:10:23", format!("{}", ts));
 }
 
 #[test]
 fn forensic_timestamp_ordering() {
-    let t1 = ForensicTimestamp::with_ymd_and_hms(2023, 1, 1, 0, 0, 0, 0);
-    let t2 = ForensicTimestamp::with_ymd_and_hms(2024, 1, 1, 0, 0, 0, 0);
-    let t3 = ForensicTimestamp::with_ymd_and_hms(2024, 1, 1, 0, 0, 0, 1);
+    let t1 = LegacyForensicTimestamp::with_ymd_and_hms(2023, 1, 1, 0, 0, 0, 0);
+    let t2 = LegacyForensicTimestamp::with_ymd_and_hms(2024, 1, 1, 0, 0, 0, 0);
+    let t3 = LegacyForensicTimestamp::with_ymd_and_hms(2024, 1, 1, 0, 0, 0, 1);
     assert!(t1 < t2);
     assert!(t2 < t3);
     assert_eq!(t1, t1);
@@ -1439,7 +1601,7 @@ fn forensic_timestamp_ordering() {
 
 #[test]
 fn forensic_timestamp_arithmetic() {
-    let ts = ForensicTimestamp::with_ymd_and_hms(2024, 1, 1, 0, 0, 0, 0);
+    let ts = LegacyForensicTimestamp::with_ymd_and_hms(2024, 1, 1, 0, 0, 0, 0);
 
     let plus_one_hour = ts + Duration::from_secs(3600);
     assert_eq!(1, plus_one_hour.hour());
@@ -1453,18 +1615,18 @@ fn forensic_timestamp_arithmetic() {
 #[test]
 fn forensic_timestamp_leap_year() {
     // 2000 is a leap year
-    let ts = ForensicTimestamp::with_ymd_and_hms(2000, 2, 29, 18, 27, 59, 1_000);
+    let ts = LegacyForensicTimestamp::with_ymd_and_hms(2000, 2, 29, 18, 27, 59, 1_000);
     assert_eq!("29-02-2000 18:27:59.001", format!("{}", ts));
 
     // 1900 is NOT a leap year
-    let ts = ForensicTimestamp::with_ymd_and_hms(1900, 2, 28, 18, 27, 59, 1_000);
+    let ts = LegacyForensicTimestamp::with_ymd_and_hms(1900, 2, 28, 18, 27, 59, 1_000);
     assert_eq!("28-02-1900 18:27:59.001", format!("{}", ts));
 }
 
 #[test]
 fn forensic_timestamp_from_filetime_conversion() {
     let ft = Filetime::new(125963224790010000); // 29-02-2000 18:27:59.001
-    let ts: ForensicTimestamp = ft.into();
+    let ts: LegacyForensicTimestamp = ft.into();
     assert_eq!(2000, ts.year());
     assert_eq!(2, ts.month());
     assert_eq!(29, ts.day());
@@ -1486,11 +1648,11 @@ fn forensic_timestamp_from_filetime_conversion() {
 #[test]
 fn forensic_timestamp_edge_cases() {
     // Epoch of 1601 (Windows)
-    let ts = ForensicTimestamp::with_ymd_and_hms(1601, 1, 1, 0, 0, 0, 0);
+    let ts = LegacyForensicTimestamp::with_ymd_and_hms(1601, 1, 1, 0, 0, 0, 0);
     assert_eq!("01-01-1601 00:00:00", format!("{}", ts));
 
     // Maximum year
-    let ts = ForensicTimestamp::with_ymd_and_hms(4095, 12, 31, 23, 59, 59, 999_999);
+    let ts = LegacyForensicTimestamp::with_ymd_and_hms(4095, 12, 31, 23, 59, 59, 999_999);
     assert_eq!(4095, ts.year());
     assert_eq!(12, ts.month());
     assert_eq!(31, ts.day());

@@ -1,10 +1,9 @@
-
 use std::borrow::Cow;
 use std::fmt;
 use std::ops::Deref;
 
 /// StaticString Copy-On-Write
-/// 
+///
 /// A simplified version of `Cow<'static, str>` that only works with static lifetime strings.
 /// This is optimized for frequent use of static strings in error messages and other contexts
 /// where most strings are known at compile time.
@@ -22,25 +21,25 @@ impl SCow {
     pub const fn borrowed(s: &'static str) -> Self {
         Self::Borrowed(s)
     }
-    
+
     /// Create a new SCow from an owned String
     #[inline]
     pub fn owned(s: String) -> Self {
         Self::Owned(s)
     }
-    
+
     /// Returns true if this SCow is borrowed
     #[inline]
     pub const fn is_borrowed(&self) -> bool {
         matches!(self, Self::Borrowed(_))
     }
-    
+
     /// Returns true if this SCow is owned
     #[inline]
     pub const fn is_owned(&self) -> bool {
         matches!(self, Self::Owned(_))
     }
-    
+
     /// Extract the owned String, cloning if necessary
     pub fn into_owned(self) -> String {
         match self {
@@ -48,7 +47,7 @@ impl SCow {
             Self::Borrowed(s) => s.to_owned(),
         }
     }
-    
+
     /// Get a reference to the string content
     pub fn as_str(&self) -> &str {
         match self {
@@ -56,7 +55,7 @@ impl SCow {
             Self::Borrowed(s) => s,
         }
     }
-    
+
     /// Convert to an owned String if not already owned
     pub fn to_mut(&mut self) -> &mut String {
         match self {
@@ -75,7 +74,7 @@ impl SCow {
 // Deref to str for convenient access
 impl Deref for SCow {
     type Target = str;
-    
+
     #[inline]
     fn deref(&self) -> &Self::Target {
         self.as_str()
@@ -301,10 +300,10 @@ mod tests {
     fn test_to_mut() {
         let mut s = SCow::borrowed("immutable");
         assert!(s.is_borrowed());
-        
+
         let mutable = s.to_mut();
         mutable.push_str(" now mutable");
-        
+
         assert!(s.is_owned());
         assert_eq!(s.as_str(), "immutable now mutable");
     }
@@ -312,11 +311,11 @@ mod tests {
     #[test]
     fn test_equality() {
         let scow = SCow::borrowed("test");
-        
+
         assert_eq!(scow, "test");
         assert_eq!(scow, &"test");
         assert_eq!(scow, "test".to_string());
-        
+
         assert_eq!("test", scow);
         assert_eq!(&"test", scow);
         assert_eq!("test".to_string(), scow);

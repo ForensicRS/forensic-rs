@@ -8,20 +8,21 @@ use crate::{
 
 /// this is an error handling routine.
 ///
-/// - if `ts_res` contains a valid unix timestamp `ts`, then `Ok(Some(ts))` is returned
-/// - if `ts_res` contains a value which cannot be converted into a unix timestamp, then Err(_) is returned
+/// - if `ts_res` contains a valid system timestamp `ts`, then `Ok(Some(ts))` is returned
+/// - if `ts_res` contains a value outside the canonical timestamp range, then Err(_) is returned
 /// - if `ts_res` contains an error, then:
 ///    - if `kind() == Unsupported` then Ok(None) is returned (because this is not an error)
 ///    - otherwise, the error is returned
-fn timestamp_from(ts_res: std::io::Result<SystemTime>) -> ForensicResult<Option<ForensicTimestamp>> {
+fn timestamp_from(
+    ts_res: std::io::Result<SystemTime>,
+) -> ForensicResult<Option<ForensicTimestamp>> {
     match ts_res {
-        Ok(ts) => match ts.duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(v) => Ok(Some(ForensicTimestamp::from_unix_micros(v.as_micros() as i64))),
-            Err(_why) => Err(ForensicError::illegal_timestamp(
+        Ok(ts) => ForensicTimestamp::try_from_system_time(ts)
+            .map(Some)
+            .map_err(|_| ForensicError::illegal_timestamp(
                 0,
-                format!("timestamp {ts:?} cannot be converted into a unix timestamp").into()
+                format!("timestamp {ts:?} cannot be represented").into(),
             )),
-        },
         Err(why) => {
             if why.kind() == ErrorKind::Unsupported {
                 Ok(None)
@@ -150,6 +151,26 @@ impl VirtualFileSystem for StdVirtualFS {
         Ok(ret)
     }
 
+    fn visit_dir(
+        &mut self,
+        path: &Path,
+        visitor: &mut dyn FnMut(&VDirEntry) -> ForensicResult<()>,
+    ) -> ForensicResult<()> {
+        for dir_entry in std::fs::read_dir(path)? {
+            let entry = dir_entry?;
+            let file_type = entry.file_type()?;
+            let file_entry = if file_type.is_dir() {
+                VDirEntry::Directory(entry.file_name().to_string_lossy().into_owned())
+            } else if file_type.is_symlink() {
+                VDirEntry::Symlink(entry.file_name().to_string_lossy().into_owned())
+            } else {
+                VDirEntry::File(entry.file_name().to_string_lossy().into_owned())
+            };
+            visitor(&file_entry)?;
+        }
+        Ok(())
+    }
+
     fn is_live(&self) -> bool {
         true
     }
@@ -207,6 +228,30 @@ mod tst {
             .map(|v| v.to_string())
             .collect::<Vec<String>>()
             .contains(&"test_vfs_file.txt".to_string()));
+    }
+
+    #[test]
+    fn visit_dir_streams_entries_and_propagates_visitor_errors() {
+        let tmp = std::env::temp_dir();
+        let tmp_file = tmp.join(FILE_NAME);
+        let mut file = std::fs::File::create(&tmp_file).unwrap();
+        file.write_all(CONTENT.as_bytes()).unwrap();
+        drop(file);
+
+        let mut std_vfs = StdVirtualFS::new();
+        let mut entries = Vec::new();
+        std_vfs
+            .visit_dir(&tmp, &mut |entry| {
+                entries.push(entry.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert!(entries.contains(&FILE_NAME.to_string()));
+
+        let result = std_vfs.visit_dir(&tmp, &mut |_| {
+            Err(crate::err::ForensicError::other("test", "stop".to_string()))
+        });
+        assert!(result.is_err());
     }
 
     fn test_file_content(std_vfs: &mut impl VirtualFileSystem, tmp_file: &Path) {

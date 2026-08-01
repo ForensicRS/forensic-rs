@@ -60,72 +60,84 @@ impl ForensicBridge {
                 }
 
                 BridgeRequest::ListProviders => {
-                    let names: Vec<String> =
-                        self.providers.iter().map(|p| p.name().to_string()).collect();
+                    let names: Vec<String> = self
+                        .providers
+                        .iter()
+                        .map(|p| p.name().to_string())
+                        .collect();
                     BridgeResponse::Providers(names)
                 }
 
-                BridgeRequest::Children { provider, path, offset, limit, cancel } => {
-                    match name_map.get(&provider) {
-                        None => BridgeResponse::Error {
-                            message: format!("provider '{}' not found", provider),
-                        },
-                        Some(&idx) => match self.providers[idx].children(&path, offset, limit, &cancel) {
-                            Ok((entries, total)) => BridgeResponse::Children {
-                                origin: DataOrigin {
-                                    provider: Text::Owned(provider),
-                                    path: Text::Owned(path),
-                                },
-                                entries,
-                                total,
-                                offset,
+                BridgeRequest::Children {
+                    provider,
+                    path,
+                    offset,
+                    limit,
+                    cancel,
+                } => match name_map.get(&provider) {
+                    None => BridgeResponse::Error {
+                        message: format!("provider '{}' not found", provider),
+                    },
+                    Some(&idx) => match self.providers[idx].children(&path, offset, limit, &cancel)
+                    {
+                        Ok((entries, total)) => BridgeResponse::Children {
+                            origin: DataOrigin {
+                                provider: Text::Owned(provider),
+                                path: Text::Owned(path),
                             },
-                            Err(e) => BridgeResponse::Error {
-                                message: e.to_string(),
-                            },
+                            entries,
+                            total,
+                            offset,
                         },
-                    }
-                }
+                        Err(e) => BridgeResponse::Error {
+                            message: e.to_string(),
+                        },
+                    },
+                },
 
-                BridgeRequest::Read { provider, path, cancel } => {
-                    match name_map.get(&provider) {
-                        None => BridgeResponse::Error {
-                            message: format!("provider '{}' not found", provider),
-                        },
-                        Some(&idx) => match self.providers[idx].read(&path, &cancel) {
-                            Ok(value) => BridgeResponse::Value {
-                                origin: DataOrigin {
-                                    provider: Text::Owned(provider),
-                                    path: Text::Owned(path),
-                                },
-                                value,
+                BridgeRequest::Read {
+                    provider,
+                    path,
+                    cancel,
+                } => match name_map.get(&provider) {
+                    None => BridgeResponse::Error {
+                        message: format!("provider '{}' not found", provider),
+                    },
+                    Some(&idx) => match self.providers[idx].read(&path, &cancel) {
+                        Ok(value) => BridgeResponse::Value {
+                            origin: DataOrigin {
+                                provider: Text::Owned(provider),
+                                path: Text::Owned(path),
                             },
-                            Err(e) => BridgeResponse::Error {
-                                message: e.to_string(),
-                            },
+                            value,
                         },
-                    }
-                }
+                        Err(e) => BridgeResponse::Error {
+                            message: e.to_string(),
+                        },
+                    },
+                },
 
-                BridgeRequest::Metadata { provider, path, cancel } => {
-                    match name_map.get(&provider) {
-                        None => BridgeResponse::Error {
-                            message: format!("provider '{}' not found", provider),
-                        },
-                        Some(&idx) => match self.providers[idx].metadata(&path, &cancel) {
-                            Ok(metadata) => BridgeResponse::Metadata {
-                                origin: DataOrigin {
-                                    provider: Text::Owned(provider),
-                                    path: Text::Owned(path),
-                                },
-                                metadata,
+                BridgeRequest::Metadata {
+                    provider,
+                    path,
+                    cancel,
+                } => match name_map.get(&provider) {
+                    None => BridgeResponse::Error {
+                        message: format!("provider '{}' not found", provider),
+                    },
+                    Some(&idx) => match self.providers[idx].metadata(&path, &cancel) {
+                        Ok(metadata) => BridgeResponse::Metadata {
+                            origin: DataOrigin {
+                                provider: Text::Owned(provider),
+                                path: Text::Owned(path),
                             },
-                            Err(e) => BridgeResponse::Error {
-                                message: e.to_string(),
-                            },
+                            metadata,
                         },
-                    }
-                }
+                        Err(e) => BridgeResponse::Error {
+                            message: e.to_string(),
+                        },
+                    },
+                },
             };
 
             // Best-effort send — client may have timed out
@@ -229,7 +241,10 @@ mod tests {
         fn with_children(mut self, path: &str, entries: Vec<(&str, NodeType)>) -> Self {
             self.children_map.insert(
                 path.to_string(),
-                entries.into_iter().map(|(n, t)| (n.to_string(), t)).collect(),
+                entries
+                    .into_iter()
+                    .map(|(n, t)| (n.to_string(), t))
+                    .collect(),
             );
             self
         }
@@ -252,7 +267,11 @@ mod tests {
             limit: u64,
             _cancel: &CancellationToken,
         ) -> ForensicResult<(Vec<NodeEntry>, u64)> {
-            let all = self.children_map.get(path).map(|v| v.as_slice()).unwrap_or(&[]);
+            let all = self
+                .children_map
+                .get(path)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
             let total = all.len() as u64;
             let entries: Vec<NodeEntry> = all
                 .iter()
@@ -268,10 +287,9 @@ mod tests {
         }
 
         fn read(&self, path: &str, _cancel: &CancellationToken) -> ForensicResult<BridgeValue> {
-            self.values
-                .get(path)
-                .cloned()
-                .ok_or_else(|| crate::err::ForensicError::other("StaticProvider", format!("not found: {}", path)))
+            self.values.get(path).cloned().ok_or_else(|| {
+                crate::err::ForensicError::other("StaticProvider", format!("not found: {}", path))
+            })
         }
 
         fn metadata(
@@ -298,15 +316,10 @@ mod tests {
     #[test]
     fn bridge_children_and_read() {
         let provider = StaticProvider::new("Test")
-            .with_children(
-                "",
-                vec![("root_key", NodeType::Container)],
-            )
+            .with_children("", vec![("root_key", NodeType::Container)])
             .with_value("root_key/value", BridgeValue::U64(99));
 
-        let client = ForensicBridgeBuilder::new()
-            .add_provider(provider)
-            .spawn();
+        let client = ForensicBridgeBuilder::new().add_provider(provider).spawn();
 
         let resp = client.children("Test", "").unwrap();
         match resp {

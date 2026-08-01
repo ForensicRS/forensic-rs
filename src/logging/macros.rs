@@ -1,4 +1,3 @@
-
 /// Logs a message at the error level.
 /// ```rust
 /// use forensic_rs::error;

@@ -7,6 +7,7 @@ categories = ["parsing"]
 description = "A Rust-based framework to build tools that analyze forensic artifacts and can be reused as libraries across multiple projects without changing anything."
 license = "MIT"
 edition = "2024"
+rust-version = "1.85"
 repository = "https://github.com/ForensicRS/forensic-rs"
 
 [features]
@@ -20,6 +21,8 @@ serde_json = {version = "1", optional = true}
 [dev-dependencies]
 sqlite = "0.28.1"
 anyhow = "1"
+criterion = "0.5"
+base64 = "0.22"
 
 [[example]]
 name = "triage_pipeline"
@@ -32,3 +35,19 @@ path = "examples/registry_and_vfs.rs"
 [[example]]
 name = "event_gap_detector"
 path = "examples/event_gap_detector.rs"
+
+[[example]]
+name = "parallel_triage"
+path = "examples/parallel_triage.rs"
+
+[[example]]
+name = "mcp_stdio_server"
+path = "examples/mcp_stdio_server.rs"
+
+[[bench]]
+name = "unpack"
+harness = false
+
+[[bench]]
+name = "timestamp"
+harness = false

@@ -36,7 +36,9 @@ fn decompress_chunk(
         let mut symbol = match prefix_code_tree_decode_symbol(&mut bstr, root.clone()) {
             Ok(v) => v,
             Err(e) => match e {
-                ForensicError::DataAccess(DataAccessError::NoMoreData) => return Ok((bstr.index, i)),
+                ForensicError::DataAccess(DataAccessError::NoMoreData) => {
+                    return Ok((bstr.index, i))
+                }
                 _ => return Err(e),
             },
         };
@@ -70,7 +72,12 @@ fn decompress_chunk(
             length += 3;
             loop {
                 if (i as i32 + offset) < 0 {
-                    return ForensicError::invalid_offset("decompress_expres_huff", offset as _, chunk_size as _).into();
+                    return ForensicError::invalid_offset(
+                        "decompress_expres_huff",
+                        offset as _,
+                        chunk_size as _,
+                    )
+                    .into();
                 }
                 let position = (i as i32 + offset) as usize;
                 out_buf.push(out_buf[position]);
@@ -178,7 +185,10 @@ fn prefix_code_tree_add_leaf(
 ) -> ForensicResult<u32> {
     let mut node = match tree_nodes.first() {
         Some(v) => v.clone(),
-        None => return ForensicError::compression_error("express_huff", "No valid PrefixCodeNode").into()
+        None => {
+            return ForensicError::compression_error("express_huff", "No valid PrefixCodeNode")
+                .into()
+        }
     };
     let mut i = leaf_index + 1;
     let mut child_index;
@@ -271,7 +281,10 @@ fn prefix_code_tree_decode_symbol(
         let nt = node.borrow();
         let new_node = match &nt.child[bit as usize] {
             Some(v) => v.clone(),
-            None => return ForensicError::too_small("get_prefix_code_symbol", bit as _, bstr.bits as _).into()
+            None => {
+                return ForensicError::too_small("get_prefix_code_symbol", bit as _, bstr.bits as _)
+                    .into()
+            }
         };
         drop(nt);
         node = new_node;

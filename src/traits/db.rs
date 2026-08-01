@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 use crate::err::{ForensicError, ForensicResult};
-use crate::utils::time::Filetime;
+use crate::utils::time::{Filetime, ForensicTimestamp};
 
 // ============================================================================
 // Column Type
@@ -54,7 +54,7 @@ pub enum ForensicValue {
     I64(i64),
     U64(u64),
     F64(f64),
-    DateTime(Filetime),
+    DateTime(ForensicTimestamp),
     Guid([u8; 16]),
     Text(String),
     Binary(Vec<u8>),
@@ -106,7 +106,7 @@ impl ForensicValue {
         }
     }
 
-    pub fn as_datetime(&self) -> Option<Filetime> {
+    pub fn as_datetime(&self) -> Option<ForensicTimestamp> {
         match self {
             ForensicValue::DateTime(v) => Some(*v),
             _ => None,
@@ -152,7 +152,14 @@ impl fmt::Display for ForensicValue {
                     u32::from_le_bytes([v[0], v[1], v[2], v[3]]),
                     u16::from_le_bytes([v[4], v[5]]),
                     u16::from_le_bytes([v[6], v[7]]),
-                    v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]
+                    v[8],
+                    v[9],
+                    v[10],
+                    v[11],
+                    v[12],
+                    v[13],
+                    v[14],
+                    v[15]
                 )
             }
             ForensicValue::Text(v) => write!(f, "{v}"),
@@ -303,6 +310,12 @@ impl From<Vec<u8>> for ForensicValue {
 }
 impl From<Filetime> for ForensicValue {
     fn from(v: Filetime) -> Self {
+        ForensicValue::DateTime(v.into())
+    }
+}
+
+impl From<ForensicTimestamp> for ForensicValue {
+    fn from(v: ForensicTimestamp) -> Self {
         ForensicValue::DateTime(v)
     }
 }
@@ -327,7 +340,7 @@ pub enum ForensicValueRef<'a> {
     I64(i64),
     U64(u64),
     F64(f64),
-    DateTime(Filetime),
+    DateTime(ForensicTimestamp),
     Guid([u8; 16]),
     Text(Cow<'a, str>),
     Binary(Cow<'a, [u8]>),
@@ -392,7 +405,14 @@ impl<'a> fmt::Display for ForensicValueRef<'a> {
                     u32::from_le_bytes([v[0], v[1], v[2], v[3]]),
                     u16::from_le_bytes([v[4], v[5]]),
                     u16::from_le_bytes([v[6], v[7]]),
-                    v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]
+                    v[8],
+                    v[9],
+                    v[10],
+                    v[11],
+                    v[12],
+                    v[13],
+                    v[14],
+                    v[15]
                 )
             }
             ForensicValueRef::Text(v) => write!(f, "{v}"),
@@ -671,7 +691,7 @@ mod tests {
             ForensicValue::I64(-1_000_000_000),
             ForensicValue::U64(u64::MAX),
             ForensicValue::F64(std::f64::consts::E),
-            ForensicValue::DateTime(Filetime::new(125870776790000000)),
+            ForensicValue::DateTime(Filetime::new(125870776790000000).into()),
             ForensicValue::Guid([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
             ForensicValue::Text("hello".to_string()),
             ForensicValue::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]),
@@ -737,10 +757,7 @@ mod tests {
         assert_eq!(ForensicValue::Bool(true).to_string(), "true");
         assert_eq!(ForensicValue::I64(-42).to_string(), "-42");
         assert_eq!(ForensicValue::U64(100).to_string(), "100");
-        assert_eq!(
-            ForensicValue::Text("hello".into()).to_string(),
-            "hello"
-        );
+        assert_eq!(ForensicValue::Text("hello".into()).to_string(), "hello");
         assert_eq!(
             ForensicValue::Binary(vec![0xDE, 0xAD]).to_string(),
             "[de, ad]"
@@ -778,10 +795,7 @@ mod tests {
     }
 
     impl MockRows {
-        fn new(
-            columns: Vec<ForensicColumnDef>,
-            data: Vec<Vec<ForensicValue>>,
-        ) -> Self {
+        fn new(columns: Vec<ForensicColumnDef>, data: Vec<Vec<ForensicValue>>) -> Self {
             Self {
                 columns,
                 data,
@@ -821,11 +835,12 @@ mod tests {
                 .data
                 .get(row_idx)
                 .ok_or_else(ForensicError::no_more_data)?;
-            let val = row
-                .get(i)
-                .ok_or_else(|| {
-                    ForensicError::missing_data("column", format!("Column index {i} out of bounds").into())
-                })?;
+            let val = row.get(i).ok_or_else(|| {
+                ForensicError::missing_data(
+                    "column",
+                    format!("Column index {i} out of bounds").into(),
+                )
+            })?;
             Ok(val.as_ref())
         }
     }
@@ -894,10 +909,7 @@ mod tests {
             collected[0].get_named("Name"),
             Some(&ForensicValue::Text("Alice".into()))
         );
-        assert_eq!(
-            collected[0].get_named("age"),
-            Some(&ForensicValue::I64(42))
-        );
+        assert_eq!(collected[0].get_named("age"), Some(&ForensicValue::I64(42)));
         assert_eq!(
             collected[1].get_named("name"),
             Some(&ForensicValue::Text("Bob".into()))

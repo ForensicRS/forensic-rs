@@ -46,13 +46,16 @@ impl ArtifactParser for AutorunParser {
                 Err(_) => continue,
             };
 
-            let values = match registry.enumerate_values(key) {
-                Ok(v) => v,
-                Err(_) => { registry.close_key(key); continue; }
-            };
+            let mut value_names: Vec<String> = Vec::new();
+            if registry.enumerate_values(&key, &mut |name| {
+                value_names.push(name.to_string());
+                Ok(RegistryVisit::Continue)
+            }).is_err() {
+                continue;
+            }
 
-            for value_name in values {
-                let reg_val = match registry.read_value(key, &value_name) {
+            for value_name in &value_names {
+                let reg_val = match registry.read_value(&key, value_name) {
                     Ok(v) => v,
                     Err(e) => {
                         records.push(Err(e));
@@ -62,15 +65,14 @@ impl ArtifactParser for AutorunParser {
 
                 let mut data = ForensicData::new("WORKSTATION01",
                     Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)));
-                data.insert(Text::Borrowed("autorun.name"), Field::Text(Text::Owned(value_name)));
+                data.insert(Text::Borrowed("autorun.name"), Field::Text(Text::Owned(value_name.clone())));
                 data.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Owned(format!("{:?}", reg_val))));
                 data.insert(Text::Borrowed(USER_NAME), Field::Text(Text::Owned(user_sid.clone())));
                 data.insert(Text::Borrowed("@timestamp"),
-                    Field::Date(Filetime::with_ymd_and_hms(2024, 3, 15, 10, 30, 0, 0)));
+                    Field::Date(Filetime::with_ymd_and_hms(2024, 3, 15, 10, 30, 0, 0).into()));
 
                 records.push(Ok(data));
             }
-            registry.close_key(key);
         }
 
         Ok(Box::new(records.into_iter()))

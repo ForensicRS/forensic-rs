@@ -1,5 +1,5 @@
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize,de::Visitor, Deserializer};
+use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
 
 use crate::field::Text;
 
@@ -11,7 +11,7 @@ pub enum Artifact {
     Windows(WindowsArtifacts),
     Linux(LinuxArtifacts),
     MacOs(MacArtifacts),
-    Common(CommonArtifact)
+    Common(CommonArtifact),
 }
 impl std::fmt::Display for Artifact {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -268,18 +268,18 @@ impl std::fmt::Display for WebBrowsingArtifact {
             WebBrowsingArtifact::AutoFill => write!(f, "AutoFill"),
             WebBrowsingArtifact::Other(v) => write!(f, "{}", v),
             WebBrowsingArtifact::Unknown => write!(f, "Unknown"),
-            WebBrowsingArtifact::BrowserHistory  => write!(f, "BrowserHistory"),
-            WebBrowsingArtifact::BrowserStorage  => write!(f, "BrowserStorage"),
-            WebBrowsingArtifact::BrowserCache  => write!(f, "BrowserCache"),
-            WebBrowsingArtifact::Cookie  => write!(f, "Cookie"),
-            WebBrowsingArtifact::Extension  => write!(f, "Extension"),
-            WebBrowsingArtifact::ExtensionActivity  => write!(f, "ExtensionActivity"),
-            WebBrowsingArtifact::FileSystem  => write!(f, "FileSystem"),
-            WebBrowsingArtifact::LocalStorage  => write!(f, "LocalStorage"),
-            WebBrowsingArtifact::Preferences  => write!(f, "Preferences"),
-            WebBrowsingArtifact::SessionStorage  => write!(f, "SessionStorage"),
-            WebBrowsingArtifact::Download  => write!(f, "Download"),
-            WebBrowsingArtifact::RSSFeed  => write!(f, "RSSFeed"),
+            WebBrowsingArtifact::BrowserHistory => write!(f, "BrowserHistory"),
+            WebBrowsingArtifact::BrowserStorage => write!(f, "BrowserStorage"),
+            WebBrowsingArtifact::BrowserCache => write!(f, "BrowserCache"),
+            WebBrowsingArtifact::Cookie => write!(f, "Cookie"),
+            WebBrowsingArtifact::Extension => write!(f, "Extension"),
+            WebBrowsingArtifact::ExtensionActivity => write!(f, "ExtensionActivity"),
+            WebBrowsingArtifact::FileSystem => write!(f, "FileSystem"),
+            WebBrowsingArtifact::LocalStorage => write!(f, "LocalStorage"),
+            WebBrowsingArtifact::Preferences => write!(f, "Preferences"),
+            WebBrowsingArtifact::SessionStorage => write!(f, "SessionStorage"),
+            WebBrowsingArtifact::Download => write!(f, "Download"),
+            WebBrowsingArtifact::RSSFeed => write!(f, "RSSFeed"),
         }
     }
 }
@@ -577,8 +577,8 @@ impl<'de> Visitor<'de> for MacOsArtifactVisitor {
         E: serde::de::Error,
     {
         let (artifact, subartifact) = match txt.find("::") {
-            Some(v) => (&txt[0..v], &txt[v+2..]),
-            None => (txt, "")
+            Some(v) => (&txt[0..v], &txt[v + 2..]),
+            None => (txt, ""),
         };
         Ok(match artifact {
             "Unknown" => Self::Value::Unknown,
@@ -599,7 +599,7 @@ impl<'de> Visitor<'de> for MacOsArtifactVisitor {
     }
 }
 
-pub fn artifact_from_str(txt : &str) -> Artifact {
+pub fn artifact_from_str(txt: &str) -> Artifact {
     let (os, artifact) = match txt.split_once("::") {
         Some(v) => v,
         None => return Artifact::Unknown,
@@ -613,9 +613,9 @@ pub fn artifact_from_str(txt : &str) -> Artifact {
         _ => Artifact::Other(other_artifact_from_str(txt)),
     }
 }
-pub fn windows_artifacts_from_str(txt : &str) -> WindowsArtifacts {
+pub fn windows_artifacts_from_str(txt: &str) -> WindowsArtifacts {
     let (artifact, subartifact) = match txt.find("::") {
-        Some(v) => (&txt[0..v], &txt[v+2..]),
+        Some(v) => (&txt[0..v], &txt[v + 2..]),
         None => (txt, ""),
     };
     match artifact {
@@ -631,34 +631,34 @@ pub fn windows_artifacts_from_str(txt : &str) -> WindowsArtifacts {
         "SRU" => WindowsArtifacts::SRU,
         "Startup" => WindowsArtifacts::Startup,
         "RecycleBin" => WindowsArtifacts::RecycleBin,
-        _ => WindowsArtifacts::Other(subartifact.to_string())
+        _ => WindowsArtifacts::Other(subartifact.to_string()),
     }
 }
 
-pub fn registry_artifacts_from_str(txt : &str) -> RegistryArtifacts {
+pub fn registry_artifacts_from_str(txt: &str) -> RegistryArtifacts {
     match txt {
         "Unknown" => RegistryArtifacts::Unknown,
         "ShimCache" => RegistryArtifacts::ShimCache,
         "ShellBags" => RegistryArtifacts::ShellBags,
         "AutoRuns" => RegistryArtifacts::AutoRuns,
-        _ => RegistryArtifacts::Other(txt.to_string())
+        _ => RegistryArtifacts::Other(txt.to_string()),
     }
 }
 
-pub fn winevt_artifacts_from_str(txt : &str) -> WindowsEvents {
+pub fn winevt_artifacts_from_str(txt: &str) -> WindowsEvents {
     match txt {
         "Unknown" => WindowsEvents::Unknown,
         "Sysmon" => WindowsEvents::Sysmon,
         "System" => WindowsEvents::System,
         "Security" => WindowsEvents::Security,
-        _ => WindowsEvents::Other(txt.to_string())
+        _ => WindowsEvents::Other(txt.to_string()),
     }
 }
 
-pub fn linux_artifacts_from_str(txt : &str) -> LinuxArtifacts {
+pub fn linux_artifacts_from_str(txt: &str) -> LinuxArtifacts {
     let (artifact, subartifact) = match txt.find("::") {
-        Some(v) => (&txt[0..v], &txt[v+2..]),
-        None => return LinuxArtifacts::Unknown
+        Some(v) => (&txt[0..v], &txt[v + 2..]),
+        None => return LinuxArtifacts::Unknown,
     };
     match artifact {
         "Log" => LinuxArtifacts::Log(subartifact.to_string()),
@@ -668,34 +668,34 @@ pub fn linux_artifacts_from_str(txt : &str) -> LinuxArtifacts {
         _ => LinuxArtifacts::Other(subartifact.to_string()),
     }
 }
-pub fn linux_service_from_str(txt : &str) -> LinuxService {
+pub fn linux_service_from_str(txt: &str) -> LinuxService {
     match txt {
         "SysV" => LinuxService::SysV,
         "InitD" => LinuxService::InitD,
         "SystemD" => LinuxService::SystemD,
         "Unknown" => LinuxService::Unknown,
-        _ => LinuxService::Other(txt.to_string())
+        _ => LinuxService::Other(txt.to_string()),
     }
 }
 
-pub fn mac_artifact_from_str(txt : &str) -> MacArtifacts {
+pub fn mac_artifact_from_str(txt: &str) -> MacArtifacts {
     match txt {
         "Unknown" => MacArtifacts::Unknown,
-        _ => MacArtifacts::Other(txt.to_string())
+        _ => MacArtifacts::Other(txt.to_string()),
     }
 }
-pub fn common_artifact_from_str(txt : &str) -> CommonArtifact {
+pub fn common_artifact_from_str(txt: &str) -> CommonArtifact {
     let (artifact, subartifact) = match txt.find("::") {
-        Some(v) => (&txt[0..v], &txt[v+2..]),
-        None => return CommonArtifact::Unknown
+        Some(v) => (&txt[0..v], &txt[v + 2..]),
+        None => return CommonArtifact::Unknown,
     };
     match artifact {
         "Unknown" => CommonArtifact::Unknown,
         "WebBrowsing" => CommonArtifact::WebBrowsing(webbrowsing_artifact_from_str(subartifact)),
-        _ => CommonArtifact::Other(txt.to_string())
+        _ => CommonArtifact::Other(txt.to_string()),
     }
 }
-pub fn webbrowsing_artifact_from_str(txt : &str) -> WebBrowsingArtifact {
+pub fn webbrowsing_artifact_from_str(txt: &str) -> WebBrowsingArtifact {
     match txt {
         "AutoFill" => WebBrowsingArtifact::AutoFill,
         "BrowserCache" => WebBrowsingArtifact::BrowserCache,
@@ -711,15 +711,23 @@ pub fn webbrowsing_artifact_from_str(txt : &str) -> WebBrowsingArtifact {
         "RSSFeed" => WebBrowsingArtifact::RSSFeed,
         "SessionStorage" => WebBrowsingArtifact::SessionStorage,
         "Unknown" => WebBrowsingArtifact::Unknown,
-        _ => WebBrowsingArtifact::Other(txt.to_string())
+        _ => WebBrowsingArtifact::Other(txt.to_string()),
     }
 }
-pub fn other_artifact_from_str(txt : &str) -> OtherOS {
+pub fn other_artifact_from_str(txt: &str) -> OtherOS {
     let (os, subartifact) = match txt.find("::") {
-        Some(v) => (&txt[0..v], &txt[v+2..]),
-        None =>  return OtherOS { os: std::borrow::Cow::Owned("Unknown".to_string()), artifact: std::borrow::Cow::Owned("Unknown".to_string()) }
+        Some(v) => (&txt[0..v], &txt[v + 2..]),
+        None => {
+            return OtherOS {
+                os: std::borrow::Cow::Owned("Unknown".to_string()),
+                artifact: std::borrow::Cow::Owned("Unknown".to_string()),
+            }
+        }
     };
-    OtherOS { os: std::borrow::Cow::Owned(os.to_string()), artifact: std::borrow::Cow::Owned(subartifact.to_string()) }
+    OtherOS {
+        os: std::borrow::Cow::Owned(os.to_string()),
+        artifact: std::borrow::Cow::Owned(subartifact.to_string()),
+    }
 }
 
 impl From<&str> for Artifact {

@@ -1,11 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{
-    artifact::Artifact,
-    data::ForensicData,
-    field::Text,
-    utils::time::ForensicTimestamp,
-};
+use crate::{artifact::Artifact, data::ForensicData, field::Text, utils::time::ForensicTimestamp};
 
 /// Severity level for a forensic finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,7 +27,8 @@ impl std::fmt::Display for FindingSeverity {
 #[cfg(feature = "serde")]
 impl serde::Serialize for FindingSeverity {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer,
+    where
+        S: serde::Serializer,
     {
         serializer.serialize_str(&self.to_string())
     }
@@ -74,7 +70,8 @@ impl std::fmt::Display for FindingCategory {
 #[cfg(feature = "serde")]
 impl serde::Serialize for FindingCategory {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer,
+    where
+        S: serde::Serializer,
     {
         serializer.serialize_str(&self.to_string())
     }
@@ -98,7 +95,11 @@ pub struct Finding {
 }
 
 impl Finding {
-    pub fn new(severity: FindingSeverity, category: FindingCategory, title: impl Into<String>) -> Self {
+    pub fn new(
+        severity: FindingSeverity,
+        category: FindingCategory,
+        title: impl Into<String>,
+    ) -> Self {
         Self {
             severity,
             category,
@@ -140,15 +141,26 @@ impl Finding {
 #[cfg(feature = "serde")]
 impl serde::Serialize for Finding {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer,
+    where
+        S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
         let mut count = 3;
-        if !self.description.is_empty() { count += 1; }
-        if self.source_artifact != crate::artifact::Artifact::Unknown { count += 1; }
-        if self.timestamp.is_some() { count += 1; }
-        if self.related_data.is_some() { count += 1; }
-        if !self.metadata.is_empty() { count += 1; }
+        if !self.description.is_empty() {
+            count += 1;
+        }
+        if self.source_artifact != crate::artifact::Artifact::Unknown {
+            count += 1;
+        }
+        if self.timestamp.is_some() {
+            count += 1;
+        }
+        if self.related_data.is_some() {
+            count += 1;
+        }
+        if !self.metadata.is_empty() {
+            count += 1;
+        }
 
         let mut map = serializer.serialize_map(Some(count))?;
         map.serialize_entry("severity", &self.severity)?;
@@ -189,11 +201,18 @@ mod tests {
 
     #[test]
     fn should_create_finding_with_builder() {
-        let finding = Finding::new(FindingSeverity::High, FindingCategory::MissingData, "Gap in EventRecordIDs")
-            .with_description("Records 1042-1050 are missing from Security.evtx")
-            .with_artifact(crate::artifact::WindowsArtifacts::WinEvt(crate::artifact::WindowsEvents::Security).into())
-            .with_metadata(Text::Borrowed("gap_start"), Text::Owned("1042".into()))
-            .with_metadata(Text::Borrowed("gap_end"), Text::Owned("1050".into()));
+        let finding = Finding::new(
+            FindingSeverity::High,
+            FindingCategory::MissingData,
+            "Gap in EventRecordIDs",
+        )
+        .with_description("Records 1042-1050 are missing from Security.evtx")
+        .with_artifact(
+            crate::artifact::WindowsArtifacts::WinEvt(crate::artifact::WindowsEvents::Security)
+                .into(),
+        )
+        .with_metadata(Text::Borrowed("gap_start"), Text::Owned("1042".into()))
+        .with_metadata(Text::Borrowed("gap_end"), Text::Owned("1050".into()));
 
         assert_eq!(finding.severity, FindingSeverity::High);
         assert_eq!(finding.category, FindingCategory::MissingData);
@@ -204,7 +223,11 @@ mod tests {
 
     #[test]
     fn should_display_finding() {
-        let finding = Finding::new(FindingSeverity::Critical, FindingCategory::AntiForensics, "Event log cleared");
+        let finding = Finding::new(
+            FindingSeverity::Critical,
+            FindingCategory::AntiForensics,
+            "Event log cleared",
+        );
         let display = format!("{}", finding);
         assert!(display.contains("Critical"));
         assert!(display.contains("AntiForensics"));

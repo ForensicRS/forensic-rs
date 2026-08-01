@@ -1,11 +1,12 @@
 use std::fmt::Display;
 
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize, Serializer, Deserializer, de::Visitor};
+use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 
-use super::utils::{ipv4_to_str, ipv6_to_str, is_local_ipv4, is_local_ipv6, ipv4_from_str, ipv6_from_str};
+use super::utils::{
+    ipv4_from_str, ipv4_to_str, ipv6_from_str, ipv6_to_str, is_local_ipv4, is_local_ipv6,
+};
 use super::Field;
-
 
 #[derive(Debug, Clone, Copy)]
 pub enum Ip {
@@ -174,8 +175,9 @@ impl<'de> Visitor<'de> for IpVisitor {
     }
 
     fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         Ip::from_ip_str(v).map_err(|e| E::custom(e))
     }
 }
@@ -183,7 +185,7 @@ impl<'de> Visitor<'de> for IpVisitor {
 #[cfg(test)]
 mod tst {
     use super::*;
-    
+
     #[test]
     fn test_equals_between_ips() {
         assert_eq!(Ip::V4(111), Ip::V4(111));

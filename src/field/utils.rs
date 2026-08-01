@@ -296,7 +296,10 @@ pub fn parse_ipv4_port(text: &str) -> Option<(u32, u16)> {
 
 pub fn is_ipv4_port(text: &str) -> bool {
     match text.rfind(':') {
-        Some(pos) => matches!((ipv4_from_str(&text[..pos]), port_to_u16(&text[(pos + 1)..])), (Ok(_), Ok(_))),
+        Some(pos) => matches!(
+            (ipv4_from_str(&text[..pos]), port_to_u16(&text[(pos + 1)..])),
+            (Ok(_), Ok(_))
+        ),
         None => false,
     }
 }

@@ -1,5 +1,5 @@
-pub mod stdfs;
 pub mod chroot;
+pub mod stdfs;
 
-pub use stdfs::{StdVirtualFS, StdVirtualFile};
 pub use chroot::ChRootFileSystem;
+pub use stdfs::{StdVirtualFS, StdVirtualFile};

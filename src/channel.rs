@@ -5,7 +5,7 @@ pub struct Sender<T> {
 #[derive(Clone)]
 pub enum InnerSender<T> {
     SyncSender(std::sync::mpsc::SyncSender<T>),
-    Sender(std::sync::mpsc::Sender<T>)
+    Sender(std::sync::mpsc::Sender<T>),
 }
 
 pub struct Receiver<T> {
@@ -41,75 +41,71 @@ pub enum RecvTimeoutError {
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum TrySendError<T> {
     Full(T),
-    Disconnected(T)
+    Disconnected(T),
 }
 
-
-
 impl<T> Sender<T> {
-    fn new_sync(sender : std::sync::mpsc::SyncSender<T>) -> Self {
+    fn new_sync(sender: std::sync::mpsc::SyncSender<T>) -> Self {
         Self {
-            inner : InnerSender::SyncSender(sender)
+            inner: InnerSender::SyncSender(sender),
         }
     }
-    fn new(sender : std::sync::mpsc::Sender<T>) -> Self {
+    fn new(sender: std::sync::mpsc::Sender<T>) -> Self {
         Self {
-            inner : InnerSender::Sender(sender)
+            inner: InnerSender::Sender(sender),
         }
     }
 
-    pub fn send(&self, msg : T) -> Result<(), SendError<T>> {
+    pub fn send(&self, msg: T) -> Result<(), SendError<T>> {
         let res = match &self.inner {
             InnerSender::SyncSender(s) => s.send(msg),
             InnerSender::Sender(s) => s.send(msg),
         };
         match res {
             Ok(_) => Ok(()),
-            Err(e) => Err(e.into())
+            Err(e) => Err(e.into()),
         }
     }
 
-    pub fn try_send(&self, msg : T) -> Result<(), TrySendError<T>> {
+    pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         match &self.inner {
             InnerSender::SyncSender(s) => match s.try_send(msg) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(e.into())
+                Err(e) => Err(e.into()),
             },
             InnerSender::Sender(s) => match s.send(msg) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(e.into())
+                Err(e) => Err(e.into()),
             },
         }
     }
 }
 
 impl<T> Receiver<T> {
-    fn new(receiver : std::sync::mpsc::Receiver<T>) -> Self {
-        Self {
-            inner : receiver
-        }
+    fn new(receiver: std::sync::mpsc::Receiver<T>) -> Self {
+        Self { inner: receiver }
     }
     pub fn recv(&self) -> Result<T, RecvError> {
         match self.inner.recv() {
             Ok(v) => Ok(v),
-            Err(e) => Err(e.into())
+            Err(e) => Err(e.into()),
         }
     }
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         match self.inner.try_recv() {
             Ok(v) => Ok(v),
-            Err(e) => Err(e.into())
+            Err(e) => Err(e.into()),
         }
     }
-    pub fn recv_timeout(&self, duration : std::time::Duration) -> Result<T, RecvTimeoutError> {
+    pub fn recv_timeout(&self, duration: std::time::Duration) -> Result<T, RecvTimeoutError> {
         match self.inner.recv_timeout(duration) {
             Ok(v) => Ok(v),
-            Err(e) => Err(e.into())
+            Err(e) => Err(e.into()),
         }
     }
 }
 
-pub fn sync_channel<T>(bound : usize) -> (Sender<T>, Receiver<T>) {
+pub fn sync_channel<T>(bound: usize) -> (Sender<T>, Receiver<T>) {
     let (sender, receiver) = std::sync::mpsc::sync_channel(bound);
     (Sender::new_sync(sender), Receiver::new(receiver))
 }
@@ -118,7 +114,6 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let (sender, receiver) = std::sync::mpsc::channel();
     (Sender::new(sender), Receiver::new(receiver))
 }
-
 
 impl<T> From<std::sync::mpsc::TrySendError<T>> for TrySendError<T> {
     fn from(value: std::sync::mpsc::TrySendError<T>) -> Self {
@@ -150,7 +145,7 @@ impl From<std::sync::mpsc::TryRecvError> for TryRecvError {
     fn from(value: std::sync::mpsc::TryRecvError) -> Self {
         match value {
             std::sync::mpsc::TryRecvError::Disconnected => TryRecvError::Disconnected,
-            std::sync::mpsc::TryRecvError::Empty => TryRecvError::Empty
+            std::sync::mpsc::TryRecvError::Empty => TryRecvError::Empty,
         }
     }
 }
@@ -158,7 +153,7 @@ impl From<std::sync::mpsc::RecvTimeoutError> for RecvTimeoutError {
     fn from(value: std::sync::mpsc::RecvTimeoutError) -> Self {
         match value {
             std::sync::mpsc::RecvTimeoutError::Disconnected => RecvTimeoutError::Disconnected,
-            std::sync::mpsc::RecvTimeoutError::Timeout => RecvTimeoutError::Timeout
+            std::sync::mpsc::RecvTimeoutError::Timeout => RecvTimeoutError::Timeout,
         }
     }
 }

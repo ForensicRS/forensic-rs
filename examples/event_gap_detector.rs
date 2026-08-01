@@ -82,7 +82,7 @@ impl ArtifactParser for MockEvtxParser {
             data.insert(Text::Borrowed(EVENT_CODE), Field::U64(event_id));
             data.insert(Text::Borrowed("event.channel"), Field::Text(Text::Borrowed(channel)));
             data.insert(Text::Borrowed("@timestamp"),
-                Field::Date(Filetime::from_unix_secs(unix_secs as i64)));
+                Field::Date(ForensicTimestamp::from_unix_secs(unix_secs as i64)));
 
             Ok(data)
         });
@@ -135,7 +135,7 @@ impl Analyzer for EventGapDetector {
 
         // Extract timestamp
         let ts = match data.field("@timestamp") {
-            Some(Field::Date(ft)) => (*ft).into(),
+            Some(Field::Date(timestamp)) => *timestamp,
             _ => ForensicTimestamp::from_unix_secs(0),
         };
 

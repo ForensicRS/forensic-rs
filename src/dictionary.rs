@@ -64,19 +64,18 @@ pub const ARTIFACT_PATH: &str = "artifact.path";
 pub const ARTIFACT_HOST: &str = "artifact.host";
 pub const ARTIFACT_TENANT: &str = "artifact.tenant";
 
-pub const PROCESS_EXECUTABLE : &str = "process.executable";
+pub const PROCESS_EXECUTABLE: &str = "process.executable";
 
-pub const FILE_INODE : &str = "file.inode";
-pub const FILE_NAME : &str = "file.name";
-pub const FILE_OWNER : &str = "file.OWNER";
-pub const FILE_PATH : &str = "file.path";
-pub const FILE_SIZE : &str = "file.size";
-pub const FILE_TYPE : &str = "file.type";
-pub const FILE_ACCESSED : &str = "file.accessed";
-pub const FILE_CREATED : &str = "file.created";
-pub const FILE_DEVICE : &str = "file.device";
-pub const FILE_DIRECTORY : &str = "file.directory";
-pub const FILE_EXTENSION : &str = "file.extension";
+pub const FILE_INODE: &str = "file.inode";
+pub const FILE_NAME: &str = "file.name";
+pub const FILE_OWNER: &str = "file.OWNER";
+pub const FILE_PATH: &str = "file.path";
+pub const FILE_SIZE: &str = "file.size";
+pub const FILE_TYPE: &str = "file.type";
+pub const FILE_ACCESSED: &str = "file.accessed";
+pub const FILE_CREATED: &str = "file.created";
+pub const FILE_DEVICE: &str = "file.device";
+pub const FILE_DIRECTORY: &str = "file.directory";
+pub const FILE_EXTENSION: &str = "file.extension";
 
-
-pub const PE_IMPORTS : &str = "pe.imports";
+pub const PE_IMPORTS: &str = "pe.imports";

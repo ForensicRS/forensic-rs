@@ -8,14 +8,13 @@ thread_local! {
     pub(crate) static FORENSIC_CONTEXT : RefCell<ForensicContext> = RefCell::new(ForensicContext::default());
 }
 
-
 #[derive(Default, Debug, Clone)]
 pub struct ForensicContext {
-    pub host : String,
-    pub artifact : Artifact,
-    pub tenant : String,
+    pub host: String,
+    pub artifact: Artifact,
+    pub tenant: String,
     /// Extensible key-value metadata for custom analysis context.
-    pub metadata : BTreeMap<Text, Text>,
+    pub metadata: BTreeMap<Text, Text>,
 }
 
 /// Simplifys the creation of new events with the context of the analysis: artifact being processed, name of the machine where the artifacts came from and the name of the client/tenant.
@@ -35,7 +34,7 @@ pub fn context() -> ForensicContext {
 }
 
 /// Changes the type of artifact being processed by the current thread
-pub fn set_artifact<A : Into<Artifact>>(artifact : A) {
+pub fn set_artifact<A: Into<Artifact>>(artifact: A) {
     let artifact = artifact.into();
     FORENSIC_CONTEXT.with(|context| {
         let mut borrowed = context.borrow_mut();
@@ -44,14 +43,14 @@ pub fn set_artifact<A : Into<Artifact>>(artifact : A) {
 }
 
 /// Change the tenant ID for which artifacts are being processed by the current thread
-pub fn set_tenant(tenant : String) {
+pub fn set_tenant(tenant: String) {
     FORENSIC_CONTEXT.with(|context| {
         let mut borrowed = context.borrow_mut();
         borrowed.tenant = tenant;
     })
 }
 /// Change the name of the computer for which artifacts are being processed by the current thread
-pub fn set_host(host : String) {
+pub fn set_host(host: String) {
     FORENSIC_CONTEXT.with(|context| {
         let mut borrowed = context.borrow_mut();
         borrowed.host = host;
@@ -63,14 +62,20 @@ fn should_initialize_log_with_context() {
     use crate::artifact::Artifact;
     use crate::artifact::RegistryArtifacts;
     let context = ForensicContext {
-        artifact : RegistryArtifacts::AutoRuns.into(),
-        host : "Agent007".into(),
-        tenant : "MI6".into(),
-        metadata : BTreeMap::new(),
+        artifact: RegistryArtifacts::AutoRuns.into(),
+        host: "Agent007".into(),
+        tenant: "MI6".into(),
+        metadata: BTreeMap::new(),
     };
     initialize_context(context);
     let log = crate::data::ForensicData::default();
     assert_eq!("Agent007", log.host());
-    assert_eq!("MI6", TryInto::<&str>::try_into(log.field(crate::dictionary::ARTIFACT_TENANT).unwrap()).unwrap());
-    assert_eq!(Into::<Artifact>::into(RegistryArtifacts::AutoRuns), *log.artifact());
+    assert_eq!(
+        "MI6",
+        TryInto::<&str>::try_into(log.field(crate::dictionary::ARTIFACT_TENANT).unwrap()).unwrap()
+    );
+    assert_eq!(
+        Into::<Artifact>::into(RegistryArtifacts::AutoRuns),
+        *log.artifact()
+    );
 }

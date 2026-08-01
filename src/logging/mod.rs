@@ -1,5 +1,7 @@
 use std::{
-    cell::RefCell, borrow::Cow, sync::atomic::{AtomicUsize, Ordering},
+    borrow::Cow,
+    cell::RefCell,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crate::channel::{self, Receiver, Sender};
@@ -17,33 +19,44 @@ pub enum Level {
 
 #[derive(Clone)]
 pub struct Logger {
-    pub channel : Sender<Message>
+    pub channel: Sender<Message>,
 }
 
 impl Default for Logger {
     fn default() -> Self {
-        let (sender,_reveiver) = channel::channel();
+        let (sender, _reveiver) = channel::channel();
         Self { channel: sender }
     }
 }
 impl Logger {
-    pub fn new(sender : Sender<Message>) -> Self {
-        Self {
-            channel : sender
-        }
+    pub fn new(sender: Sender<Message>) -> Self {
+        Self { channel: sender }
     }
-    pub fn log(&self, level : Level, module : &'static str, file : &'static str, line : u32, data : Cow<'static, str>) {
-        let _ = self.channel.send(Message { level, module, file, line, data });
+    pub fn log(
+        &self,
+        level: Level,
+        module: &'static str,
+        file: &'static str,
+        line: u32,
+        data: Cow<'static, str>,
+    ) {
+        let _ = self.channel.send(Message {
+            level,
+            module,
+            file,
+            line,
+            data,
+        });
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub level : Level,
-    pub module : &'static str,
-    pub line : u32,
-    pub file : &'static str,
-    pub data : Cow<'static, str>,
+    pub level: Level,
+    pub module: &'static str,
+    pub line: u32,
+    pub file: &'static str,
+    pub data: Cow<'static, str>,
 }
 
 #[macro_use]

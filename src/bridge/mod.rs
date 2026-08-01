@@ -82,9 +82,7 @@ impl From<crate::field::Field> for BridgeValue {
             F::I64(v) => BridgeValue::I64(v),
             F::F64(v) => BridgeValue::F64(v),
             F::Date(ft) => BridgeValue::Timestamp(ft.into()),
-            F::Array(arr) => {
-                BridgeValue::Array(arr.into_iter().map(BridgeValue::Text).collect())
-            }
+            F::Array(arr) => BridgeValue::Array(arr.into_iter().map(BridgeValue::Text).collect()),
             _ => BridgeValue::Null,
         }
     }
@@ -121,9 +119,7 @@ mod serde_impl {
                 BridgeValue::U64(v) => serializer.serialize_u64(*v),
                 BridgeValue::F64(v) => serializer.serialize_f64(*v),
                 BridgeValue::Text(t) => serializer.serialize_str(t.as_ref()),
-                BridgeValue::Timestamp(ts) => {
-                    serializer.serialize_str(&ts.to_string())
-                }
+                BridgeValue::Timestamp(ts) => serializer.serialize_str(&ts.to_string()),
                 BridgeValue::Binary(data) => {
                     // Serialize as hex string
                     let hex: String = data.iter().map(|b| format!("{:02x}", b)).collect();
@@ -247,8 +243,18 @@ pub trait ForensicProvider: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::providers::RegistryProvider;
     use crate::field::Field;
     use crate::traits::registry::RegValue;
+    use crate::utils::testing::TestingRegistry;
+
+    fn assert_send<T: Send>(_: T) {}
+
+    #[test]
+    fn registry_provider_is_sendable_to_bridge_worker() {
+        let provider = RegistryProvider::new(Box::new(TestingRegistry::new()));
+        assert_send(provider);
+    }
 
     #[test]
     fn bridge_value_from_field() {

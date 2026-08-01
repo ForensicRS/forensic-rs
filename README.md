@@ -23,17 +23,18 @@ In this way, the same tools can be used if we want to make a triage processor li
 
 ### Supported artifacts
 
-* **Windows Registry**: See [`RegistryReader`](./src/traits/registry/mod.rs) trait. Includes `RegistryKeyGuard` for RAII-based key lifetime management, `auto_close_key()` for closure-scoped key cleanup, and `walk_keys()` for recursive registry traversal.
-* **SQL databases**: See [`SqlStatement`](./src/traits/sql.rs) trait and the richer [`ForensicDb`](./src/traits/db.rs) abstraction. A basic sqlite wrapper example is included in the SQL trait tests.
-* **File Systems**: Read files and directories with support for stacked virtual filesystems (e.g., a file inside a ZIP inside another ZIP). Includes `walk_dir()` for recursive directory traversal. See [`VirtualFileSystem`](./src/traits/vfs.rs) and the standard library implementation [`StdVirtualFS`](./src/core/fs/stdfs.rs).
-* **Windows Event Logs**: Abstract `EventLogReader` trait for querying event log records with filtering by event ID, time range, provider, severity, and channel. Includes a fallible `EventLogIterator` and `EventLogQuery` builder. See [`src/traits/events.rs`](./src/traits/events.rs).
-* **Timestamps**: `ForensicTimestamp` — a compact, bitpacked u64 timestamp (8 bytes, microsecond precision, year range 0–4095) with constructors for Windows FILETIME, Unix secs/millis/micros, OLE Automation dates, WebKit/Chrome, macOS HFS+, and Cocoa/Core Data timestamps. Bidirectional conversion with the existing `Filetime` type.
+* **Windows Registry**: See [`RegistryReader`](./src/traits/registry/mod.rs) trait. Opened `RegKeyHandle` values close automatically on drop, support explicit `close()`, and can be traversed with `walk_keys()`.
+* **SQL databases**: See [`SqlStatement`](./src/traits/sql.rs) trait and the richer [`ForensicDb`](./src/traits/db.rs) abstraction. Parsers discover database files through a VFS and use `ForensicDbFactory` to open each database without losing access to companion files such as SQLite WAL files. A basic sqlite wrapper example is included in the SQL trait tests.
+* **File Systems**: Read files and directories with support for stacked virtual filesystems (e.g., a file inside a ZIP inside another ZIP). Use `walk_dir_strict()` when inaccessible descendants must be reported, `walk_dir_best_effort()` for partial exploration, and `visit_dir()` for streaming directory entries. See [`VirtualFileSystem`](./src/traits/vfs.rs) and the standard library implementation [`StdVirtualFS`](./src/core/fs/stdfs.rs).
+* **Windows Event Logs**: Abstract `EventLogReader` trait for querying event log records with filtering by event ID, time range, provider, severity, and channel. File-backed logs are discovered through a VFS and opened with `EventLogReaderFactory`. Includes a fallible `EventLogIterator` and `EventLogQuery` builder. See [`src/traits/events.rs`](./src/traits/events.rs).
+* **Timestamps**: `ForensicTimestamp` — a 16-byte, 16-byte-aligned UTC timestamp with nanosecond precision, optional source offset, and precision/provenance flags. `Timestamp128` is an alias for the same type. Constructors cover Windows FILETIME, Unix secs/millis/micros/nanos, OLE Automation dates, WebKit/Chrome, macOS HFS+, Cocoa/Core Data, and `SystemTime`.
 * **Windows Decompression**: LZNT1, LZ77 and LZ77+Huffman algorithms per the MS-XCA specification. See [`decompress()`](./src/utils/win/decompress/mod.rs).
 * **Windows Utilities**: SID-to-string conversion, well-known shell folder ID constants (60+), and registry-based user environment variable resolution. See [`src/utils/win/`](./src/utils/win/).
 * **Binary Unpacking**: Safe integer extraction helpers for parsing binary forensic artifacts. See [`src/utils/unpack.rs`](./src/utils/unpack.rs).
 * **ECS Field Dictionary**: ~80 Elastic Common Schema field name constants for consistent artifact field naming. See [`src/dictionary.rs`](./src/dictionary.rs).
 * **User Activity Tracking**: `ForensicActivity` with enriched `ProgramExecution` (arguments, working directory, run count) and extended `FileSystemActivity` variants (Rename, Read, Write). See [`src/activity.rs`](./src/activity.rs).
 * **ForensicBridge**: A channel-based multi-threaded bridge that exposes all artifact domains (registry, VFS, event logs, databases) as navigable trees for UI consumers such as VSCode extensions. Supports pagination, cooperative cancellation, and extensible `ProviderHook`s for injecting virtual parsed nodes. See [`src/bridge/`](./src/bridge/).
+* **MCP capability integration**: Protocol-neutral, caller-scoped tools and resources for external MCP servers, including non-disclosing access control, source guards, progress, cancellation, and trusted audit records. See [`MCP_INTEGRATION.md`](./MCP_INTEGRATION.md).
 
 
 ### Registry Example
@@ -44,12 +45,11 @@ Here is where this framework comes to help with the traits:
 
 ```rust
 pub trait RegistryReader {
-    fn open_key(&mut self, hkey : RegHiveKey, key_name : &str) -> ForensicResult<RegHiveKey>;
-    fn read_value(&self, hkey : RegHiveKey, value_name : &str) -> ForensicResult<RegValue>;
-    fn enumerate_values(&self, hkey : RegHiveKey) -> ForensicResult<Vec<String>>;
-    fn enumerate_keys(&self, hkey : RegHiveKey) -> ForensicResult<Vec<String>>;
-    fn key_at(&self, hkey : RegHiveKey, pos : u32) -> ForensicResult<String>;
-    fn value_at(&self, hkey : RegHiveKey, pos : u32) -> ForensicResult<String>;
+    fn open_key(&self, hive: RegHiveKey, key_path: &str) -> ForensicResult<RegKeyHandle>;
+    fn open_subkey(&self, parent: &RegKeyHandle, subkey: &str) -> ForensicResult<RegKeyHandle>;
+    fn read_value(&self, key: &RegKeyHandle, value_name: &str) -> ForensicResult<RegValue>;
+    fn enumerate_values(&self, key: &RegKeyHandle, visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>) -> ForensicResult<()>;
+    fn enumerate_keys(&self, key: &RegKeyHandle, visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>) -> ForensicResult<()>;
 }
 ```
 
@@ -107,7 +107,23 @@ VFS trait objects also accept `PathBuf` and `&str` via ergonomic `_path`-suffixe
 let mut vfs: Box<dyn VirtualFileSystem> = Box::new(StdVirtualFS::new());
 let bytes = vfs.read_all_path("/var/log/syslog")?;
 let entries = vfs.read_dir_path("/var/log")?;
+
+// Preserve access failures during recursive evidence collection.
+vfs.walk_dir_strict(std::path::Path::new("/var/log"), &mut |path, entry| {
+    println!("{}: {}", path.display(), entry);
+})?;
+
+// Process large directories without materializing their full listing.
+vfs.visit_dir(std::path::Path::new("/var/log"), &mut |entry| {
+    println!("{entry}");
+    Ok(())
+})?;
 ```
+
+`VMetadata::created_opt()`, `accessed_opt()`, and `modified_opt()` preserve
+unsupported filesystem timestamps as `None`. The older epoch-substituting
+accessors are deprecated because an unknown timestamp is not evidence of an
+epoch timestamp.
 
 ### Error Handling Example
 
@@ -115,13 +131,23 @@ All operations return `ForensicResult<T>`. Use the validation macros to produce 
 
 ```rust
 use forensic_rs::prelude::*;
+use forensic_rs::utils::unpack::read_u32_le_at;
 
 fn parse_header(buf: &[u8]) -> ForensicResult<u32> {
-    ensure_buffer_size!(buf, 8);                      // returns Err if buf.len() < 8
-    ensure_format!(buf[0] == 0x4D, "invalid magic"); // returns Err if magic is wrong
-    Ok(u32::from_le_bytes(buf[4..8].try_into().unwrap()))
+    ensure_buffer_size!(buf, 0, 8, "header");
+    ensure_format!(buf[0] == 0x4D, "header", "invalid magic");
+    read_u32_le_at(buf, 4)
 }
 ```
+
+For binary parsing, prefer the fallible endian-explicit readers:
+`read_u16_le_at`, `read_u32_le_at`, `read_u64_le_at`, and their `_be_`
+counterparts. The legacy `*_at_pos` helpers are deprecated because truncated
+input can panic.
+
+`Field` conversions to `u64` and `i64` now reject negative, fractional,
+non-finite, and out-of-range values. Handle the returned `ForensicError`
+instead of relying on wrapping or truncating casts.
 
 ### Windows Decompression Example
 
@@ -136,13 +162,13 @@ Supported algorithms: `CompressionFormatNone`, `CompressionFormatLznt1`, `Compre
 
 ### ForensicTimestamp Example
 
-`ForensicTimestamp` is a compact bitpacked u64 (8 bytes) with microsecond precision. It can be created from many common forensic timestamp formats:
+`ForensicTimestamp` is a validated 16-byte timestamp with nanosecond precision. The UTC instant is canonical; an optional source offset and provenance flags remain available as metadata. `Timestamp128` is a width-oriented alias.
 
 ```rust
 use forensic_rs::prelude::*;
 
 // From explicit components
-let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000);
+let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000)?;
 assert_eq!(2024, ts.year());
 assert_eq!(596, ts.milliseconds());
 
@@ -151,30 +177,29 @@ let ts = ForensicTimestamp::from_win_filetime(133514430235959706); // Windows FI
 let ts = ForensicTimestamp::from_unix_secs(1706969423);            // Unix seconds
 let ts = ForensicTimestamp::from_webkit(13351443023595970);        // Chrome/WebKit
 let ts = ForensicTimestamp::from_hfs_plus(3_789_814_223);          // macOS HFS+
-let ts = ForensicTimestamp::from_cocoa(728_662_223.0);             // macOS/iOS Cocoa
-let ts = ForensicTimestamp::from_ole_date(25569.0);                // OLE Automation
+let ts = ForensicTimestamp::try_from_cocoa(728_662_223.0)?;        // macOS/iOS Cocoa
+let ts = ForensicTimestamp::try_from_ole_date(25569.0)?;           // OLE Automation
 
 // Output conversions
 let unix = ts.to_unix_secs();
-let win  = ts.to_win_filetime();
+let win  = ts.to_win_filetime()?;
 
-// Bidirectional conversion with Filetime
-let ft: Filetime = ts.into();
+// Convert existing Filetime input without losing 100-nanosecond precision
+let ft = Filetime::new(win);
 let ts2: ForensicTimestamp = ft.into();
 ```
 
-### RegistryKeyGuard Example
+### Registry Handle Example
 
-`RegistryKeyGuard` is an RAII wrapper that automatically closes registry keys when dropped:
+`RegKeyHandle` is an RAII value that automatically closes the opened key when dropped:
 
 ```rust
 use forensic_rs::prelude::*;
 
 fn read_user_profile(reader: &dyn RegistryReader, user_sid: &str) -> ForensicResult<String> {
     let key = reader.open_key(HKU, user_sid)?;
-    let guard = RegistryKeyGuard::new(reader, key);
     // key is automatically closed when `guard` goes out of scope
-    let profile: String = reader.read_value(*guard, "ProfileImagePath")?.try_into()?;
+    let profile: String = reader.read_value(&key, "ProfileImagePath")?.try_into()?;
     Ok(profile)
 }
 ```
@@ -227,6 +252,28 @@ let meta  = client.metadata("Registry", "HKLM\\SOFTWARE")?;
 
 client.shutdown();
 ```
+
+VFS bridge metadata represents unavailable timestamps as `BridgeValue::Null`;
+an epoch timestamp remains a `BridgeValue::Timestamp` and is therefore
+distinguishable from missing metadata.
+
+### Parallel Pipeline Example
+
+`ParallelPipeline::run_with_cancellation()` accepts a cloneable
+`CancellationToken`. Built-in tasks check it between records, enrichers, and
+analyzers, then report their final task statistics normally.
+
+```rust,ignore
+let cancellation = CancellationToken::new();
+let cancellation_for_ui = cancellation.clone();
+// cancellation_for_ui.cancel(); // request cooperative shutdown from another thread
+let result = pipeline.run_with_cancellation(cancellation)?;
+```
+
+When auto-matching parsers to analysis modules, use
+`parser_factory_with_artifacts()` if supported artifact metadata is known
+without constructing the parser. This prevents expensive unmatched parsers
+from being created only to inspect their metadata.
 
 **ProviderHooks** let you inject virtual parsed children into bridge tree nodes. This is useful for domain-specific interpretation of raw artifact data — for example, a shellbag hook can parse the binary contents of `BagMRU` registry values and expose them as decoded folder tree entries in the bridge UI without any changes to the provider itself:
 

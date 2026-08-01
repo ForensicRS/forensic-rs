@@ -36,12 +36,18 @@ impl BridgeClient {
     /// Send a request and block until a response arrives.
     pub fn request(&self, req: BridgeRequest) -> ForensicResult<BridgeResponse> {
         let (resp_tx, resp_rx) = sync_channel(1);
-        self.tx
-            .send((req, resp_tx))
-            .map_err(|_| ForensicError::other("BridgeClient", "bridge worker is no longer running".to_string()))?;
-        resp_rx
-            .recv()
-            .map_err(|_| ForensicError::other("BridgeClient", "bridge worker dropped the response channel".to_string()))
+        self.tx.send((req, resp_tx)).map_err(|_| {
+            ForensicError::other(
+                "BridgeClient",
+                "bridge worker is no longer running".to_string(),
+            )
+        })?;
+        resp_rx.recv().map_err(|_| {
+            ForensicError::other(
+                "BridgeClient",
+                "bridge worker dropped the response channel".to_string(),
+            )
+        })
     }
 
     /// Send a request and block up to `timeout` for a response.
@@ -51,12 +57,15 @@ impl BridgeClient {
         timeout: Duration,
     ) -> ForensicResult<BridgeResponse> {
         let (resp_tx, resp_rx) = sync_channel(1);
-        self.tx
-            .send((req, resp_tx))
-            .map_err(|_| ForensicError::other("BridgeClient", "bridge worker is no longer running".to_string()))?;
-        resp_rx.recv_timeout(timeout).map_err(|e| {
-            ForensicError::other("BridgeClient", format!("response timeout: {}", e))
-        })
+        self.tx.send((req, resp_tx)).map_err(|_| {
+            ForensicError::other(
+                "BridgeClient",
+                "bridge worker is no longer running".to_string(),
+            )
+        })?;
+        resp_rx
+            .recv_timeout(timeout)
+            .map_err(|e| ForensicError::other("BridgeClient", format!("response timeout: {}", e)))
     }
 
     // ------------------------------------------------------------------ convenience: providers
@@ -65,10 +74,11 @@ impl BridgeClient {
     pub fn list_providers(&self) -> ForensicResult<Vec<String>> {
         match self.request(BridgeRequest::ListProviders)? {
             BridgeResponse::Providers(names) => Ok(names),
-            BridgeResponse::Error { message } => {
-                Err(ForensicError::other("BridgeClient", message))
-            }
-            _ => Err(ForensicError::other("BridgeClient", "unexpected response type".to_string())),
+            BridgeResponse::Error { message } => Err(ForensicError::other("BridgeClient", message)),
+            _ => Err(ForensicError::other(
+                "BridgeClient",
+                "unexpected response type".to_string(),
+            )),
         }
     }
 
@@ -120,7 +130,12 @@ impl BridgeClient {
                 },
                 resp_tx,
             ))
-            .map_err(|_| ForensicError::other("BridgeClient", "bridge worker is no longer running".to_string()))?;
+            .map_err(|_| {
+                ForensicError::other(
+                    "BridgeClient",
+                    "bridge worker is no longer running".to_string(),
+                )
+            })?;
         Ok((cancel, resp_rx))
     }
 
@@ -151,6 +166,8 @@ impl BridgeClient {
         let (resp_tx, _) = sync_channel(1);
         self.tx
             .send((BridgeRequest::Shutdown, resp_tx))
-            .map_err(|_| ForensicError::other("BridgeClient", "bridge worker already stopped".to_string()))
+            .map_err(|_| {
+                ForensicError::other("BridgeClient", "bridge worker already stopped".to_string())
+            })
     }
 }

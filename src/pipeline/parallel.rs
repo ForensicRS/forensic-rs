@@ -50,11 +50,13 @@
 //! | [`TriageSink`] | **none** – only ever called from the main thread |
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::{
+    bridge::CancellationToken,
     data::ForensicData,
     err::{ForensicError, ForensicResult},
     scow::SCow,
@@ -62,11 +64,11 @@ use crate::{
 };
 
 use super::{
-    ErrorAction,
     context::TriageContext,
     finding::Finding,
     sources::TriageSources,
     traits::{Analyzer, Enricher, TriageSink},
+    ErrorAction,
 };
 
 // ============================================================
@@ -82,7 +84,11 @@ pub enum PipelineEvent {
     /// A non-fatal error that occurred during task execution.
     TaskError { task: String, error: ForensicError },
     /// Signals that a task finished, carrying its local statistics.
-    TaskDone { task: String, items_processed: u64, findings_count: u64 },
+    TaskDone {
+        task: String,
+        items_processed: u64,
+        findings_count: u64,
+    },
 }
 
 // ============================================================
@@ -105,6 +111,18 @@ pub trait ParallelPipelineTask: Send + 'static {
     /// available, providing backpressure.  The task consumes itself so its
     /// resources are freed on the worker thread when execution completes.
     fn run(self: Box<Self>, tx: SyncSender<PipelineEvent>);
+
+    /// Execute the task with cooperative cancellation support.
+    ///
+    /// Existing task implementations can rely on the default behavior. Built-in
+    /// tasks override this method and check `cancellation` between records.
+    fn run_cancellable(
+        self: Box<Self>,
+        tx: SyncSender<PipelineEvent>,
+        _cancellation: CancellationToken,
+    ) {
+        self.run(tx);
+    }
 }
 
 // ============================================================
@@ -162,8 +180,25 @@ impl ParallelPipelineTask for StandardParallelTask {
         &self.name
     }
 
-    fn run(mut self: Box<Self>, tx: SyncSender<PipelineEvent>) {
+    fn run(self: Box<Self>, tx: SyncSender<PipelineEvent>) {
+        self.run_cancellable(tx, CancellationToken::new());
+    }
+
+    fn run_cancellable(
+        mut self: Box<Self>,
+        tx: SyncSender<PipelineEvent>,
+        cancellation: CancellationToken,
+    ) {
         let task_name = self.name.clone();
+
+        if cancellation.is_cancelled() {
+            let _ = tx.send(PipelineEvent::TaskDone {
+                task: task_name,
+                items_processed: 0,
+                findings_count: 0,
+            });
+            return;
+        }
 
         // Install the thread-local ForensicContext for this worker thread.
         // Fall back to a default context if none was provided.
@@ -172,6 +207,11 @@ impl ParallelPipelineTask for StandardParallelTask {
 
         // Create data sources on the worker thread via the factory.
         let mut sources = (self.sources_factory)();
+        let analyzer_artifacts: Vec<Vec<crate::artifact::Artifact>> = self
+            .analyzers
+            .iter()
+            .map(|analyzer| analyzer.supported_artifacts())
+            .collect();
 
         let mut items_processed: u64 = 0;
         let mut findings_count: u64 = 0;
@@ -180,7 +220,10 @@ impl ParallelPipelineTask for StandardParallelTask {
         let iter = match self.parser.parse(&mut sources) {
             Ok(iter) => iter,
             Err(e) => {
-                let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                let _ = tx.send(PipelineEvent::TaskError {
+                    task: task_name.clone(),
+                    error: e,
+                });
                 let _ = tx.send(PipelineEvent::TaskDone {
                     task: task_name,
                     items_processed: 0,
@@ -191,10 +234,17 @@ impl ParallelPipelineTask for StandardParallelTask {
         };
 
         'records: for item_result in iter {
+            if cancellation.is_cancelled() {
+                break 'records;
+            }
+
             let mut data = match item_result {
                 Ok(d) => d,
                 Err(e) => {
-                    let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                    let _ = tx.send(PipelineEvent::TaskError {
+                        task: task_name.clone(),
+                        error: e,
+                    });
                     match self.error_action {
                         ErrorAction::Continue => continue 'records,
                         ErrorAction::Halt => break 'records,
@@ -204,8 +254,14 @@ impl ParallelPipelineTask for StandardParallelTask {
 
             // Enrich the record in-place.
             for enricher in &mut self.enrichers {
+                if cancellation.is_cancelled() {
+                    break 'records;
+                }
                 if let Err(e) = enricher.enrich(&mut data, &mut context) {
-                    let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                    let _ = tx.send(PipelineEvent::TaskError {
+                        task: task_name.clone(),
+                        error: e,
+                    });
                     if self.error_action == ErrorAction::Halt {
                         break 'records;
                     }
@@ -214,8 +270,10 @@ impl ParallelPipelineTask for StandardParallelTask {
 
             // Run matching analyzers.
             let artifact = data.artifact().clone();
-            for analyzer in &mut self.analyzers {
-                let supported = analyzer.supported_artifacts();
+            for (analyzer, supported) in self.analyzers.iter_mut().zip(&analyzer_artifacts) {
+                if cancellation.is_cancelled() {
+                    break 'records;
+                }
                 if !supported.is_empty() && !supported.contains(&artifact) {
                     continue;
                 }
@@ -230,7 +288,10 @@ impl ParallelPipelineTask for StandardParallelTask {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                        let _ = tx.send(PipelineEvent::TaskError {
+                            task: task_name.clone(),
+                            error: e,
+                        });
                         if self.error_action == ErrorAction::Halt {
                             break 'records;
                         }
@@ -257,12 +318,19 @@ impl ParallelPipelineTask for StandardParallelTask {
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                    let _ = tx.send(PipelineEvent::TaskError {
+                        task: task_name.clone(),
+                        error: e,
+                    });
                 }
             }
         }
 
-        let _ = tx.send(PipelineEvent::TaskDone { task: task_name, items_processed, findings_count });
+        let _ = tx.send(PipelineEvent::TaskDone {
+            task: task_name,
+            items_processed,
+            findings_count,
+        });
     }
 }
 
@@ -353,17 +421,21 @@ impl StandardParallelTaskBuilder {
     pub fn build(self) -> ForensicResult<StandardParallelTask> {
         let parser = match self.parser {
             Some(p) => p,
-            None => return Err(ForensicError::missing_data(
-                "parser",
-                SCow::Borrowed("StandardParallelTaskBuilder: call .parser() before .build()"),
-            )),
+            None => {
+                return Err(ForensicError::missing_data(
+                    "parser",
+                    SCow::Borrowed("StandardParallelTaskBuilder: call .parser() before .build()"),
+                ))
+            }
         };
         let sources_factory = match self.sources_factory {
             Some(f) => f,
-            None => return Err(ForensicError::missing_data(
-                "sources_factory",
-                SCow::Borrowed("StandardParallelTaskBuilder: call .sources() before .build()"),
-            )),
+            None => {
+                return Err(ForensicError::missing_data(
+                    "sources_factory",
+                    SCow::Borrowed("StandardParallelTaskBuilder: call .sources() before .build()"),
+                ))
+            }
         };
         Ok(StandardParallelTask {
             name: self.name,
@@ -386,13 +458,19 @@ impl StandardParallelTaskBuilder {
 /// Used by [`ParallelPipelineBuilder::parser_factory`] to auto-match parsers
 /// to [`AnalysisModule`]s at pipeline build time.  The factory is called once
 /// per module that needs that parser type, so the same factory can serve
-/// multiple modules without cloning the parser itself.
+/// multiple modules without cloning the parser itself. When construction is
+/// expensive, prefer [`ParallelPipelineBuilder::parser_factory_with_artifacts`]
+/// so unmatched modules do not construct a temporary parser for metadata.
 ///
 /// ```rust,ignore
 /// builder.parser_factory(Box::new(|| Box::new(MftParser::new())))
 /// ```
-pub type ParserFactory =
-    Box<dyn Fn() -> Box<dyn ArtifactParser + Send + 'static> + Send + Sync>;
+pub type ParserFactory = Box<dyn Fn() -> Box<dyn ArtifactParser + Send + 'static> + Send + Sync>;
+
+struct RegisteredParserFactory {
+    artifacts: Option<Vec<crate::artifact::Artifact>>,
+    create: ParserFactory,
+}
 
 /// An analyzer-centric parallel task.
 ///
@@ -429,8 +507,25 @@ impl ParallelPipelineTask for AnalysisModule {
         &self.name
     }
 
-    fn run(mut self: Box<Self>, tx: SyncSender<PipelineEvent>) {
+    fn run(self: Box<Self>, tx: SyncSender<PipelineEvent>) {
+        self.run_cancellable(tx, CancellationToken::new());
+    }
+
+    fn run_cancellable(
+        mut self: Box<Self>,
+        tx: SyncSender<PipelineEvent>,
+        cancellation: CancellationToken,
+    ) {
         let task_name = self.name.clone();
+
+        if cancellation.is_cancelled() {
+            let _ = tx.send(PipelineEvent::TaskDone {
+                task: task_name,
+                items_processed: 0,
+                findings_count: 0,
+            });
+            return;
+        }
 
         let mut context = self.context.take().unwrap_or_default();
         context.install();
@@ -438,11 +533,15 @@ impl ParallelPipelineTask for AnalysisModule {
         // All parsers for this module share one TriageSources instance,
         // created on the worker thread via the factory.
         let mut sources = (self.sources_factory)();
+        let analyzer_artifacts = self.analyzer.supported_artifacts();
 
         let mut total_items: u64 = 0;
         let mut total_findings: u64 = 0;
 
         'parsers: for parser in &mut self.parsers {
+            if cancellation.is_cancelled() {
+                break 'parsers;
+            }
             if !parser.can_parse(&sources) {
                 continue 'parsers;
             }
@@ -450,7 +549,10 @@ impl ParallelPipelineTask for AnalysisModule {
             let iter = match parser.parse(&mut sources) {
                 Ok(iter) => iter,
                 Err(e) => {
-                    let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                    let _ = tx.send(PipelineEvent::TaskError {
+                        task: task_name.clone(),
+                        error: e,
+                    });
                     match self.error_action {
                         ErrorAction::Continue => continue 'parsers,
                         ErrorAction::Halt => break 'parsers,
@@ -459,10 +561,17 @@ impl ParallelPipelineTask for AnalysisModule {
             };
 
             'records: for item_result in iter {
+                if cancellation.is_cancelled() {
+                    break 'parsers;
+                }
+
                 let mut data = match item_result {
                     Ok(d) => d,
                     Err(e) => {
-                        let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                        let _ = tx.send(PipelineEvent::TaskError {
+                            task: task_name.clone(),
+                            error: e,
+                        });
                         match self.error_action {
                             ErrorAction::Continue => continue 'records,
                             ErrorAction::Halt => break 'parsers,
@@ -471,8 +580,14 @@ impl ParallelPipelineTask for AnalysisModule {
                 };
 
                 for enricher in &mut self.enrichers {
+                    if cancellation.is_cancelled() {
+                        break 'parsers;
+                    }
                     if let Err(e) = enricher.enrich(&mut data, &mut context) {
-                        let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                        let _ = tx.send(PipelineEvent::TaskError {
+                            task: task_name.clone(),
+                            error: e,
+                        });
                         if self.error_action == ErrorAction::Halt {
                             break 'parsers;
                         }
@@ -480,8 +595,10 @@ impl ParallelPipelineTask for AnalysisModule {
                 }
 
                 let artifact = data.artifact().clone();
-                let supported = self.analyzer.supported_artifacts();
-                if supported.is_empty() || supported.contains(&artifact) {
+                if cancellation.is_cancelled() {
+                    break 'parsers;
+                }
+                if analyzer_artifacts.is_empty() || analyzer_artifacts.contains(&artifact) {
                     match self.analyzer.analyze(&data) {
                         Ok(new_findings) => {
                             for f in new_findings {
@@ -492,7 +609,10 @@ impl ParallelPipelineTask for AnalysisModule {
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                            let _ = tx.send(PipelineEvent::TaskError {
+                                task: task_name.clone(),
+                                error: e,
+                            });
                             if self.error_action == ErrorAction::Halt {
                                 break 'parsers;
                             }
@@ -518,7 +638,10 @@ impl ParallelPipelineTask for AnalysisModule {
                 }
             }
             Err(e) => {
-                let _ = tx.send(PipelineEvent::TaskError { task: task_name.clone(), error: e });
+                let _ = tx.send(PipelineEvent::TaskError {
+                    task: task_name.clone(),
+                    error: e,
+                });
             }
         }
 
@@ -621,17 +744,21 @@ impl AnalysisModuleBuilder {
     pub fn build(self) -> ForensicResult<AnalysisModule> {
         let analyzer = match self.analyzer {
             Some(a) => a,
-            None => return Err(ForensicError::missing_data(
-                "analyzer",
-                SCow::Borrowed("AnalysisModuleBuilder: call .analyzer() before .build()"),
-            )),
+            None => {
+                return Err(ForensicError::missing_data(
+                    "analyzer",
+                    SCow::Borrowed("AnalysisModuleBuilder: call .analyzer() before .build()"),
+                ))
+            }
         };
         let sources_factory = match self.sources_factory {
             Some(f) => f,
-            None => return Err(ForensicError::missing_data(
-                "sources_factory",
-                SCow::Borrowed("AnalysisModuleBuilder: call .sources() before .build()"),
-            )),
+            None => {
+                return Err(ForensicError::missing_data(
+                    "sources_factory",
+                    SCow::Borrowed("AnalysisModuleBuilder: call .sources() before .build()"),
+                ))
+            }
         };
         Ok(AnalysisModule {
             name: self.name,
@@ -677,6 +804,18 @@ impl ParallelPipeline {
     /// The method blocks until every task has finished and all sinks have been
     /// finalised.
     pub fn run(&mut self) -> ForensicResult<ParallelPipelineResult> {
+        self.run_with_cancellation(CancellationToken::new())
+    }
+
+    /// Execute all tasks with cooperative cancellation support.
+    ///
+    /// Cancellation prevents built-in tasks from starting additional parser
+    /// work and stops them between records. A task already blocked in backend
+    /// I/O must be cancelled by that backend's own mechanism.
+    pub fn run_with_cancellation(
+        &mut self,
+        cancellation: CancellationToken,
+    ) -> ForensicResult<ParallelPipelineResult> {
         let mut result = ParallelPipelineResult::default();
 
         if self.tasks.is_empty() {
@@ -707,6 +846,7 @@ impl ParallelPipeline {
         for _ in 0..worker_count {
             let queue = Arc::clone(&task_queue);
             let worker_tx = tx.clone();
+            let worker_cancellation = cancellation.clone();
             handles.push(thread::spawn(move || {
                 loop {
                     let task = {
@@ -714,7 +854,27 @@ impl ParallelPipeline {
                         q.pop_front()
                     };
                     match task {
-                        Some(t) => t.run(worker_tx.clone()),
+                        Some(t) => {
+                            let task_name = t.name().to_string();
+                            if catch_unwind(AssertUnwindSafe(|| {
+                                t.run_cancellable(worker_tx.clone(), worker_cancellation.clone());
+                            }))
+                            .is_err()
+                            {
+                                let _ = worker_tx.send(PipelineEvent::TaskError {
+                                    task: task_name.clone(),
+                                    error: ForensicError::other(
+                                        "pipeline",
+                                        "task panicked during execution".to_string(),
+                                    ),
+                                });
+                                let _ = worker_tx.send(PipelineEvent::TaskDone {
+                                    task: task_name,
+                                    items_processed: 0,
+                                    findings_count: 0,
+                                });
+                            }
+                        }
                         None => break,
                     }
                 }
@@ -747,7 +907,11 @@ impl ParallelPipeline {
                 PipelineEvent::TaskError { task, error } => {
                     result.errors.push((task, error));
                 }
-                PipelineEvent::TaskDone { task, items_processed, findings_count } => {
+                PipelineEvent::TaskDone {
+                    task,
+                    items_processed,
+                    findings_count,
+                } => {
                     if !result.tasks_run.contains(&task) {
                         result.tasks_run.push(task.clone());
                     }
@@ -794,7 +958,7 @@ pub struct ParallelPipelineBuilder {
     channel_capacity: Option<usize>,
     tasks: Vec<Box<dyn ParallelPipelineTask>>,
     pending_modules: Vec<AnalysisModule>,
-    parser_factories: Vec<ParserFactory>,
+    parser_factories: Vec<RegisteredParserFactory>,
     sinks: Vec<Box<dyn TriageSink>>,
 }
 
@@ -858,13 +1022,37 @@ impl ParallelPipelineBuilder {
     /// [`Analyzer::supported_artifacts`].  When the sets overlap the factory
     /// is called and the resulting parser is injected into that module.
     ///
+    /// This compatibility API constructs a temporary parser to inspect its
+    /// metadata. Prefer [`Self::parser_factory_with_artifacts`] when supported
+    /// artifact metadata is available without parser construction.
+    ///
     /// A factory registered here is **never** added to modules that already
     /// have explicit parsers — explicit always wins.
     ///
     /// If an analyzer's `supported_artifacts()` is empty (the "accept all"
     /// default) it receives parsers from **every** registered factory.
     pub fn parser_factory(mut self, factory: ParserFactory) -> Self {
-        self.parser_factories.push(factory);
+        self.parser_factories.push(RegisteredParserFactory {
+            artifacts: None,
+            create: factory,
+        });
+        self
+    }
+
+    /// Register a parser factory with its supported artifact metadata.
+    ///
+    /// Unlike [`Self::parser_factory`], this avoids constructing parsers that
+    /// do not match an analysis module. Use it when parser construction opens
+    /// files, loads indexes, or otherwise performs meaningful work.
+    pub fn parser_factory_with_artifacts(
+        mut self,
+        artifacts: Vec<crate::artifact::Artifact>,
+        factory: ParserFactory,
+    ) -> Self {
+        self.parser_factories.push(RegisteredParserFactory {
+            artifacts: Some(artifacts),
+            create: factory,
+        });
         self
     }
 
@@ -883,17 +1071,29 @@ impl ParallelPipelineBuilder {
             if module.parsers.is_empty() && !self.parser_factories.is_empty() {
                 let analyzer_artifacts = module.analyzer.supported_artifacts();
                 for factory in &self.parser_factories {
-                    // Construct a temporary parser instance to inspect its
-                    // supported artifacts, then keep or discard it.
-                    let parser = factory();
-                    let parser_artifacts = parser.supported_artifacts();
-                    let matches = analyzer_artifacts.is_empty()
-                        || parser_artifacts.is_empty()
-                        || analyzer_artifacts.iter().any(|a| parser_artifacts.contains(a));
-                    if matches {
-                        module.parsers.push(parser);
+                    if let Some(parser_artifacts) = &factory.artifacts {
+                        let matches = analyzer_artifacts.is_empty()
+                            || parser_artifacts.is_empty()
+                            || analyzer_artifacts
+                                .iter()
+                                .any(|a| parser_artifacts.contains(a));
+                        if matches {
+                            module.parsers.push((factory.create)());
+                        }
+                    } else {
+                        // Preserve the legacy factory behavior: inspect the
+                        // constructed parser and retain that same instance.
+                        let parser = (factory.create)();
+                        let parser_artifacts = parser.supported_artifacts();
+                        let matches = analyzer_artifacts.is_empty()
+                            || parser_artifacts.is_empty()
+                            || analyzer_artifacts
+                                .iter()
+                                .any(|a| parser_artifacts.contains(a));
+                        if matches {
+                            module.parsers.push(parser);
+                        }
                     }
-                    // If not matched the parser is simply dropped here.
                 }
             }
         }
@@ -931,10 +1131,7 @@ mod tests {
         data::ForensicData,
         err::ForensicResult,
         pipeline::{
-            finding::Finding,
-            sinks::FindingCollector,
-            sources::TriageSources,
-            traits::TriageSink,
+            finding::Finding, sinks::FindingCollector, sources::TriageSources, traits::TriageSink,
         },
     };
 
@@ -960,12 +1157,22 @@ mod tests {
     }
 
     impl crate::traits::forensic::ArtifactParser for MockParser {
-        fn name(&self) -> &str { "mock_parser" }
-        fn description(&self) -> &str { "mock" }
-        fn version(&self) -> &str { "0.1" }
-        fn supported_artifacts(&self) -> Vec<Artifact> { vec![] }
+        fn name(&self) -> &str {
+            "mock_parser"
+        }
+        fn description(&self) -> &str {
+            "mock"
+        }
+        fn version(&self) -> &str {
+            "0.1"
+        }
+        fn supported_artifacts(&self) -> Vec<Artifact> {
+            vec![]
+        }
 
-        fn can_parse(&self, _sources: &TriageSources) -> bool { true }
+        fn can_parse(&self, _sources: &TriageSources) -> bool {
+            true
+        }
 
         fn parse<'a>(
             &'a mut self,
@@ -986,11 +1193,18 @@ mod tests {
     }
 
     impl CountingSink {
-        fn new() -> Self { Self { data_count: 0, finding_count: 0 } }
+        fn new() -> Self {
+            Self {
+                data_count: 0,
+                finding_count: 0,
+            }
+        }
     }
 
     impl TriageSink for CountingSink {
-        fn name(&self) -> &str { "counting_sink" }
+        fn name(&self) -> &str {
+            "counting_sink"
+        }
         fn on_data(&mut self, _data: &ForensicData) -> ForensicResult<()> {
             self.data_count += 1;
             Ok(())
@@ -1074,15 +1288,26 @@ mod tests {
         // A parser that immediately fails.
         struct FailParser;
         impl crate::traits::forensic::ArtifactParser for FailParser {
-            fn name(&self) -> &str { "fail_parser" }
-            fn description(&self) -> &str { "always fails" }
-            fn version(&self) -> &str { "0.1" }
-            fn supported_artifacts(&self) -> Vec<Artifact> { vec![] }
-            fn can_parse(&self, _: &TriageSources) -> bool { true }
+            fn name(&self) -> &str {
+                "fail_parser"
+            }
+            fn description(&self) -> &str {
+                "always fails"
+            }
+            fn version(&self) -> &str {
+                "0.1"
+            }
+            fn supported_artifacts(&self) -> Vec<Artifact> {
+                vec![]
+            }
+            fn can_parse(&self, _: &TriageSources) -> bool {
+                true
+            }
             fn parse<'a>(
                 &'a mut self,
                 _sources: &'a mut TriageSources,
-            ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
+            ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>>
+            {
                 Err(ForensicError::missing_data(
                     "test",
                     SCow::Borrowed("intentional failure"),
@@ -1120,6 +1345,102 @@ mod tests {
         assert_eq!(result.tasks_run.len(), 2);
     }
 
+    #[test]
+    fn pre_cancelled_pipeline_skips_builtin_task_work() {
+        let task = StandardParallelTaskBuilder::new("cancelled")
+            .parser(Box::new(MockParser::with_records(4, "h")))
+            .sources(empty_sources)
+            .build()
+            .unwrap();
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(1)
+            .task(Box::new(task))
+            .sink(Box::new(CountingSink::new()))
+            .build()
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let result = pipeline.run_with_cancellation(cancellation).unwrap();
+
+        assert_eq!(result.items_processed, 0);
+        assert_eq!(result.task_stats["cancelled"].items_processed, 0);
+        assert_eq!(result.tasks_run, vec!["cancelled"]);
+    }
+
+    #[test]
+    fn in_flight_cancellation_stops_after_current_record() {
+        struct CancellingAnalyzer {
+            cancellation: CancellationToken,
+        }
+
+        impl Analyzer for CancellingAnalyzer {
+            fn name(&self) -> &str {
+                "cancelling_analyzer"
+            }
+
+            fn analyze(&mut self, _data: &ForensicData) -> ForensicResult<Vec<Finding>> {
+                self.cancellation.cancel();
+                Ok(Vec::new())
+            }
+        }
+
+        let cancellation = CancellationToken::new();
+        let task = StandardParallelTaskBuilder::new("cancelled_in_flight")
+            .parser(Box::new(MockParser::with_records(4, "h")))
+            .analyzer(Box::new(CancellingAnalyzer {
+                cancellation: cancellation.clone(),
+            }))
+            .sources(empty_sources)
+            .build()
+            .unwrap();
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(1)
+            .task(Box::new(task))
+            .sink(Box::new(CountingSink::new()))
+            .build()
+            .unwrap();
+
+        let result = pipeline.run_with_cancellation(cancellation).unwrap();
+
+        assert_eq!(result.items_processed, 1);
+        assert_eq!(result.task_stats["cancelled_in_flight"].items_processed, 1);
+    }
+
+    #[test]
+    fn panicking_task_is_reported_without_blocking_other_tasks() {
+        struct PanicTask;
+
+        impl ParallelPipelineTask for PanicTask {
+            fn name(&self) -> &str {
+                "panic"
+            }
+
+            fn run(self: Box<Self>, _tx: SyncSender<PipelineEvent>) {
+                panic!("intentional test panic");
+            }
+        }
+
+        let healthy_task = StandardParallelTaskBuilder::new("healthy")
+            .parser(Box::new(MockParser::with_records(2, "h")))
+            .sources(empty_sources)
+            .build()
+            .unwrap();
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(2)
+            .task(Box::new(PanicTask))
+            .task(Box::new(healthy_task))
+            .sink(Box::new(CountingSink::new()))
+            .build()
+            .unwrap();
+
+        let result = pipeline.run().unwrap();
+
+        assert_eq!(result.items_processed, 2);
+        assert!(result.tasks_run.contains(&"panic".to_string()));
+        assert!(result.errors.iter().any(|(task, _)| task == "panic"));
+    }
+
     // -------------------------------------------------------------------
     // AnalysisModule tests
     // -------------------------------------------------------------------
@@ -1132,14 +1453,24 @@ mod tests {
     }
 
     impl CountingAnalyzer {
-        fn new() -> Self { Self { count: 0, artifacts: vec![] } }
+        fn new() -> Self {
+            Self {
+                count: 0,
+                artifacts: vec![],
+            }
+        }
         fn with_artifact(artifact: crate::artifact::Artifact) -> Self {
-            Self { count: 0, artifacts: vec![artifact] }
+            Self {
+                count: 0,
+                artifacts: vec![artifact],
+            }
         }
     }
 
     impl crate::pipeline::traits::Analyzer for CountingAnalyzer {
-        fn name(&self) -> &str { "counting_analyzer" }
+        fn name(&self) -> &str {
+            "counting_analyzer"
+        }
         fn supported_artifacts(&self) -> Vec<crate::artifact::Artifact> {
             self.artifacts.clone()
         }
@@ -1169,11 +1500,21 @@ mod tests {
     }
 
     impl crate::traits::forensic::ArtifactParser for TypedMockParser {
-        fn name(&self) -> &str { "typed_mock_parser" }
-        fn description(&self) -> &str { "typed mock" }
-        fn version(&self) -> &str { "0.1" }
-        fn supported_artifacts(&self) -> Vec<crate::artifact::Artifact> { vec![self.artifact.clone()] }
-        fn can_parse(&self, _: &TriageSources) -> bool { true }
+        fn name(&self) -> &str {
+            "typed_mock_parser"
+        }
+        fn description(&self) -> &str {
+            "typed mock"
+        }
+        fn version(&self) -> &str {
+            "0.1"
+        }
+        fn supported_artifacts(&self) -> Vec<crate::artifact::Artifact> {
+            vec![self.artifact.clone()]
+        }
+        fn can_parse(&self, _: &TriageSources) -> bool {
+            true
+        }
         fn parse<'a>(
             &'a mut self,
             _sources: &'a mut TriageSources,
@@ -1194,7 +1535,7 @@ mod tests {
 
         let module = AnalysisModuleBuilder::new("mod")
             .analyzer(Box::new(CountingAnalyzer::new()))
-            .parser(Box::new(MockParser::with_records(4, "h")))  // explicit
+            .parser(Box::new(MockParser::with_records(4, "h"))) // explicit
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1243,14 +1584,16 @@ mod tests {
 
     #[test]
     fn analysis_module_auto_match_skips_non_overlapping_factory() {
-        use crate::artifact::{WindowsArtifacts, RegistryArtifacts};
+        use crate::artifact::{RegistryArtifacts, WindowsArtifacts};
 
         // Analyzer only cares about Registry artifacts.
-        let registry_artifact = crate::artifact::Artifact::Windows(
-            WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)
-        );
+        let registry_artifact = crate::artifact::Artifact::Windows(WindowsArtifacts::Registry(
+            RegistryArtifacts::AutoRuns,
+        ));
         let module = AnalysisModuleBuilder::new("mod")
-            .analyzer(Box::new(CountingAnalyzer::with_artifact(registry_artifact.clone())))
+            .analyzer(Box::new(CountingAnalyzer::with_artifact(
+                registry_artifact.clone(),
+            )))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1274,5 +1617,72 @@ mod tests {
         let result = pipeline.run().unwrap();
         // Only the 3 records from the registry parser should arrive.
         assert_eq!(result.items_processed, 3);
+    }
+
+    #[test]
+    fn metadata_aware_factory_is_not_constructed_when_unmatched() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+
+        let construction_count = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&construction_count);
+        let module = AnalysisModuleBuilder::new("mod")
+            .analyzer(Box::new(CountingAnalyzer::with_artifact(Artifact::Unknown)))
+            .sources(empty_sources)
+            .build()
+            .unwrap();
+
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(1)
+            .module(module)
+            .parser_factory_with_artifacts(
+                vec![Artifact::Windows(
+                    crate::artifact::WindowsArtifacts::Registry(
+                        crate::artifact::RegistryArtifacts::AutoRuns,
+                    ),
+                )],
+                Box::new(move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Box::new(MockParser::with_records(1, "h"))
+                }),
+            )
+            .sink(Box::new(CountingSink::new()))
+            .build()
+            .unwrap();
+
+        let result = pipeline.run().unwrap();
+
+        assert_eq!(construction_count.load(Ordering::SeqCst), 0);
+        assert_eq!(result.items_processed, 0);
+    }
+
+    #[test]
+    fn legacy_factory_constructs_one_parser_for_a_matching_module() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+
+        let construction_count = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&construction_count);
+        let module = AnalysisModuleBuilder::new("mod")
+            .analyzer(Box::new(CountingAnalyzer::with_artifact(Artifact::Unknown)))
+            .sources(empty_sources)
+            .build()
+            .unwrap();
+
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(1)
+            .module(module)
+            .parser_factory(Box::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Box::new(TypedMockParser::new(1, "h", Artifact::Unknown))
+            }))
+            .sink(Box::new(CountingSink::new()))
+            .build()
+            .unwrap();
+
+        let result = pipeline.run().unwrap();
+
+        assert_eq!(construction_count.load(Ordering::SeqCst), 1);
+        assert_eq!(result.items_processed, 1);
     }
 }

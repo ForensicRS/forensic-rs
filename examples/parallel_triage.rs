@@ -76,7 +76,7 @@ impl ArtifactParser for MockMftParser {
             d.insert(Text::Borrowed("file.path"),  Field::Text(Text::Owned(path.to_string())));
             d.insert(Text::Borrowed("file.inode"), Field::U64(*inode));
             d.insert(Text::Borrowed("@timestamp"),
-                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0)));
+                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
         Ok(Box::new(items.into_iter()))
@@ -122,7 +122,7 @@ impl ArtifactParser for MockEvtxParser {
             d.insert(Text::Borrowed("event.code"),      Field::U64(event_id));
             d.insert(Text::Borrowed("event.channel"),   Field::Text(Text::Borrowed(channel)));
             d.insert(Text::Borrowed("@timestamp"),
-                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0)));
+                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
         Ok(Box::new(items.into_iter()))
@@ -166,7 +166,7 @@ impl ArtifactParser for MockAutorunParser {
             d.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Borrowed(cmd)));
             d.insert(Text::Borrowed("autorun.user"),  Field::Text(Text::Borrowed(sid)));
             d.insert(Text::Borrowed("@timestamp"),
-                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0)));
+                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
         Ok(Box::new(items.into_iter()))

@@ -166,17 +166,15 @@ impl TriagePipeline {
             // Get the iterator from this parser
             let iter = match parser.parse(sources) {
                 Ok(iter) => iter,
-                Err(e) => {
-                    match self.error_action {
-                        ErrorAction::Continue => {
-                            crate::warn!("Parser '{}' failed to start: {}", parser_name, e);
-                            result.errors.push(e);
-                            result.parsers_skipped.push(parser_name);
-                            continue;
-                        }
-                        ErrorAction::Halt => return Err(e),
+                Err(e) => match self.error_action {
+                    ErrorAction::Continue => {
+                        crate::warn!("Parser '{}' failed to start: {}", parser_name, e);
+                        result.errors.push(e);
+                        result.parsers_skipped.push(parser_name);
+                        continue;
                     }
-                }
+                    ErrorAction::Halt => return Err(e),
+                },
             };
 
             result.parsers_run.push(parser_name.clone());
@@ -185,16 +183,14 @@ impl TriagePipeline {
             for item_result in iter {
                 let mut data = match item_result {
                     Ok(data) => data,
-                    Err(e) => {
-                        match self.error_action {
-                            ErrorAction::Continue => {
-                                crate::warn!("Parser '{}' produced error: {}", parser_name, e);
-                                result.errors.push(e);
-                                continue;
-                            }
-                            ErrorAction::Halt => return Err(e),
+                    Err(e) => match self.error_action {
+                        ErrorAction::Continue => {
+                            crate::warn!("Parser '{}' produced error: {}", parser_name, e);
+                            result.errors.push(e);
+                            continue;
                         }
-                    }
+                        ErrorAction::Halt => return Err(e),
+                    },
                 };
 
                 // Run enrichers
@@ -296,7 +292,11 @@ mod tests {
 
     impl MockParser {
         fn new(items: Vec<ForensicResult<ForensicData>>, artifact: Artifact) -> Self {
-            Self { items, artifact, parseable: true }
+            Self {
+                items,
+                artifact,
+                parseable: true,
+            }
         }
 
         fn unparseable() -> Self {
@@ -309,14 +309,25 @@ mod tests {
     }
 
     impl ArtifactParser for MockParser {
-        fn name(&self) -> &str { "mock_parser" }
-        fn description(&self) -> &str { "Mock parser for testing" }
-        fn version(&self) -> &str { "0.0.1" }
-        fn supported_artifacts(&self) -> Vec<Artifact> { vec![self.artifact.clone()] }
-        fn can_parse(&self, _sources: &TriageSources) -> bool { self.parseable }
-        fn parse<'a>(&'a mut self, _sources: &'a mut TriageSources)
-            -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>>
-        {
+        fn name(&self) -> &str {
+            "mock_parser"
+        }
+        fn description(&self) -> &str {
+            "Mock parser for testing"
+        }
+        fn version(&self) -> &str {
+            "0.0.1"
+        }
+        fn supported_artifacts(&self) -> Vec<Artifact> {
+            vec![self.artifact.clone()]
+        }
+        fn can_parse(&self, _sources: &TriageSources) -> bool {
+            self.parseable
+        }
+        fn parse<'a>(
+            &'a mut self,
+            _sources: &'a mut TriageSources,
+        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
             Ok(Box::new(self.items.drain(..)))
         }
     }
@@ -329,8 +340,14 @@ mod tests {
     }
 
     impl Enricher for TagEnricher {
-        fn name(&self) -> &str { "tag_enricher" }
-        fn enrich(&mut self, data: &mut ForensicData, _context: &mut TriageContext) -> ForensicResult<()> {
+        fn name(&self) -> &str {
+            "tag_enricher"
+        }
+        fn enrich(
+            &mut self,
+            data: &mut ForensicData,
+            _context: &mut TriageContext,
+        ) -> ForensicResult<()> {
             data.add_field(self.tag_key, Field::Text(Text::Borrowed(self.tag_value)));
             Ok(())
         }
@@ -345,25 +362,31 @@ mod tests {
 
     impl CountAnalyzer {
         fn new(threshold: u64) -> Self {
-            Self { count: 0, threshold }
+            Self {
+                count: 0,
+                threshold,
+            }
         }
     }
 
     impl Analyzer for CountAnalyzer {
-        fn name(&self) -> &str { "count_analyzer" }
+        fn name(&self) -> &str {
+            "count_analyzer"
+        }
         fn analyze(&mut self, _data: &ForensicData) -> ForensicResult<Vec<Finding>> {
             self.count += 1;
             Ok(Vec::new())
         }
         fn finalize(&mut self) -> ForensicResult<Vec<Finding>> {
             if self.count < self.threshold {
-                Ok(vec![
-                    Finding::new(
-                        FindingSeverity::Medium,
-                        FindingCategory::MissingData,
-                        format!("Expected at least {} records, got {}", self.threshold, self.count),
-                    )
-                ])
+                Ok(vec![Finding::new(
+                    FindingSeverity::Medium,
+                    FindingCategory::MissingData,
+                    format!(
+                        "Expected at least {} records, got {}",
+                        self.threshold, self.count
+                    ),
+                )])
             } else {
                 Ok(Vec::new())
             }
@@ -380,12 +403,18 @@ mod tests {
 
     impl CollectorSink {
         fn new() -> Self {
-            Self { data_count: 0, finding_count: 0, finalized: false }
+            Self {
+                data_count: 0,
+                finding_count: 0,
+                finalized: false,
+            }
         }
     }
 
     impl TriageSink for CollectorSink {
-        fn name(&self) -> &str { "collector_sink" }
+        fn name(&self) -> &str {
+            "collector_sink"
+        }
         fn on_data(&mut self, _data: &ForensicData) -> ForensicResult<()> {
             self.data_count += 1;
             Ok(())
@@ -418,9 +447,7 @@ mod tests {
 
     #[test]
     fn should_run_empty_pipeline() {
-        let mut pipeline = TriagePipeline::builder()
-            .build()
-            .unwrap();
+        let mut pipeline = TriagePipeline::builder().build().unwrap();
         let mut sources = test_sources();
         let result = pipeline.run(&mut sources).unwrap();
         assert_eq!(result.items_processed, 0);
@@ -431,11 +458,20 @@ mod tests {
     #[test]
     fn should_process_records_through_pipeline() {
         let items = vec![
-            Ok(ForensicData::new("host1", RegistryArtifacts::ShellBags.into())),
-            Ok(ForensicData::new("host1", RegistryArtifacts::ShellBags.into())),
+            Ok(ForensicData::new(
+                "host1",
+                RegistryArtifacts::ShellBags.into(),
+            )),
+            Ok(ForensicData::new(
+                "host1",
+                RegistryArtifacts::ShellBags.into(),
+            )),
         ];
         let mut pipeline = TriagePipeline::builder()
-            .parser(Box::new(MockParser::new(items, RegistryArtifacts::ShellBags.into())))
+            .parser(Box::new(MockParser::new(
+                items,
+                RegistryArtifacts::ShellBags.into(),
+            )))
             .build()
             .unwrap();
         let mut sources = test_sources();
@@ -462,7 +498,10 @@ mod tests {
         let items = vec![Ok(ForensicData::new("host1", Artifact::Unknown))];
         let mut pipeline = TriagePipeline::builder()
             .parser(Box::new(MockParser::new(items, Artifact::Unknown)))
-            .enricher(Box::new(TagEnricher { tag_key: "enriched", tag_value: "yes" }))
+            .enricher(Box::new(TagEnricher {
+                tag_key: "enriched",
+                tag_value: "yes",
+            }))
             .sink(Box::new(FindingCollector::new()))
             .build()
             .unwrap();
@@ -473,9 +512,7 @@ mod tests {
 
     #[test]
     fn should_produce_findings_on_finalize() {
-        let items = vec![
-            Ok(ForensicData::new("host1", Artifact::Unknown)),
-        ];
+        let items = vec![Ok(ForensicData::new("host1", Artifact::Unknown))];
         let mut pipeline = TriagePipeline::builder()
             .parser(Box::new(MockParser::new(items, Artifact::Unknown)))
             .analyzer(Box::new(CountAnalyzer::new(5))) // threshold=5, only 1 record → finding
@@ -511,7 +548,10 @@ mod tests {
     fn should_continue_on_parser_item_error() {
         let items: Vec<ForensicResult<ForensicData>> = vec![
             Ok(ForensicData::new("host1", Artifact::Unknown)),
-            Err(ForensicError::missing_data("test missing data", SCow::Borrowed("pipeline test"))),
+            Err(ForensicError::missing_data(
+                "test missing data",
+                SCow::Borrowed("pipeline test"),
+            )),
             Ok(ForensicData::new("host1", Artifact::Unknown)),
         ];
         let mut pipeline = TriagePipeline::builder()
@@ -529,7 +569,10 @@ mod tests {
     fn should_halt_on_parser_item_error() {
         let items: Vec<ForensicResult<ForensicData>> = vec![
             Ok(ForensicData::new("host1", Artifact::Unknown)),
-            Err(ForensicError::missing_data("halt test", SCow::Borrowed("pipeline test"))),
+            Err(ForensicError::missing_data(
+                "halt test",
+                SCow::Borrowed("pipeline test"),
+            )),
             Ok(ForensicData::new("host1", Artifact::Unknown)),
         ];
         let mut pipeline = TriagePipeline::builder()
@@ -545,12 +588,25 @@ mod tests {
     #[test]
     fn should_use_timeline_sink() {
         let mut data1 = ForensicData::new("host1", Artifact::Unknown);
-        data1.add_field("@timestamp", Field::Date(crate::utils::time::Filetime::with_ymd_and_hms(2024, 6, 15, 10, 30, 0, 0)));
+        data1.add_field(
+            "@timestamp",
+            Field::Date(crate::utils::time::Filetime::with_ymd_and_hms(
+                2024, 6, 15, 10, 30, 0, 0,
+            ).into()),
+        );
         let mut data2 = ForensicData::new("host1", Artifact::Unknown);
-        data2.add_field("@timestamp", Field::Date(crate::utils::time::Filetime::with_ymd_and_hms(2024, 6, 15, 8, 0, 0, 0)));
+        data2.add_field(
+            "@timestamp",
+            Field::Date(crate::utils::time::Filetime::with_ymd_and_hms(
+                2024, 6, 15, 8, 0, 0, 0,
+            ).into()),
+        );
 
         let mut pipeline = TriagePipeline::builder()
-            .parser(Box::new(MockParser::new(vec![Ok(data1), Ok(data2)], Artifact::Unknown)))
+            .parser(Box::new(MockParser::new(
+                vec![Ok(data1), Ok(data2)],
+                Artifact::Unknown,
+            )))
             .sink(Box::new(TimelineSink::new("@timestamp")))
             .build()
             .unwrap();
@@ -562,9 +618,13 @@ mod tests {
     #[test]
     fn should_scope_analyzer_to_artifact_type() {
         // Analyzer only interested in WinEvt artifacts
-        struct WinEvtOnlyAnalyzer { seen: u64 }
+        struct WinEvtOnlyAnalyzer {
+            seen: u64,
+        }
         impl Analyzer for WinEvtOnlyAnalyzer {
-            fn name(&self) -> &str { "winevt_only" }
+            fn name(&self) -> &str {
+                "winevt_only"
+            }
             fn supported_artifacts(&self) -> Vec<Artifact> {
                 vec![WindowsArtifacts::WinEvt(WindowsEvents::Security).into()]
             }
@@ -576,7 +636,10 @@ mod tests {
 
         let items = vec![
             Ok(ForensicData::new("h", RegistryArtifacts::ShellBags.into())), // should NOT match
-            Ok(ForensicData::new("h", WindowsArtifacts::WinEvt(WindowsEvents::Security).into())), // should match
+            Ok(ForensicData::new(
+                "h",
+                WindowsArtifacts::WinEvt(WindowsEvents::Security).into(),
+            )), // should match
         ];
         let mut pipeline = TriagePipeline::builder()
             .parser(Box::new(MockParser::new(items, Artifact::Unknown)))

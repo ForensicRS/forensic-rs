@@ -80,38 +80,36 @@ pub struct EventRecord {
 
 impl From<EventRecord> for ForensicData {
     fn from(event: EventRecord) -> Self {
-        let artifact = Artifact::Windows(WindowsArtifacts::WinEvt(
-            match event.channel.as_str() {
-                "Security" => WindowsEvents::Security,
-                "System" => WindowsEvents::System,
-                "Application" => WindowsEvents::Application,
-                "Setup" => WindowsEvents::Setup,
-                _ => WindowsEvents::Other(event.channel.clone()),
-            },
-        ));
+        let artifact = Artifact::Windows(WindowsArtifacts::WinEvt(match event.channel.as_str() {
+            "Security" => WindowsEvents::Security,
+            "System" => WindowsEvents::System,
+            "Application" => WindowsEvents::Application,
+            "Setup" => WindowsEvents::Setup,
+            _ => WindowsEvents::Other(event.channel.clone()),
+        }));
         let mut fd = ForensicData::new("", artifact);
-        fd.insert(Text::Borrowed("event.record_id"), Field::U64(event.record_id));
-        fd.insert(Text::Borrowed("event.code"), Field::U64(event.event_id as u64));
+        fd.insert(
+            Text::Borrowed("event.record_id"),
+            Field::U64(event.record_id),
+        );
+        fd.insert(
+            Text::Borrowed("event.code"),
+            Field::U64(event.event_id as u64),
+        );
         fd.insert(
             Text::Borrowed("@timestamp"),
-            Field::Date(event.timestamp.into()),
+            Field::Date(event.timestamp),
         );
         fd.insert(
             Text::Borrowed("event.provider"),
             Field::from(event.provider),
         );
-        fd.insert(
-            Text::Borrowed("event.channel"),
-            Field::from(event.channel),
-        );
+        fd.insert(Text::Borrowed("event.channel"), Field::from(event.channel));
         fd.insert(
             Text::Borrowed("event.severity"),
             Field::U64(event.level.id() as u64),
         );
-        fd.insert(
-            Text::Borrowed("host.name"),
-            Field::from(event.computer),
-        );
+        fd.insert(Text::Borrowed("host.name"), Field::from(event.computer));
         if let Some(sid) = event.user_sid {
             fd.insert(Text::Borrowed("user.id"), Field::from(sid));
         }
@@ -173,7 +171,8 @@ impl EventLogQuery {
     }
 
     pub fn with_providers(mut self, providers: &[&str]) -> Self {
-        self.providers.extend(providers.iter().map(|s| s.to_string()));
+        self.providers
+            .extend(providers.iter().map(|s| s.to_string()));
         self
     }
 
@@ -254,7 +253,10 @@ pub trait EventLogReader {
     /// Default implementation returns an error indicating the operation is unsupported.
     #[allow(unused_variables)]
     fn event_count(&self, channel: &str) -> ForensicResult<u64> {
-        Err(ForensicError::other("EventLogReader", "event_count is not supported by this implementation".to_string()))
+        Err(ForensicError::other(
+            "EventLogReader",
+            "event_count is not supported by this implementation".to_string(),
+        ))
     }
 }
 
@@ -308,12 +310,20 @@ mod tests {
         assert!(EventLogQuery::new().matches(&record));
 
         // Matching event ID
-        assert!(EventLogQuery::new().with_event_ids(&[4624, 4625]).matches(&record));
-        assert!(!EventLogQuery::new().with_event_ids(&[4625]).matches(&record));
+        assert!(EventLogQuery::new()
+            .with_event_ids(&[4624, 4625])
+            .matches(&record));
+        assert!(!EventLogQuery::new()
+            .with_event_ids(&[4625])
+            .matches(&record));
 
         // Matching channel
-        assert!(EventLogQuery::new().with_channels(&["Security"]).matches(&record));
-        assert!(!EventLogQuery::new().with_channels(&["System"]).matches(&record));
+        assert!(EventLogQuery::new()
+            .with_channels(&["Security"])
+            .matches(&record));
+        assert!(!EventLogQuery::new()
+            .with_channels(&["System"])
+            .matches(&record));
 
         // Matching time range
         let query = EventLogQuery::new().with_time_range(
@@ -329,12 +339,20 @@ mod tests {
         assert!(!query.matches(&record));
 
         // Matching level
-        assert!(EventLogQuery::new().with_levels(&[EventLevel::Information]).matches(&record));
-        assert!(!EventLogQuery::new().with_levels(&[EventLevel::Error]).matches(&record));
+        assert!(EventLogQuery::new()
+            .with_levels(&[EventLevel::Information])
+            .matches(&record));
+        assert!(!EventLogQuery::new()
+            .with_levels(&[EventLevel::Error])
+            .matches(&record));
 
         // Matching provider
-        assert!(EventLogQuery::new().with_providers(&["Microsoft-Windows-Security-Auditing"]).matches(&record));
-        assert!(!EventLogQuery::new().with_providers(&["OtherProvider"]).matches(&record));
+        assert!(EventLogQuery::new()
+            .with_providers(&["Microsoft-Windows-Security-Auditing"])
+            .matches(&record));
+        assert!(!EventLogQuery::new()
+            .with_providers(&["OtherProvider"])
+            .matches(&record));
     }
 
     #[test]

@@ -14,7 +14,7 @@ The error system is optimized for memory efficiency and provides rich contextual
 ## Error Categories
 
 - **Buffer**: Memory access and bounds checking errors
-- **Format**: File format validation and parsing errors  
+- **Format**: File format validation and parsing errors
 - **Compression**: Compression/decompression algorithm errors
 - **DataAccess**: File system and data access errors
 - **Registry**: Windows registry-specific errors
@@ -38,7 +38,7 @@ if magic != b"MZ" {
     return Err(ForensicError::invalid_magic("PE", "MZ", format!("{:?}", magic)));
 }
 
-// Registry errors with path context  
+// Registry errors with path context
 if let None = registry.get_value(&key_path, &value_name) {
     return Err(ForensicError::registry_value_not_found(key_path, value_name));
 }
@@ -52,7 +52,7 @@ ensure_format!(signature == 0x12345678, "custom_format", "invalid signature");
 
 The error system includes convenient macros for common validation patterns:
 
-- `ensure_buffer_size!`: Validates buffer bounds  
+- `ensure_buffer_size!`: Validates buffer bounds
 - `ensure_buffer_range!`: Validates buffer ranges
 - `ensure_format!`: Validates format conditions
 - `ensure_version!`: Validates version numbers
@@ -63,7 +63,7 @@ The error system includes convenient macros for common validation patterns:
 
 ### Buffer Errors
 - `buffer_too_small()`: Not enough data in buffer
-- `buffer_out_of_bounds()`: Position beyond buffer bounds  
+- `buffer_out_of_bounds()`: Position beyond buffer bounds
 - `buffer_invalid_range()`: Invalid range parameters
 
 ### Format Errors
@@ -72,20 +72,20 @@ The error system includes convenient macros for common validation patterns:
 - `invalid_magic()`: Magic bytes/signature mismatch
 - `format_corrupted()`: Data corruption at specific location
 
-### Compression Errors  
+### Compression Errors
 - `compression_error()`: Algorithm-specific errors
 - `invalid_offset()`: Invalid offset in compressed data
 - `too_big()` / `too_small()`: Size validation failures
 
 ### Data Access Errors
 - `missing_data()`: Expected data not found
-- `file_size_error()`: File size limit exceeded  
+- `file_size_error()`: File size limit exceeded
 - `path_not_found()`: Filesystem path doesn't exist
 - `access_denied()`: Permission denied
 
 ### Registry Errors
 - `registry_key_not_found()`: Registry key doesn't exist
-- `registry_value_not_found()`: Registry value doesn't exist  
+- `registry_value_not_found()`: Registry value doesn't exist
 - `registry_invalid_type()`: Wrong registry value type
 - `registry_cell_error()`: Registry cell parsing error
 - `registry_hive_error()`: Registry hive parsing error
@@ -98,7 +98,7 @@ The error system includes convenient macros for common validation patterns:
 - `illegal_timestamp()`: Invalid timestamp value
 - `timestamp_out_of_range()`: Timestamp outside valid range
 
-### I/O Errors  
+### I/O Errors
 - `io_error()`: Standard I/O error with context
 
 ### Generic Errors
@@ -122,11 +122,12 @@ impl<T> Into<ForensicResult<T>> for ForensicError {
 #[macro_export]
 macro_rules! ensure_buffer_size {
     ($buffer:expr, $pos:expr, $size:expr, $data_type:literal) => {
-        if $pos + $size > $buffer.len() {
+        let required = ($pos).checked_add($size).unwrap_or(usize::MAX);
+        if required > $buffer.len() {
             return Err($crate::err::ForensicError::buffer_too_small(
-                $pos + $size, 
-                $buffer.len(), 
-                $data_type
+                required,
+                $buffer.len(),
+                $data_type,
             ));
         }
     };
@@ -138,9 +139,9 @@ macro_rules! ensure_buffer_range {
     ($buffer:expr, $start:expr, $end:expr) => {
         if $end > $buffer.len() || $start > $end {
             return Err($crate::err::ForensicError::buffer_invalid_range(
-                $start, 
-                $end, 
-                $buffer.len()
+                $start,
+                $end,
+                $buffer.len(),
             ));
         }
     };
@@ -151,15 +152,17 @@ macro_rules! ensure_buffer_range {
 macro_rules! ensure_format {
     ($condition:expr, $artifact:literal, $reason:literal) => {
         if !$condition {
-            return Err($crate::err::ForensicError::invalid_format($artifact, $reason));
+            return Err($crate::err::ForensicError::invalid_format(
+                $artifact, $reason,
+            ));
         }
     };
 }
 
-/// Macro for ensuring a value is at least X size: 
-/// 
+/// Macro for ensuring a value is at least X size:
+///
 /// length >= min_length
-/// 
+///
 /// ensure_min_length!(min_length, length, operation);
 /// ```rust
 /// fn test() -> forensic_rs::err::ForensicResult<()> {
@@ -168,21 +171,25 @@ macro_rules! ensure_format {
 ///     forensic_rs::ensure_min_length!(10,  5, "5 !>= 10");
 ///     Ok(())
 /// }
-/// assert!(test().unwrap_err().to_string().contains("5 !>= 10"))
+/// assert!(test().unwrap_err().to_string().contains("5 !>= 10"));
 /// ```
 #[macro_export]
 macro_rules! ensure_min_length {
     ($min_length:expr, $length:expr, $operation:literal) => {
         if ($length as usize) < ($min_length as usize) {
-            return Err($crate::err::ForensicError::too_small($operation, $length as _, $min_length as _));
+            return Err($crate::err::ForensicError::too_small(
+                $operation,
+                $length as _,
+                $min_length as _,
+            ));
         }
     };
 }
 
 /// Macro for ensuring a value is less than a maximum
-/// 
+///
 /// length < max_length
-/// 
+///
 /// ensure_max_length!(max_length, length, operation);
 /// ```rust
 /// fn test() -> forensic_rs::err::ForensicResult<()> {
@@ -192,13 +199,17 @@ macro_rules! ensure_min_length {
 ///     forensic_rs::ensure_max_length!(10, 20, "10 !> 20");
 ///     Ok(())
 /// }
-/// assert!(test().unwrap_err().to_string().contains("10 !> 20"))
+/// assert!(test().unwrap_err().to_string().contains("10 !> 20"));
 /// ```
 #[macro_export]
 macro_rules! ensure_max_length {
     ($max_length:literal, $length:literal, $operation:literal) => {
-        if ($length as usize) >= ($max_length as usize)  {
-            return Err($crate::err::ForensicError::too_big($operation, $length, $max_length));
+        if ($length as usize) >= ($max_length as usize) {
+            return Err($crate::err::ForensicError::too_big(
+                $operation,
+                $length,
+                $max_length,
+            ));
         }
     };
 }
@@ -208,7 +219,9 @@ macro_rules! ensure_max_length {
 macro_rules! ensure_version {
     ($found:expr, $expected:expr, $artifact:literal) => {
         if $found != $expected {
-            return Err($crate::err::ForensicError::invalid_version($artifact, $expected, $found));
+            return Err($crate::err::ForensicError::invalid_version(
+                $artifact, $expected, $found,
+            ));
         }
     };
 }
@@ -251,7 +264,6 @@ macro_rules! registry_value_not_found {
         $crate::err::ForensicError::registry_value_not_found($key_path, $value_name)
     };
 }
-
 
 use crate::{prelude::RegHiveKey, scow::SCow};
 
@@ -321,7 +333,7 @@ use crate::{prelude::RegHiveKey, scow::SCow};
 /// // Format validation
 /// fn validate_pe_signature(data: &[u8]) -> ForensicResult<()> {
 ///     if &data[0..2] != b"MZ" {
-///         return Err(ForensicError::invalid_magic("PE", "MZ", 
+///         return Err(ForensicError::invalid_magic("PE", "MZ",
 ///             format!("{:02X}{:02X}", data[0], data[1])));
 ///     }
 ///     Ok(())
@@ -339,53 +351,55 @@ use crate::{prelude::RegHiveKey, scow::SCow};
 #[derive(Debug)]
 pub enum ForensicError {
     /// Buffer access and bounds checking errors
-    /// 
+    ///
     /// These are the most common errors in binary parsing, occurring when there's
     /// insufficient data or invalid memory access patterns.
     Buffer(BufferError),
-    
+
     /// File format validation and parsing errors
-    /// 
+    ///
     /// Used when parsing structured data formats like PE files, registry hives, etc.
     Format(FormatError),
-    
+
     /// Compression and decompression errors
-    /// 
+    ///
     /// Errors from compression algorithms like LZNT1, Xpress, etc.
     Compression(CompressionError),
-    
+
     /// File system and data access errors
-    /// 
+    ///
     /// Issues with file availability, permissions, and data retrieval.
     DataAccess(DataAccessError),
-    
+
     /// Windows registry-specific errors
-    /// 
+    ///
     /// Specialized errors for registry operations with rich contextual information.
     Registry(RegistryError),
-    
+
     /// Type conversion and casting errors
-    /// 
+    ///
     /// Failures when converting between different data types.
     Cast(CastError),
-    
+
     /// Timestamp validation and conversion errors
-    /// 
+    ///
     /// Issues with time-related data parsing and validation.
     Timestamp(TimestampError),
-    
+
     /// Standard I/O operation errors
-    /// 
+    ///
     /// Wrapper for `std::io::Error` with additional context.
     Io {
         /// The underlying I/O error kind
         kind: std::io::ErrorKind,
         /// Additional context about the operation that failed
         context: SCow,
+        /// Original I/O error, when one is available.
+        source: Option<std::sync::Arc<std::io::Error>>,
     },
-    
+
     /// Generic fallback for uncategorized errors
-    /// 
+    ///
     /// Use this sparingly - prefer specific error types when possible.
     Other {
         /// Category identifier for the error type
@@ -436,7 +450,7 @@ pub enum BufferError {
         /// Description of the data type being read (e.g., "PE header", "DWORD")
         data_type: &'static str,
     },
-    
+
     /// Attempted to access buffer at position beyond its bounds
     ///
     /// Used when a specific position is accessed that exceeds the buffer size.
@@ -446,10 +460,10 @@ pub enum BufferError {
         /// The actual size of the buffer
         buffer_size: usize,
     },
-    
+
     /// Invalid range specification for buffer access
     ///
-    /// Used when range parameters don't make sense (e.g., start > end, 
+    /// Used when range parameters don't make sense (e.g., start > end,
     /// or range extends beyond buffer).
     InvalidRange {
         /// Start position of the range
@@ -464,18 +478,38 @@ pub enum BufferError {
 impl std::fmt::Display for BufferError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BufferError::TooSmall { required, available, data_type } => {
-                write!(f, "Buffer too small for {}: need {} bytes, only {} available", 
-                       data_type, required, available)
-            },
-            BufferError::OutOfBounds { position, buffer_size } => {
-                write!(f, "Buffer access out of bounds: position {} exceeds buffer size {}", 
-                       position, buffer_size)
-            },
-            BufferError::InvalidRange { start, end, buffer_size } => {
-                write!(f, "Invalid buffer range [{}, {}): exceeds buffer size {}", 
-                       start, end, buffer_size)
-            },
+            BufferError::TooSmall {
+                required,
+                available,
+                data_type,
+            } => {
+                write!(
+                    f,
+                    "Buffer too small for {}: need {} bytes, only {} available",
+                    data_type, required, available
+                )
+            }
+            BufferError::OutOfBounds {
+                position,
+                buffer_size,
+            } => {
+                write!(
+                    f,
+                    "Buffer access out of bounds: position {} exceeds buffer size {}",
+                    position, buffer_size
+                )
+            }
+            BufferError::InvalidRange {
+                start,
+                end,
+                buffer_size,
+            } => {
+                write!(
+                    f,
+                    "Invalid buffer range [{}, {}): exceeds buffer size {}",
+                    start, end, buffer_size
+                )
+            }
         }
     }
 }
@@ -493,7 +527,7 @@ impl std::fmt::Display for BufferError {
 /// fn parse_pe_header(data: &[u8]) -> ForensicResult<PEHeader> {
 ///     // Check magic bytes
 ///     if &data[0..2] != b"MZ" {
-///         return Err(ForensicError::invalid_magic("PE", "MZ", 
+///         return Err(ForensicError::invalid_magic("PE", "MZ",
 ///             format!("{:02X} {:02X}", data[0], data[1])));
 ///     }
 ///     
@@ -506,7 +540,7 @@ impl std::fmt::Display for BufferError {
 ///     // Check for corruption
 ///     let checksum_pos = 64;
 ///     if data.len() < checksum_pos + 4 {
-///         return Err(ForensicError::format_corrupted("PE", checksum_pos as u64, 
+///         return Err(ForensicError::format_corrupted("PE", checksum_pos as u64,
 ///             "Missing checksum field".into()));
 ///     }
 ///     
@@ -524,7 +558,7 @@ pub enum FormatError {
         /// Detailed description of what validation failed
         reason: SCow,
     },
-    
+
     /// File version doesn't match expectations
     ///
     /// Used when the file version field doesn't match what the parser expects.
@@ -536,7 +570,7 @@ pub enum FormatError {
         /// The version number found in the file
         found: u32,
     },
-    
+
     /// Magic bytes/signature doesn't match expectations
     ///
     /// Used when file signatures or magic values don't match the expected format.
@@ -548,7 +582,7 @@ pub enum FormatError {
         /// The actual magic bytes found in the file
         found: SCow,
     },
-    
+
     /// Data appears corrupted at a specific location
     ///
     /// Used when the file structure suggests corruption or truncation.
@@ -562,26 +596,48 @@ pub enum FormatError {
     },
 }
 
-
-
 impl std::fmt::Display for FormatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FormatError::Invalid { artifact_type, reason } => {
+            FormatError::Invalid {
+                artifact_type,
+                reason,
+            } => {
                 write!(f, "Invalid {} format: {}", artifact_type, reason)
-            },
-            FormatError::InvalidVersion { artifact_type, expected, found } => {
-                write!(f, "Invalid {} version: expected {}, found {}", 
-                       artifact_type, expected, found)
-            },
-            FormatError::InvalidMagic { artifact_type, expected, found } => {
-                write!(f, "Invalid {} magic bytes: expected '{}', found '{}'", 
-                       artifact_type, expected, found)
-            },
-            FormatError::Corrupted { artifact_type, position, reason } => {
-                write!(f, "Corrupted {} at position {}: {}", 
-                       artifact_type, position, reason)
-            },
+            }
+            FormatError::InvalidVersion {
+                artifact_type,
+                expected,
+                found,
+            } => {
+                write!(
+                    f,
+                    "Invalid {} version: expected {}, found {}",
+                    artifact_type, expected, found
+                )
+            }
+            FormatError::InvalidMagic {
+                artifact_type,
+                expected,
+                found,
+            } => {
+                write!(
+                    f,
+                    "Invalid {} magic bytes: expected '{}', found '{}'",
+                    artifact_type, expected, found
+                )
+            }
+            FormatError::Corrupted {
+                artifact_type,
+                position,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "Corrupted {} at position {}: {}",
+                    artifact_type, position, reason
+                )
+            }
         }
     }
 }
@@ -599,13 +655,13 @@ impl std::fmt::Display for FormatError {
 ///
 /// fn decompress_lznt1(compressed: &[u8], output: &mut [u8]) -> ForensicResult<usize> {
 ///     if compressed.len() < 4 {
-///         return Err(ForensicError::too_small("LZNT1 decompression", 
+///         return Err(ForensicError::too_small("LZNT1 decompression",
 ///             compressed.len() as u64, 4));
 ///     }
 ///     
 ///     let offset = read_offset_from_header(compressed)?;
 ///     if offset < 0 || offset as u64 > compressed.len() as u64 {
-///         return Err(ForensicError::invalid_offset("LZNT1 decompression", 
+///         return Err(ForensicError::invalid_offset("LZNT1 decompression",
 ///             offset, compressed.len() as u64));
 ///     }
 ///     
@@ -625,7 +681,7 @@ pub enum CompressionError {
         /// Detailed description of the algorithm error
         reason: SCow,
     },
-    
+
     /// Invalid offset encountered during compression operations
     ///
     /// Used when offset values in compressed data are invalid or out of bounds.
@@ -637,7 +693,7 @@ pub enum CompressionError {
         /// Size of the file/buffer being processed
         file_size: u64,
     },
-    
+
     /// Length value exceeds maximum allowed
     ///
     /// Used when compression parameters or data lengths are too large.
@@ -649,7 +705,7 @@ pub enum CompressionError {
         /// Maximum allowed length
         max_length: u64,
     },
-    
+
     /// Length value is below minimum required
     ///
     /// Used when compression parameters or data lengths are too small.
@@ -668,19 +724,40 @@ impl std::fmt::Display for CompressionError {
         match self {
             CompressionError::AlgorithmError { algorithm, reason } => {
                 write!(f, "{} compression error: {}", algorithm, reason)
-            },
-            CompressionError::InvalidOffset { operation, offset, file_size } => {
-                write!(f, "Invalid offset {} during {} (file size: {})", 
-                       offset, operation, file_size)
-            },
-            CompressionError::TooBig { operation, length, max_length } => {
-                write!(f, "Invalid length {} during {}: exceeds maximum {}", 
-                       length, operation, max_length)
-            },
-            CompressionError::TooSmall { operation, length, min_length } => {
-                write!(f, "Invalid length {} during {}: less than minimum {}", 
-                       length, operation, min_length)
-            },
+            }
+            CompressionError::InvalidOffset {
+                operation,
+                offset,
+                file_size,
+            } => {
+                write!(
+                    f,
+                    "Invalid offset {} during {} (file size: {})",
+                    offset, operation, file_size
+                )
+            }
+            CompressionError::TooBig {
+                operation,
+                length,
+                max_length,
+            } => {
+                write!(
+                    f,
+                    "Invalid length {} during {}: exceeds maximum {}",
+                    length, operation, max_length
+                )
+            }
+            CompressionError::TooSmall {
+                operation,
+                length,
+                min_length,
+            } => {
+                write!(
+                    f,
+                    "Invalid length {} during {}: less than minimum {}",
+                    length, operation, min_length
+                )
+            }
         }
     }
 }
@@ -700,18 +777,18 @@ impl std::fmt::Display for CompressionError {
 ///         .map_err(|_| ForensicError::path_not_found(path))?;
 ///     
 ///     if metadata.len() > 100_000_000 {
-///         return Err(ForensicError::file_size_error("file_loading", 
+///         return Err(ForensicError::file_size_error("file_loading",
 ///             100_000_000, metadata.len()));
 ///     }
 ///     
 ///     std::fs::read(path)
-///         .map_err(|_| ForensicError::access_denied(path.into(), 
+///         .map_err(|_| ForensicError::access_denied(path.into(),
 ///             "Permission denied".into()))
 /// }
 ///
 /// fn parse_directory_entries(entries: &[u8]) -> ForensicResult<Vec<Entry>> {
 ///     if entries.is_empty() {
-///         return Err(ForensicError::missing_data("directory_entries", 
+///         return Err(ForensicError::missing_data("directory_entries",
 ///             "Directory contains no entries".into()));
 ///     }
 ///     // ... parsing logic
@@ -728,7 +805,7 @@ pub enum DataAccessError {
         /// Additional context about what was missing and where
         context: SCow,
     },
-    
+
     /// File size exceeds allowed limits
     ///
     /// Used when files are larger than expected or allowed by the parser.
@@ -740,7 +817,7 @@ pub enum DataAccessError {
         /// Actual size of the file
         actual_size: u64,
     },
-    
+
     /// File or directory path not found
     ///
     /// Used when filesystem paths don't exist.
@@ -748,7 +825,7 @@ pub enum DataAccessError {
         /// The path that was not found
         path: String,
     },
-    
+
     /// Access denied to a resource
     ///
     /// Used when permission issues prevent accessing a resource.
@@ -758,11 +835,11 @@ pub enum DataAccessError {
         /// Additional context about the access denial
         context: SCow,
     },
-    
+
     /// No more data available for iteration
     ///
     /// Used when iterating over data sources and reaching the end.
-    NoMoreData
+    NoMoreData,
 }
 
 impl std::fmt::Display for DataAccessError {
@@ -770,20 +847,27 @@ impl std::fmt::Display for DataAccessError {
         match self {
             DataAccessError::Missing { data_type, context } => {
                 write!(f, "Missing {}: {}", data_type, context)
-            },
-            DataAccessError::FileSizeExceeded { operation, max_size, actual_size } => {
-                write!(f, "File size error during {}: {} bytes exceeds maximum {}", 
-                       operation, actual_size, max_size)
-            },
+            }
+            DataAccessError::FileSizeExceeded {
+                operation,
+                max_size,
+                actual_size,
+            } => {
+                write!(
+                    f,
+                    "File size error during {}: {} bytes exceeds maximum {}",
+                    operation, actual_size, max_size
+                )
+            }
             DataAccessError::PathNotFound { path } => {
                 write!(f, "Path not found: {}", path)
-            },
+            }
             DataAccessError::AccessDenied { resource, context } => {
                 write!(f, "Access denied to {}: {}", resource, context)
-            },
+            }
             DataAccessError::NoMoreData => {
                 write!(f, "No more content/data/files")
-            },
+            }
         }
     }
 }
@@ -827,23 +911,23 @@ pub enum RegistryError {
     /// Used when attempting to access a registry key that doesn't exist.
     KeyNotFound {
         /// The registry hive key (e.g., HKEY_LOCAL_MACHINE)
-        key : RegHiveKey,
+        key: RegHiveKey,
         /// Optional sub-path within the hive
         key_path: Option<SCow>,
     },
-    
+
     /// Registry value not found within a key
     ///
     /// Used when attempting to access a registry value that doesn't exist.
     ValueNotFound {
         /// The registry hive key where the value was expected
-        key : RegHiveKey,
+        key: RegHiveKey,
         /// Optional sub-path within the hive  
         key_path: Option<SCow>,
         /// Name of the value that was not found
         value_name: SCow,
     },
-    
+
     /// Registry value has wrong data type
     ///
     /// Used when a registry value exists but has a different type than expected.
@@ -853,15 +937,15 @@ pub enum RegistryError {
         /// The actual type found in the registry
         found: SCow,
     },
-    
+
     /// Invalid registry handle encountered
     ///
     /// Used when registry handle values are invalid or corrupted.
-    InvalidHandle { 
+    InvalidHandle {
         /// The invalid handle value
-        handle : i64 
+        handle: i64,
     },
-    
+
     /// Registry cell structure validation failed
     ///
     /// Used when parsing registry hive cells and the structure is invalid.
@@ -889,29 +973,39 @@ impl<T> From<RegistryError> for ForensicResult<T> {
 impl std::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RegistryError::KeyNotFound { key, key_path } => {
-                match key_path {
-                    Some(v) => write!(f, "Registry key not found: {}\\{}", key, v),
-                    None => write!(f, "Registry key not found: {}", key)
-                }
+            RegistryError::KeyNotFound { key, key_path } => match key_path {
+                Some(v) => write!(f, "Registry key not found: {}\\{}", key, v),
+                None => write!(f, "Registry key not found: {}", key),
             },
-            RegistryError::ValueNotFound { key, key_path, value_name } => {
-                match key_path {
-                    Some(v) => write!(f, "Registry value {} not found: {}\\{}",value_name, key, v),
-                    None => write!(f, "Registry value {} not found: {}",value_name, key),
-                }
+            RegistryError::ValueNotFound {
+                key,
+                key_path,
+                value_name,
+            } => match key_path {
+                Some(v) => write!(f, "Registry value {} not found: {}\\{}", value_name, key, v),
+                None => write!(f, "Registry value {} not found: {}", value_name, key),
             },
             RegistryError::InvalidValueType { expected, found } => {
-                write!(f, "Invalid registry value type: expected {}, found {}", 
-                       expected, found)
-            },
-            RegistryError::InvalidHandle {handle} => {
+                write!(
+                    f,
+                    "Invalid registry value type: expected {}, found {}",
+                    expected, found
+                )
+            }
+            RegistryError::InvalidHandle { handle } => {
                 write!(f, "Invalid handle {}", handle)
-            },
-            RegistryError::CellStructure { cell_type, offset, expected_type } => {
-                write!(f, "Invalid {} type at offset={}. Expected {}", 
-                       cell_type, offset, expected_type)
-            },
+            }
+            RegistryError::CellStructure {
+                cell_type,
+                offset,
+                expected_type,
+            } => {
+                write!(
+                    f,
+                    "Invalid {} type at offset={}. Expected {}",
+                    cell_type, offset, expected_type
+                )
+            }
         }
     }
 }
@@ -936,7 +1030,7 @@ impl std::fmt::Display for RegistryError {
 ///                 Ok(*val as u32)
 ///             }
 ///         },
-///         other => Err(ForensicError::cast_error("RegistryValue", "u32", 
+///         other => Err(ForensicError::cast_error("RegistryValue", "u32",
 ///             format!("Cannot convert {:?} to u32", other).into()))
 ///     }
 /// }
@@ -954,7 +1048,7 @@ pub enum CastError {
         /// Explanation of why the conversion failed
         reason: SCow,
     },
-    
+
     /// Value is outside the valid range for the target type
     ///
     /// Used when the value could theoretically be converted but is too large/small.
@@ -969,12 +1063,24 @@ pub enum CastError {
 impl std::fmt::Display for CastError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CastError::InvalidConversion { from_type, to_type, reason } => {
-                write!(f, "Cannot cast from {} to {}: {}", from_type, to_type, reason)
-            },
+            CastError::InvalidConversion {
+                from_type,
+                to_type,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "Cannot cast from {} to {}: {}",
+                    from_type, to_type, reason
+                )
+            }
             CastError::ValueOutOfRange { value, target_type } => {
-                write!(f, "Value '{}' is out of range for type {}", value, target_type)
-            },
+                write!(
+                    f,
+                    "Value '{}' is out of range for type {}",
+                    value, target_type
+                )
+            }
         }
     }
 }
@@ -994,7 +1100,7 @@ impl std::fmt::Display for CastError {
 ///     let filetime_epoch = 116444736000000000u64; // 100-nanosecond intervals
 ///     
 ///     if filetime < filetime_epoch {
-///         return Err(ForensicError::illegal_timestamp(filetime, 
+///         return Err(ForensicError::illegal_timestamp(filetime,
 ///             "FILETIME before epoch (1601-01-01)".into()));
 ///     }
 ///     
@@ -1018,7 +1124,7 @@ pub enum TimestampError {
         /// Explanation of why the timestamp is invalid
         reason: SCow,
     },
-    
+
     /// Timestamp is outside acceptable range
     ///
     /// Used when timestamp values are too large or small for the context.
@@ -1037,10 +1143,14 @@ impl std::fmt::Display for TimestampError {
         match self {
             TimestampError::Invalid { timestamp, reason } => {
                 write!(f, "Invalid timestamp {}: {}", timestamp, reason)
-            },
-            TimestampError::OutOfRange { timestamp, min, max } => {
+            }
+            TimestampError::OutOfRange {
+                timestamp,
+                min,
+                max,
+            } => {
                 write!(f, "Timestamp {} out of range [{}, {}]", timestamp, min, max)
-            },
+            }
         }
     }
 }
@@ -1064,11 +1174,11 @@ impl ForensicError {
     pub fn no_more_data() -> Self {
         Self::DataAccess(DataAccessError::NoMoreData)
     }
-    
+
     // ========================================================================
     // Buffer Error Constructors
     // ========================================================================
-    
+
     /// Creates a buffer too small error
     ///
     /// Use this when attempting to read more data than is available in a buffer.
@@ -1090,9 +1200,13 @@ impl ForensicError {
     /// }
     /// ```
     pub fn buffer_too_small(required: usize, available: usize, data_type: &'static str) -> Self {
-        Self::Buffer(BufferError::TooSmall { required, available, data_type })
+        Self::Buffer(BufferError::TooSmall {
+            required,
+            available,
+            data_type,
+        })
     }
-    
+
     /// Creates a buffer out of bounds error
     ///
     /// Use this when accessing a specific position beyond the buffer's bounds.
@@ -1113,9 +1227,12 @@ impl ForensicError {
     /// }
     /// ```
     pub fn buffer_out_of_bounds(position: usize, buffer_size: usize) -> Self {
-        Self::Buffer(BufferError::OutOfBounds { position, buffer_size })
+        Self::Buffer(BufferError::OutOfBounds {
+            position,
+            buffer_size,
+        })
     }
-    
+
     /// Creates a buffer invalid range error
     ///
     /// Use this when range parameters don't make sense (start > end, range too large, etc.).
@@ -1137,13 +1254,17 @@ impl ForensicError {
     /// }
     /// ```
     pub fn buffer_invalid_range(start: usize, end: usize, buffer_size: usize) -> Self {
-        Self::Buffer(BufferError::InvalidRange { start, end, buffer_size })
+        Self::Buffer(BufferError::InvalidRange {
+            start,
+            end,
+            buffer_size,
+        })
     }
-    
+
     // ========================================================================
-    // Format Error Constructors  
+    // Format Error Constructors
     // ========================================================================
-    
+
     /// Creates a general format validation error
     ///
     /// Use this for format-specific validation that doesn't fit other categories.
@@ -1164,9 +1285,12 @@ impl ForensicError {
     /// }
     /// ```
     pub fn invalid_format(artifact_type: &'static str, reason: impl Into<SCow>) -> Self {
-        Self::Format(FormatError::Invalid { artifact_type, reason : reason.into() })
+        Self::Format(FormatError::Invalid {
+            artifact_type,
+            reason: reason.into(),
+        })
     }
-    
+
     /// Creates a version mismatch error
     ///
     /// Use this when file versions don't match parser expectations.
@@ -1189,9 +1313,13 @@ impl ForensicError {
     /// }
     /// ```
     pub fn invalid_version(artifact_type: &'static str, expected: u32, found: u32) -> Self {
-        Self::Format(FormatError::InvalidVersion { artifact_type, expected, found })
+        Self::Format(FormatError::InvalidVersion {
+            artifact_type,
+            expected,
+            found,
+        })
     }
-    
+
     /// Creates a magic bytes/signature mismatch error
     ///
     /// Use this when file signatures don't match expected values.
@@ -1207,16 +1335,24 @@ impl ForensicError {
     ///
     /// fn validate_pe_signature(data: &[u8]) -> ForensicResult<()> {
     ///     if &data[0..2] != b"MZ" {
-    ///         return Err(ForensicError::invalid_magic("PE", "MZ", 
+    ///         return Err(ForensicError::invalid_magic("PE", "MZ",
     ///             format!("{:02X}{:02X}", data[0], data[1])));
     ///     }
     ///     Ok(())
     /// }
     /// ```
-    pub fn invalid_magic(artifact_type: &'static str, expected: &'static str, found: impl Into<SCow>) -> Self {
-        Self::Format(FormatError::InvalidMagic { artifact_type, expected, found : found.into() })
+    pub fn invalid_magic(
+        artifact_type: &'static str,
+        expected: &'static str,
+        found: impl Into<SCow>,
+    ) -> Self {
+        Self::Format(FormatError::InvalidMagic {
+            artifact_type,
+            expected,
+            found: found.into(),
+        })
     }
-    
+
     /// Creates a format corruption error at a specific location
     ///
     /// Use this when data appears corrupted or truncated.
@@ -1232,20 +1368,24 @@ impl ForensicError {
     ///
     /// fn parse_section_table(data: &[u8], offset: u64) -> ForensicResult<Vec<Section>> {
     ///     if (offset as usize + 40) > data.len() {
-    ///         return Err(ForensicError::format_corrupted("PE", offset, 
+    ///         return Err(ForensicError::format_corrupted("PE", offset,
     ///             "Section table extends beyond file".into()));
     ///     }
     ///     // ... parse sections
     /// }
     /// ```
     pub fn format_corrupted(artifact_type: &'static str, position: u64, reason: SCow) -> Self {
-        Self::Format(FormatError::Corrupted { artifact_type, position, reason })
+        Self::Format(FormatError::Corrupted {
+            artifact_type,
+            position,
+            reason,
+        })
     }
-    
+
     // ========================================================================
     // Registry Error Constructors (Simplified)
     // ========================================================================
-    
+
     /// Creates a registry cell parsing error
     ///
     /// Use this when parsing individual registry cells (nodes) fails.
@@ -1260,7 +1400,7 @@ impl ForensicError {
     ///
     /// fn parse_key_node(data: &[u8]) -> ForensicResult<KeyNode> {
     ///     if data.len() < 20 {
-    ///         return Err(ForensicError::registry_cell_error("key_node", 
+    ///         return Err(ForensicError::registry_cell_error("key_node",
     ///             "Cell too small for key node header"));
     ///     }
     ///     // ... parse key node
@@ -1272,13 +1412,13 @@ impl ForensicError {
             reason: reason.into(),
         })
     }
-    
+
     /// Creates a registry hive parsing error  
     ///
     /// Use this when parsing registry hive structures fails.
     ///
     /// # Parameters
-    /// - `hive_type`: Type of hive (e.g., "SYSTEM", "SAM", "SOFTWARE") 
+    /// - `hive_type`: Type of hive (e.g., "SYSTEM", "SAM", "SOFTWARE")
     /// - `reason`: Description of why the hive parsing failed
     ///
     /// # Examples
@@ -1299,11 +1439,11 @@ impl ForensicError {
             reason: reason.into(),
         })
     }
-    
+
     // ========================================================================
     // Compression Error Constructors
     // ========================================================================
-    
+
     /// Creates a compression algorithm error
     ///
     /// Use this for algorithm-specific errors during compression/decompression.
@@ -1318,16 +1458,19 @@ impl ForensicError {
     ///
     /// fn decompress_lznt1(data: &[u8]) -> ForensicResult<Vec<u8>> {
     ///     if data[0] & 0x8000 == 0 {
-    ///         return Err(ForensicError::compression_error("LZNT1", 
+    ///         return Err(ForensicError::compression_error("LZNT1",
     ///             "Invalid compression flag in header"));
     ///     }
     ///     // ... decompression logic
     /// }
     /// ```
     pub fn compression_error(algorithm: &'static str, reason: impl Into<SCow>) -> Self {
-        Self::Compression(CompressionError::AlgorithmError { algorithm, reason : reason.into() })
+        Self::Compression(CompressionError::AlgorithmError {
+            algorithm,
+            reason: reason.into(),
+        })
     }
-    
+
     /// Creates an invalid offset error for compression operations
     ///
     /// Use this when offset values in compressed data are invalid.
@@ -1349,9 +1492,13 @@ impl ForensicError {
     /// }
     /// ```
     pub fn invalid_offset(operation: &'static str, offset: i64, file_size: u64) -> Self {
-        Self::Compression(CompressionError::InvalidOffset { operation, offset, file_size })
+        Self::Compression(CompressionError::InvalidOffset {
+            operation,
+            offset,
+            file_size,
+        })
     }
-    
+
     /// Creates a "length too big" error for compression operations
     ///
     /// Use this when length values exceed maximum allowed sizes.
@@ -1374,9 +1521,13 @@ impl ForensicError {
     /// }
     /// ```
     pub fn too_big(operation: &'static str, length: u64, max_length: u64) -> Self {
-        Self::Compression(CompressionError::TooBig { operation, length, max_length })
+        Self::Compression(CompressionError::TooBig {
+            operation,
+            length,
+            max_length,
+        })
     }
-    
+
     /// Creates a "length too small" error for compression operations
     ///
     /// Use this when length values are below minimum requirements.
@@ -1388,25 +1539,29 @@ impl ForensicError {
     ///
     /// # Examples
     /// ```rust
-    /// use forensic_rs::prelude::*; 
+    /// use forensic_rs::prelude::*;
     ///
     /// fn validate_compressed_data(data: &[u8]) -> ForensicResult<()> {
     ///     const MIN_COMPRESSED_SIZE: u64 = 16; // Minimum for headers
     ///     if (data.len() as u64) < MIN_COMPRESSED_SIZE {
-    ///         return Err(ForensicError::too_small("compression parsing", 
+    ///         return Err(ForensicError::too_small("compression parsing",
     ///             data.len() as u64, MIN_COMPRESSED_SIZE));
     ///     }
     ///     Ok(())
     /// }
     /// ```
     pub fn too_small(operation: &'static str, length: u64, min_length: u64) -> Self {
-        Self::Compression(CompressionError::TooSmall { operation, length, min_length })
+        Self::Compression(CompressionError::TooSmall {
+            operation,
+            length,
+            min_length,
+        })
     }
-    
+
     // ========================================================================
     // Data Access Error Constructors
     // ========================================================================
-    
+
     /// Creates a missing data error
     ///
     /// Use this when expected data is not available or not found.
@@ -1421,14 +1576,14 @@ impl ForensicError {
     ///
     /// fn get_file_metadata(path: &str) -> ForensicResult<Metadata> {
     ///     std::fs::metadata(path)
-    ///         .map_err(|_| ForensicError::missing_data("file_metadata", 
+    ///         .map_err(|_| ForensicError::missing_data("file_metadata",
     ///             format!("Could not read metadata for {}", path).into()))
     /// }
     /// ```
     pub fn missing_data(data_type: &'static str, context: SCow) -> Self {
         Self::DataAccess(DataAccessError::Missing { data_type, context })
     }
-    
+
     /// Creates a file size error
     ///
     /// Use this when files exceed allowed size limits.
@@ -1447,16 +1602,20 @@ impl ForensicError {
     ///     const MAX_SIZE: u64 = 10_000_000; // 10MB
     ///     
     ///     if metadata.len() > MAX_SIZE {
-    ///         return Err(ForensicError::file_size_error("small_file_loading", 
+    ///         return Err(ForensicError::file_size_error("small_file_loading",
     ///             MAX_SIZE, metadata.len()));
     ///     }
     ///     std::fs::read(path).map_err(Into::into)
     /// }
     /// ```
     pub fn file_size_error(operation: &'static str, max_size: u64, actual_size: u64) -> Self {
-        Self::DataAccess(DataAccessError::FileSizeExceeded { operation, max_size, actual_size })
+        Self::DataAccess(DataAccessError::FileSizeExceeded {
+            operation,
+            max_size,
+            actual_size,
+        })
     }
-    
+
     /// Creates a path not found error
     ///
     /// Use this when filesystem paths don't exist.
@@ -1478,7 +1637,7 @@ impl ForensicError {
     pub fn path_not_found(path: String) -> Self {
         Self::DataAccess(DataAccessError::PathNotFound { path })
     }
-    
+
     /// Creates an access denied error
     ///
     /// Use this when permission issues prevent accessing resources.
@@ -1494,20 +1653,23 @@ impl ForensicError {
     /// fn read_protected_file(path: &str) -> ForensicResult<Vec<u8>> {
     ///     std::fs::read(path)
     ///         .map_err(|e| match e.kind() {
-    ///             std::io::ErrorKind::PermissionDenied => 
+    ///             std::io::ErrorKind::PermissionDenied =>
     ///                 ForensicError::access_denied(path, "Permission denied"),
     ///             _ => ForensicError::from(e)
     ///         })
     /// }
     /// ```
     pub fn access_denied(resource: impl Into<SCow>, context: impl Into<SCow>) -> Self {
-        Self::DataAccess(DataAccessError::AccessDenied { resource : resource.into(), context: context.into() })
+        Self::DataAccess(DataAccessError::AccessDenied {
+            resource: resource.into(),
+            context: context.into(),
+        })
     }
-    
+
     // ========================================================================
     // Registry Error Constructors (High-Level)
     // ========================================================================
-    
+
     /// Creates a registry key not found error
     ///
     /// Use this when attempting to access a registry key that doesn't exist.
@@ -1525,10 +1687,10 @@ impl ForensicError {
     ///     Err(ForensicError::registry_key_not_found(hive, Some(path.into())))
     /// }
     /// ```
-    pub fn registry_key_not_found(key : RegHiveKey, key_path :Option<SCow>) -> Self {
+    pub fn registry_key_not_found(key: RegHiveKey, key_path: Option<SCow>) -> Self {
         Self::Registry(RegistryError::KeyNotFound { key, key_path })
     }
-    
+
     /// Creates a registry value not found error
     ///
     /// Use this when attempting to access a registry value that doesn't exist.
@@ -1551,10 +1713,18 @@ impl ForensicError {
     ///     ))
     /// }
     /// ```
-    pub fn registry_value_not_found(key : RegHiveKey, key_path: Option<SCow>, value_name: impl Into<SCow>) -> Self {
-        Self::Registry(RegistryError::ValueNotFound { key, key_path, value_name : value_name.into() })
+    pub fn registry_value_not_found(
+        key: RegHiveKey,
+        key_path: Option<SCow>,
+        value_name: impl Into<SCow>,
+    ) -> Self {
+        Self::Registry(RegistryError::ValueNotFound {
+            key,
+            key_path,
+            value_name: value_name.into(),
+        })
     }
-    
+
     /// Creates a registry value type validation error
     ///
     /// Use this when a registry value exists but has the wrong data type.
@@ -1570,15 +1740,18 @@ impl ForensicError {
     /// fn get_dword_value(value: &RegistryValue) -> ForensicResult<u32> {
     ///     match value {
     ///         RegistryValue::DWord(val) => Ok(*val),
-    ///         other => Err(ForensicError::registry_invalid_type("REG_DWORD", 
+    ///         other => Err(ForensicError::registry_invalid_type("REG_DWORD",
     ///             format!("{:?}", other)))
     ///     }
     /// }
     /// ```
     pub fn registry_invalid_type(expected: &'static str, found: impl Into<SCow>) -> Self {
-        Self::Registry(RegistryError::InvalidValueType { expected, found : found.into() })
+        Self::Registry(RegistryError::InvalidValueType {
+            expected,
+            found: found.into(),
+        })
     }
-    
+
     /// Creates an invalid registry handle error
     ///
     /// Use this when registry handle values are invalid or corrupted.
@@ -1597,10 +1770,10 @@ impl ForensicError {
     ///     Ok(())
     /// }
     /// ```
-    pub fn registry_invalid_handle(handle : i64) -> Self {
-        Self::Registry(RegistryError::InvalidHandle {handle})
+    pub fn registry_invalid_handle(handle: i64) -> Self {
+        Self::Registry(RegistryError::InvalidHandle { handle })
     }
-    
+
     /// Creates a registry cell structure error
     ///
     /// Use this when parsing registry hive cells and the structure is invalid.
@@ -1622,14 +1795,22 @@ impl ForensicError {
     ///     // ... parse cell
     /// }
     /// ```
-    pub fn registry_cell_structure_error(cell_type: &'static str, offset: u64, expected_type: &'static str) -> Self {
-        Self::Registry(RegistryError::CellStructure { cell_type, offset, expected_type })
+    pub fn registry_cell_structure_error(
+        cell_type: &'static str,
+        offset: u64,
+        expected_type: &'static str,
+    ) -> Self {
+        Self::Registry(RegistryError::CellStructure {
+            cell_type,
+            offset,
+            expected_type,
+        })
     }
-    
+
     // ========================================================================
     // Cast Error Constructors
     // ========================================================================
-    
+
     /// Creates a type conversion error
     ///
     /// Use this for general type conversion failures.
@@ -1653,9 +1834,13 @@ impl ForensicError {
     /// }
     /// ```
     pub fn cast_error(from_type: &'static str, to_type: &'static str, reason: SCow) -> Self {
-        Self::Cast(CastError::InvalidConversion { from_type, to_type, reason })
+        Self::Cast(CastError::InvalidConversion {
+            from_type,
+            to_type,
+            reason,
+        })
     }
-    
+
     /// Creates a value out of range error
     ///
     /// Use this when values are too large/small for the target type.
@@ -1676,13 +1861,16 @@ impl ForensicError {
     /// }
     /// ```
     pub fn value_out_of_range(value: impl Into<SCow>, target_type: &'static str) -> Self {
-        Self::Cast(CastError::ValueOutOfRange { value : value.into(), target_type })
+        Self::Cast(CastError::ValueOutOfRange {
+            value: value.into(),
+            target_type,
+        })
     }
-    
+
     // ========================================================================
     // Timestamp Error Constructors
     // ========================================================================
-    
+
     /// Creates an invalid timestamp error
     ///
     /// Use this when timestamp values are malformed or don't make sense.
@@ -1698,7 +1886,7 @@ impl ForensicError {
     /// fn parse_filetime(filetime: u64) -> ForensicResult<SystemTime> {
     ///     const FILETIME_EPOCH: u64 = 116444736000000000;
     ///     if filetime < FILETIME_EPOCH {
-    ///         return Err(ForensicError::illegal_timestamp(filetime, 
+    ///         return Err(ForensicError::illegal_timestamp(filetime,
     ///             "FILETIME before epoch (1601-01-01)".into()));
     ///     }
     ///     // ... conversion logic
@@ -1707,7 +1895,7 @@ impl ForensicError {
     pub fn illegal_timestamp(timestamp: u64, reason: SCow) -> Self {
         Self::Timestamp(TimestampError::Invalid { timestamp, reason })
     }
-    
+
     /// Creates a timestamp out of range error
     ///
     /// Use this when timestamps are outside acceptable bounds.
@@ -1732,13 +1920,17 @@ impl ForensicError {
     /// }
     /// ```
     pub fn timestamp_out_of_range(timestamp: u64, min: u64, max: u64) -> Self {
-        Self::Timestamp(TimestampError::OutOfRange { timestamp, min, max })
+        Self::Timestamp(TimestampError::OutOfRange {
+            timestamp,
+            min,
+            max,
+        })
     }
-    
+
     // ========================================================================
     // I/O Error Constructors
     // ========================================================================
-    
+
     /// Creates an I/O error with additional context
     ///
     /// Use this to wrap standard I/O errors with forensic-specific context.
@@ -1753,18 +1945,35 @@ impl ForensicError {
     ///
     /// fn read_evidence_file(path: &str) -> ForensicResult<Vec<u8>> {
     ///     std::fs::read(path)
-    ///         .map_err(|e| ForensicError::io_error(e.kind(), 
+    ///         .map_err(|e| ForensicError::io_error(e.kind(),
     ///             format!("Failed to read evidence file: {}", path)))
     /// }
     /// ```
     pub fn io_error(kind: std::io::ErrorKind, context: impl Into<SCow>) -> Self {
-        Self::Io { kind, context: context.into() }
+        Self::Io {
+            kind,
+            context: context.into(),
+            source: None,
+        }
     }
-    
+
+    /// Creates an I/O error while preserving the original source error.
+    ///
+    /// Prefer this constructor, or `From<std::io::Error>`, when an I/O
+    /// operation has already produced an error. The source remains available
+    /// through [`std::error::Error::source`].
+    pub fn io_error_with_source(error: std::io::Error, context: impl Into<SCow>) -> Self {
+        Self::Io {
+            kind: error.kind(),
+            context: context.into(),
+            source: Some(std::sync::Arc::new(error)),
+        }
+    }
+
     // ========================================================================
     // Generic Error Constructors
     // ========================================================================
-    
+
     /// Creates a generic error for uncategorized cases
     ///
     /// Use this sparingly - prefer specific error types when possible.
@@ -1779,33 +1988,57 @@ impl ForensicError {
     ///
     /// fn some_operation() -> ForensicResult<()> {
     ///     // Only use this when no specific error type fits
-    ///     Err(ForensicError::other("custom_operation", 
+    ///     Err(ForensicError::other("custom_operation",
     ///         "Something unexpected happened".to_string()))
     /// }
     /// ```
     pub fn other(category: &'static str, message: String) -> Self {
         Self::Other { category, message }
     }
-    
+
     // Legacy compatibility helpers (deprecated - use specific methods instead)
-    #[deprecated(since = "0.15.0", note = "Use specific error constructors like invalid_format()")]
+    #[deprecated(
+        since = "0.15.0",
+        note = "Use specific error constructors like invalid_format()"
+    )]
     pub fn bad_format_str(err: &'static str) -> Self {
-        Self::Format(FormatError::Invalid { artifact_type: "unknown", reason: SCow::borrowed(err) })
+        Self::Format(FormatError::Invalid {
+            artifact_type: "unknown",
+            reason: SCow::borrowed(err),
+        })
     }
-    
-    #[deprecated(since = "0.15.0", note = "Use specific error constructors like invalid_format()")]
+
+    #[deprecated(
+        since = "0.15.0",
+        note = "Use specific error constructors like invalid_format()"
+    )]
     pub fn bad_format_string(err: String) -> Self {
-        Self::Other { category: "format", message: err }
+        Self::Other {
+            category: "format",
+            message: err,
+        }
     }
-    
-    #[deprecated(since = "0.15.0", note = "Use specific error constructors like missing_data()")]
+
+    #[deprecated(
+        since = "0.15.0",
+        note = "Use specific error constructors like missing_data()"
+    )]
     pub fn missing_str(err: &'static str) -> Self {
-        Self::DataAccess(DataAccessError::Missing { data_type: "unknown", context: SCow::borrowed(err) })
+        Self::DataAccess(DataAccessError::Missing {
+            data_type: "unknown",
+            context: SCow::borrowed(err),
+        })
     }
-    
-    #[deprecated(since = "0.15.0", note = "Use specific error constructors like missing_data()")]
+
+    #[deprecated(
+        since = "0.15.0",
+        note = "Use specific error constructors like missing_data()"
+    )]
     pub fn missing_string(err: String) -> Self {
-        Self::Other { category: "missing", message: err }
+        Self::Other {
+            category: "missing",
+            message: err,
+        }
     }
 }
 
@@ -1819,11 +2052,18 @@ impl Clone for ForensicError {
             Self::Registry(e) => Self::Registry(e.clone()),
             Self::Cast(e) => Self::Cast(e.clone()),
             Self::Timestamp(e) => Self::Timestamp(e.clone()),
-            Self::Io { kind, context } => {
-                Self::Io { kind: *kind, context: context.clone() }
+            Self::Io {
+                kind,
+                context,
+                source,
+            } => Self::Io {
+                kind: *kind,
+                context: context.clone(),
+                source: source.clone(),
             },
-            Self::Other { category, message } => {
-                Self::Other { category, message: message.clone() }
+            Self::Other { category, message } => Self::Other {
+                category,
+                message: message.clone(),
             },
         }
     }
@@ -1839,13 +2079,29 @@ impl PartialEq for ForensicError {
             (Self::Registry(e1), Self::Registry(e2)) => e1 == e2,
             (Self::Cast(e1), Self::Cast(e2)) => e1 == e2,
             (Self::Timestamp(e1), Self::Timestamp(e2)) => e1 == e2,
-            (Self::Io { kind: k1, context: c1 }, Self::Io { kind: k2, context: c2 }) => {
-                k1 == k2 && c1 == c2
-            },
-            (Self::Other { category: c1, message: m1 }, Self::Other { category: c2, message: m2 }) => {
-                c1 == c2 && m1 == m2
-            },
-            _ => false
+            (
+                Self::Io {
+                    kind: k1,
+                    context: c1,
+                    ..
+                },
+                Self::Io {
+                    kind: k2,
+                    context: c2,
+                    ..
+                },
+            ) => k1 == k2 && c1 == c2,
+            (
+                Self::Other {
+                    category: c1,
+                    message: m1,
+                },
+                Self::Other {
+                    category: c2,
+                    message: m2,
+                },
+            ) => c1 == c2 && m1 == m2,
+            _ => false,
         }
     }
 }
@@ -1854,31 +2110,36 @@ impl Eq for ForensicError {}
 
 impl From<std::io::Error> for ForensicError {
     fn from(e: std::io::Error) -> Self {
-        ForensicError::Io { 
-            kind: e.kind(), 
-            context: SCow::Borrowed("IO operation failed") 
-        }
+        ForensicError::io_error_with_source(e, SCow::Borrowed("IO operation failed"))
     }
 }
 
 impl From<String> for ForensicError {
     fn from(value: String) -> Self {
-        ForensicError::Other { category: "generic", message: value }
+        ForensicError::Other {
+            category: "generic",
+            message: value,
+        }
     }
 }
 
 impl From<&str> for ForensicError {
     fn from(value: &str) -> Self {
-        ForensicError::Other { category: "generic", message: value.to_string() }
+        ForensicError::Other {
+            category: "generic",
+            message: value.to_string(),
+        }
     }
 }
 
 impl From<&String> for ForensicError {
     fn from(value: &String) -> Self {
-        ForensicError::Other { category: "generic", message: value.clone() }
+        ForensicError::Other {
+            category: "generic",
+            message: value.clone(),
+        }
     }
 }
-
 
 impl std::fmt::Display for ForensicError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1890,43 +2151,25 @@ impl std::fmt::Display for ForensicError {
             ForensicError::Registry(err) => err.fmt(f),
             ForensicError::Cast(err) => err.fmt(f),
             ForensicError::Timestamp(err) => err.fmt(f),
-            ForensicError::Io { kind, context } => {
+            ForensicError::Io { kind, context, .. } => {
                 write!(f, "IO error ({:?}): {}", kind, context)
-            },
+            }
             ForensicError::Other { category, message } => {
                 write!(f, "{} error: {}", category, message)
-            },
+            }
         }
     }
 }
 
 impl std::error::Error for ForensicError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        // No inner errors in this implementation since we use structured data
-        None
-    }
-
-    fn description(&self) -> &str {
         match self {
-            ForensicError::Buffer(_) => "Buffer access error",
-            ForensicError::Format(_) => "Format validation error",
-            ForensicError::Compression(_) => "Compression/decompression error",
-            ForensicError::DataAccess(_) => "Data access error",
-            ForensicError::Registry(_) => "Registry error",
-            ForensicError::Cast(_) => "Type conversion error",
-            ForensicError::Timestamp(_) => "Timestamp validation error",
-            ForensicError::Io { .. } => "IO error",
-            ForensicError::Other { category, .. } => match *category {
-                "format" => "Format error",
-                "missing" => "Missing data",
-                "generic" => "Generic error",
-                _ => "Other error",
-            },
+            ForensicError::Io {
+                source: Some(source),
+                ..
+            } => Some(source.as_ref()),
+            _ => None,
         }
-    }
-
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        self.source()
     }
 }
 
@@ -1937,10 +2180,31 @@ fn error_compatible_with_anyhow() {
         Ok(value)
     }
     fn second_function() -> ForensicResult<u64> {
-        Err(ForensicError::invalid_format("prefetch", "Invalid prefetch format"))
+        Err(ForensicError::invalid_format(
+            "prefetch",
+            "Invalid prefetch format",
+        ))
     }
 
     let error = this_returns_error().unwrap_err();
     let frns_err = error.downcast_ref::<ForensicError>().unwrap();
-    assert_eq!(&ForensicError::invalid_format("prefetch", "Invalid prefetch format"), frns_err);
+    assert_eq!(
+        &ForensicError::invalid_format("prefetch", "Invalid prefetch format"),
+        frns_err
+    );
+}
+
+#[test]
+fn io_error_preserves_source() {
+    let error = ForensicError::io_error_with_source(
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        "reading evidence file",
+    );
+
+    let source = std::error::Error::source(&error).expect("I/O source must be retained");
+    assert_eq!(source.to_string(), "permission denied");
+    assert_eq!(
+        error.to_string(),
+        "IO error (PermissionDenied): reading evidence file"
+    );
 }

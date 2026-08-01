@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use crate::{
     artifact::Artifact,
-    context::{ForensicContext, initialize_context},
-    field::{Field, Text, Ip},
-    utils::time::Filetime,
+    context::{initialize_context, ForensicContext},
+    field::{Field, Ip, Text},
+    utils::time::ForensicTimestamp,
 };
 
 /// Shared context for a triage pipeline run.
@@ -98,8 +98,8 @@ impl TriageContext {
         }
     }
 
-    /// Get a shared state value as `&Filetime`.
-    pub fn get_date(&self, key: &str) -> Option<&Filetime> {
+    /// Get a shared state value as `&ForensicTimestamp`.
+    pub fn get_date(&self, key: &str) -> Option<&ForensicTimestamp> {
         match self.shared.get(key)? {
             Field::Date(v) => Some(v),
             _ => None,
@@ -159,7 +159,10 @@ mod tests {
     #[test]
     fn should_read_write_shared_state() {
         let mut ctx = TriageContext::default();
-        ctx.set(Text::Borrowed("timezone"), Field::Text(Text::Borrowed("UTC")));
+        ctx.set(
+            Text::Borrowed("timezone"),
+            Field::Text(Text::Borrowed("UTC")),
+        );
         assert!(ctx.contains_key("timezone"));
         match ctx.get("timezone") {
             Some(Field::Text(v)) => assert_eq!(v.as_ref(), "UTC"),
