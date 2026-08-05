@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use crate::{
     data::ForensicData,
     field::{Field, Text},
+    pipeline::finding::Finding,
+    provenance::{AnomalyFlags, Anomalies, Confidence},
     utils::time::ForensicTimestamp,
 };
 
@@ -78,7 +80,7 @@ impl From<Field> for CapabilityValue {
             Field::U64(value) => Self::U64(value),
             Field::I64(value) => Self::I64(value),
             Field::F64(value) => Self::F64(value),
-            Field::Date(value) => Self::Timestamp(value.into()),
+            Field::Date(value) => Self::Timestamp(value),
             Field::Array(values) => Self::Array(values.into_iter().map(Self::Text).collect()),
         }
     }
@@ -91,9 +93,148 @@ impl From<&ForensicData> for CapabilityValue {
             Text::Borrowed("artifact"),
             Self::Text(Text::Owned(data.artifact().to_string())),
         );
+        values.insert(Text::Borrowed("anomalies"), Self::from(data.anomalies()));
         for (name, value) in data.iter() {
             values.insert(name.clone(), value.clone().into());
         }
+        Self::Object(values)
+    }
+}
+
+impl From<Confidence> for CapabilityValue {
+    fn from(confidence: Confidence) -> Self {
+        let text = match confidence {
+            Confidence::Unknown => "Unknown",
+            Confidence::Low => "Low",
+            Confidence::Medium => "Medium",
+            Confidence::High => "High",
+        };
+        Self::Text(Text::Borrowed(text))
+    }
+}
+
+/// Stable, snake_case wire-format name for a single known [`AnomalyFlags`] bit.
+///
+/// Distinct from the private `describe_anomaly()` in `pipeline::finding`, which
+/// renders a human-readable sentence for a finding title — this is a stable API
+/// key instead, so the two are not worth sharing over a 7-entry table.
+fn anomaly_flag_name(flag: AnomalyFlags) -> &'static str {
+    if flag == AnomalyFlags::CHECKSUM_MISMATCH {
+        "checksum_mismatch"
+    } else if flag == AnomalyFlags::STALE_REFERENCE {
+        "stale_reference"
+    } else if flag == AnomalyFlags::REFERENCE_CYCLE {
+        "reference_cycle"
+    } else if flag == AnomalyFlags::ALLOCATION_CONFLICT {
+        "allocation_conflict"
+    } else if flag == AnomalyFlags::TIMESTAMP_DIVERGENCE {
+        "timestamp_divergence"
+    } else if flag == AnomalyFlags::TRUNCATED {
+        "truncated"
+    } else if flag == AnomalyFlags::SOURCE_DIVERGENCE {
+        "source_divergence"
+    } else {
+        "unknown"
+    }
+}
+
+const KNOWN_ANOMALY_FLAGS: [AnomalyFlags; 7] = [
+    AnomalyFlags::CHECKSUM_MISMATCH,
+    AnomalyFlags::STALE_REFERENCE,
+    AnomalyFlags::REFERENCE_CYCLE,
+    AnomalyFlags::ALLOCATION_CONFLICT,
+    AnomalyFlags::TIMESTAMP_DIVERGENCE,
+    AnomalyFlags::TRUNCATED,
+    AnomalyFlags::SOURCE_DIVERGENCE,
+];
+
+impl From<&Anomalies> for CapabilityValue {
+    fn from(anomalies: &Anomalies) -> Self {
+        let flags = Self::Array(
+            KNOWN_ANOMALY_FLAGS
+                .into_iter()
+                .filter(|&flag| anomalies.has(flag))
+                .map(|flag| Self::Text(Text::Borrowed(anomaly_flag_name(flag))))
+                .collect(),
+        );
+        let details = Self::Array(
+            anomalies
+                .details()
+                .iter()
+                .map(|detail| {
+                    let mut map = BTreeMap::new();
+                    map.insert(
+                        Text::Borrowed("flag"),
+                        Self::Text(Text::Borrowed(anomaly_flag_name(detail.kind))),
+                    );
+                    map.insert(
+                        Text::Borrowed("message"),
+                        Self::Text(Text::Owned(detail.message.to_string())),
+                    );
+                    Self::Object(map)
+                })
+                .collect(),
+        );
+
+        let mut values = BTreeMap::new();
+        values.insert(Text::Borrowed("flags"), flags);
+        values.insert(
+            Text::Borrowed("confidence_ceiling"),
+            Self::from(anomalies.confidence_ceiling()),
+        );
+        values.insert(Text::Borrowed("details"), details);
+        Self::Object(values)
+    }
+}
+
+impl From<&Finding> for CapabilityValue {
+    fn from(finding: &Finding) -> Self {
+        let mut values = BTreeMap::new();
+        values.insert(
+            Text::Borrowed("severity"),
+            Self::Text(Text::Owned(finding.severity.to_string())),
+        );
+        values.insert(
+            Text::Borrowed("category"),
+            Self::Text(Text::Owned(finding.category.to_string())),
+        );
+        values.insert(
+            Text::Borrowed("title"),
+            Self::Text(Text::Owned(finding.title.clone())),
+        );
+        values.insert(
+            Text::Borrowed("description"),
+            Self::Text(Text::Owned(finding.description.clone())),
+        );
+        values.insert(
+            Text::Borrowed("source_artifact"),
+            Self::Text(Text::Owned(finding.source_artifact.to_string())),
+        );
+        values.insert(
+            Text::Borrowed("timestamp"),
+            finding
+                .timestamp
+                .map(Self::Timestamp)
+                .unwrap_or(Self::Null),
+        );
+        values.insert(
+            Text::Borrowed("related_data"),
+            finding
+                .related_data
+                .as_ref()
+                .map(Self::from)
+                .unwrap_or(Self::Null),
+        );
+        values.insert(
+            Text::Borrowed("metadata"),
+            Self::Object(
+                finding
+                    .metadata
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Self::Text(value.clone())))
+                    .collect(),
+            ),
+        );
         Self::Object(values)
     }
 }
@@ -142,7 +283,13 @@ impl From<&'static str> for CapabilityValue {
 
 #[cfg(test)]
 mod tests {
-    use crate::{artifact::Artifact, field::Field};
+    use crate::{
+        artifact::Artifact,
+        field::Field,
+        pipeline::finding::{FindingCategory, FindingSeverity},
+        provenance::AnomalyDetail,
+        scow::SCow,
+    };
 
     use super::*;
 
@@ -166,7 +313,7 @@ mod tests {
 
     #[test]
     fn forensic_data_conversion_keeps_artifact_and_fields() {
-        let mut data = ForensicData::new("host", Artifact::Unknown);
+        let mut data = ForensicData::new("host", Artifact::Unknown, crate::utils::testing::test_provenance_id());
         data.insert(Text::Borrowed("event.code"), Field::U64(4624));
 
         let CapabilityValue::Object(values) = CapabilityValue::from(&data) else {
@@ -179,6 +326,152 @@ mod tests {
         assert_eq!(
             values.get("artifact").and_then(CapabilityValue::as_text),
             Some("Unknown")
+        );
+    }
+
+    #[test]
+    fn confidence_conversion_produces_stable_text() {
+        assert_eq!(
+            CapabilityValue::from(Confidence::Unknown),
+            CapabilityValue::Text(Text::Borrowed("Unknown"))
+        );
+        assert_eq!(
+            CapabilityValue::from(Confidence::Low),
+            CapabilityValue::Text(Text::Borrowed("Low"))
+        );
+        assert_eq!(
+            CapabilityValue::from(Confidence::Medium),
+            CapabilityValue::Text(Text::Borrowed("Medium"))
+        );
+        assert_eq!(
+            CapabilityValue::from(Confidence::High),
+            CapabilityValue::Text(Text::Borrowed("High"))
+        );
+    }
+
+    #[test]
+    fn anomalies_conversion_reports_flags_ceiling_and_details() {
+        let mut anomalies = Anomalies::empty();
+        anomalies.add(AnomalyFlags::TRUNCATED);
+        anomalies.add_detail(AnomalyDetail {
+            kind: AnomalyFlags::CHECKSUM_MISMATCH,
+            message: SCow::Borrowed("fixup mismatch"),
+        });
+        let ceiling = anomalies.confidence_ceiling();
+
+        let CapabilityValue::Object(values) = CapabilityValue::from(&anomalies) else {
+            panic!("anomalies must become an object");
+        };
+
+        let Some(CapabilityValue::Array(flags)) = values.get("flags") else {
+            panic!("flags must be an array");
+        };
+        let flag_names: Vec<&str> = flags.iter().filter_map(CapabilityValue::as_text).collect();
+        assert!(flag_names.contains(&"truncated"));
+        assert!(flag_names.contains(&"checksum_mismatch"));
+
+        assert_eq!(
+            values.get("confidence_ceiling"),
+            Some(&CapabilityValue::from(ceiling))
+        );
+
+        let Some(CapabilityValue::Array(details)) = values.get("details") else {
+            panic!("details must be an array");
+        };
+        assert_eq!(details.len(), 1);
+        let Some(CapabilityValue::Object(detail)) = details.first() else {
+            panic!("each detail must be an object");
+        };
+        assert_eq!(
+            detail.get("flag").and_then(CapabilityValue::as_text),
+            Some("checksum_mismatch")
+        );
+        assert_eq!(
+            detail.get("message").and_then(CapabilityValue::as_text),
+            Some("fixup mismatch")
+        );
+    }
+
+    #[test]
+    fn finding_conversion_preserves_all_fields() {
+        let mut data = ForensicData::new(
+            "host",
+            Artifact::Unknown,
+            crate::utils::testing::test_provenance_id(),
+        );
+        data.insert(Text::Borrowed("event.code"), Field::U64(4624));
+        let timestamp = ForensicTimestamp::from_unix_secs(1_700_000_000);
+
+        let finding = Finding::new(
+            FindingSeverity::High,
+            FindingCategory::AnomalousTimestamp,
+            "Suspicious timestamp",
+        )
+        .with_description("Manual review recommended")
+        .with_timestamp(timestamp)
+        .with_related_data(data)
+        .with_metadata(Text::Borrowed("case_id"), Text::Borrowed("INC-001"));
+
+        let CapabilityValue::Object(values) = CapabilityValue::from(&finding) else {
+            panic!("finding must become an object");
+        };
+
+        assert_eq!(
+            values.get("severity").and_then(CapabilityValue::as_text),
+            Some("High")
+        );
+        assert_eq!(
+            values.get("category").and_then(CapabilityValue::as_text),
+            Some("AnomalousTimestamp")
+        );
+        assert_eq!(
+            values.get("title").and_then(CapabilityValue::as_text),
+            Some("Suspicious timestamp")
+        );
+        assert_eq!(
+            values.get("description").and_then(CapabilityValue::as_text),
+            Some("Manual review recommended")
+        );
+        assert_eq!(
+            values
+                .get("source_artifact")
+                .and_then(CapabilityValue::as_text),
+            Some("Unknown")
+        );
+        assert!(matches!(
+            values.get("timestamp"),
+            Some(CapabilityValue::Timestamp(_))
+        ));
+        assert!(matches!(
+            values.get("related_data"),
+            Some(CapabilityValue::Object(_))
+        ));
+        let Some(CapabilityValue::Object(metadata)) = values.get("metadata") else {
+            panic!("metadata must be an object");
+        };
+        assert_eq!(
+            metadata.get("case_id").and_then(CapabilityValue::as_text),
+            Some("INC-001")
+        );
+    }
+
+    #[test]
+    fn finding_conversion_defaults_absent_fields_to_null() {
+        let finding = Finding::new(
+            FindingSeverity::Info,
+            FindingCategory::MissingData,
+            "Nothing to see here",
+        );
+
+        let CapabilityValue::Object(values) = CapabilityValue::from(&finding) else {
+            panic!("finding must become an object");
+        };
+
+        assert_eq!(values.get("timestamp"), Some(&CapabilityValue::Null));
+        assert_eq!(values.get("related_data"), Some(&CapabilityValue::Null));
+        assert_eq!(
+            values.get("description").and_then(CapabilityValue::as_text),
+            Some("")
         );
     }
 

@@ -1,0 +1,23 @@
+[package]
+name = "forensic-rs-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.forensic-rs]
+path = ".."
+features = ["serde"]
+
+[[bin]]
+name = "store_deserialize"
+path = "fuzz_targets/store_deserialize.rs"
+test = false
+doc = false
+bench = false

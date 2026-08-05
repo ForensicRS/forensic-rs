@@ -25,12 +25,14 @@ use forensic_rs::utils::testing::TestingRegistry;
 struct MockEvtxParser {
     channel: &'static str,
     events: Vec<(u64, u64, u64)>, // (record_id, event_id, unix_secs)
+    source: SourceHandle,
 }
 
 impl MockEvtxParser {
-    fn security_log() -> Self {
+    fn security_log(source: SourceHandle) -> Self {
         Self {
             channel: "Security",
+            source,
             events: vec![
                 // Normal sequence with a gap: records 1001-1003, then 1007-1010 (missing 1004-1006)
                 (1001, 4624, 1718400000), // Logon success
@@ -45,9 +47,10 @@ impl MockEvtxParser {
         }
     }
 
-    fn system_log() -> Self {
+    fn system_log(source: SourceHandle) -> Self {
         Self {
             channel: "System",
+            source,
             events: vec![
                 (501, 7045, 1718400000),  // Service installed
                 (502, 7036, 1718400060),  // Service state change
@@ -74,9 +77,13 @@ impl ArtifactParser for MockEvtxParser {
         _sources: &'a mut TriageSources,
     ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
         let channel = self.channel;
+        let source = self.source.clone();
         let iter = self.events.iter().map(move |&(record_id, event_id, unix_secs)| {
+            // Each record gets its own provenance: minted from this parser's
+            // source, as an allocated read from the (simulated) .evtx image.
+            let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
             let mut data = ForensicData::new("WORKSTATION01",
-                Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown)));
+                Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown)), provenance);
 
             data.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
             data.insert(Text::Borrowed(EVENT_CODE), Field::U64(event_id));
@@ -116,17 +123,20 @@ impl Analyzer for EventGapDetector {
         vec![Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown))]
     }
 
-    fn analyze(&mut self, data: &ForensicData) -> ForensicResult<Vec<Finding>> {
-        let mut findings = Vec::new();
-
+    fn analyze(
+        &mut self,
+        data: &ForensicData,
+        _context: &TriageContext,
+        out: &mut Vec<Finding>,
+    ) -> ForensicResult<()> {
         // Extract channel and record ID
         let channel = match data.field("event.channel") {
             Some(Field::Text(t)) => t.to_string(),
-            _ => return Ok(findings),
+            _ => return Ok(()),
         };
         let record_id = match data.field("event.record_id") {
             Some(Field::U64(id)) => *id,
-            _ => return Ok(findings),
+            _ => return Ok(()),
         };
         let event_id = match data.field(EVENT_CODE) {
             Some(Field::U64(id)) => *id,
@@ -157,15 +167,13 @@ impl Analyzer for EventGapDetector {
             .with_artifact(Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown)))
             .with_related_data(data.clone());
 
-            findings.push(finding);
+            out.push(finding);
         }
 
-        Ok(findings)
+        Ok(())
     }
 
-    fn finalize(&mut self) -> ForensicResult<Vec<Finding>> {
-        let mut findings = Vec::new();
-
+    fn finalize(&mut self, _context: &TriageContext, out: &mut Vec<Finding>) -> ForensicResult<()> {
         for (channel, records) in &self.channels {
             let mut sorted = records.clone();
             sorted.sort_by_key(|(id, _)| *id);
@@ -201,12 +209,12 @@ impl Analyzer for EventGapDetector {
                     .with_metadata(Text::Borrowed("gap.end_id"), Text::Owned(next_id.to_string()))
                     .with_metadata(Text::Borrowed("gap.missing_count"), Text::Owned(missing_count.to_string()));
 
-                    findings.push(finding);
+                    out.push(finding);
                 }
             }
         }
 
-        Ok(findings)
+        Ok(())
     }
 }
 
@@ -223,20 +231,27 @@ impl Analyzer for EventGapDetector {
 fn run_parallel() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Parallel Variant (AnalysisModule) ===\n");
 
+    // Register each channel's source before building the pipeline, so its
+    // SourceHandle can be moved into the parser factory closures below.
+    let context = TriageContext::new("WORKSTATION01", "INCIDENT-2024-001");
+    let store = context.provenance_store();
+    let security_source = store.register_source(SourceKey::Path("Security.evtx".to_string()));
+    let system_source = store.register_source(SourceKey::Path("System.evtx".to_string()));
+
     // AnalysisModule wraps the detector. No explicit parsers — they come
     // from the factories below, matched by supported_artifacts() overlap.
     let module = AnalysisModuleBuilder::new("event_gap_analysis")
         .analyzer(Box::new(EventGapDetector::new()))
         .sources(|| TriageSources::builder().build())
-        .context(TriageContext::new("WORKSTATION01", "INCIDENT-2024-001"))
+        .context(context)
         .build()?;
 
     let mut pipeline = ParallelPipeline::builder()
         .workers(2)
         // Both parsers declare Artifact::Windows(WinEvt(Unknown)), which
         // matches EventGapDetector::supported_artifacts() — auto-injected.
-        .parser_factory(Box::new(|| Box::new(MockEvtxParser::security_log())))
-        .parser_factory(Box::new(|| Box::new(MockEvtxParser::system_log())))
+        .parser_factory(Box::new(move || Box::new(MockEvtxParser::security_log(security_source.clone()))))
+        .parser_factory(Box::new(move || Box::new(MockEvtxParser::system_log(system_source.clone()))))
         .module(module)
         .sink(Box::new(FindingCollector::new()))
         .build()?;
@@ -264,13 +279,20 @@ fn run_parallel() -> Result<(), Box<dyn std::error::Error>> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = TestingRegistry::new();
     let vfs = StdVirtualFS::new();
-    let mut sources = TriageSources::new(Box::new(vfs), Box::new(registry));
+    let mut sources = TriageSources::new(std::sync::Arc::new(vfs), std::sync::Arc::new(registry));
+
+    // Register each channel as its own source before building parsers, so
+    // every record they emit mints a real ProvenanceId against it.
+    let context = TriageContext::new("WORKSTATION01", "INCIDENT-2024-001");
+    let store = context.provenance_store();
+    let security_source = store.register_source(SourceKey::Path("Security.evtx".to_string()));
+    let system_source = store.register_source(SourceKey::Path("System.evtx".to_string()));
 
     // Build pipeline with two parser instances and built-in sinks
     let mut pipeline = TriagePipeline::builder()
-        .context(TriageContext::new("WORKSTATION01", "INCIDENT-2024-001"))
-        .parser(Box::new(MockEvtxParser::security_log()))
-        .parser(Box::new(MockEvtxParser::system_log()))
+        .context(context)
+        .parser(Box::new(MockEvtxParser::security_log(security_source)))
+        .parser(Box::new(MockEvtxParser::system_log(system_source)))
         .analyzer(Box::new(EventGapDetector::new()))
         .sink(Box::new(TimelineSink::new("@timestamp")))
         .sink(Box::new(FindingCollector::new()))

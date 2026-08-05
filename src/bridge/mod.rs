@@ -81,9 +81,8 @@ impl From<crate::field::Field> for BridgeValue {
             F::U64(v) => BridgeValue::U64(v),
             F::I64(v) => BridgeValue::I64(v),
             F::F64(v) => BridgeValue::F64(v),
-            F::Date(ft) => BridgeValue::Timestamp(ft.into()),
+            F::Date(ft) => BridgeValue::Timestamp(ft),
             F::Array(arr) => BridgeValue::Array(arr.into_iter().map(BridgeValue::Text).collect()),
-            _ => BridgeValue::Null,
         }
     }
 }
@@ -92,10 +91,15 @@ impl From<crate::traits::registry::RegValue> for BridgeValue {
     fn from(rv: crate::traits::registry::RegValue) -> Self {
         use crate::traits::registry::RegValue as RV;
         match rv {
-            RV::SZ(s) | RV::ExpandSZ(s) => BridgeValue::Text(Text::Owned(s)),
-            RV::DWord(v) => BridgeValue::U64(v as u64),
+            RV::None => BridgeValue::Null,
+            RV::SZ(s) | RV::ExpandSZ(s) | RV::Link(s) => BridgeValue::Text(Text::Owned(s)),
+            RV::DWord(v) | RV::DWordBigEndian(v) => BridgeValue::U64(v as u64),
             RV::QWord(v) => BridgeValue::U64(v),
-            RV::Binary(v) => BridgeValue::Binary(v),
+            RV::Binary(v)
+            | RV::ResourceList(v)
+            | RV::FullResourceDescriptor(v)
+            | RV::ResourceRequirementsList(v) => BridgeValue::Binary(v),
+            RV::Unknown { data, .. } => BridgeValue::Binary(data),
             RV::MultiSZ(v) => BridgeValue::Array(
                 v.into_iter()
                     .map(|s| BridgeValue::Text(Text::Owned(s)))
@@ -145,6 +149,11 @@ mod serde_impl {
 /// Provenance metadata for bridge responses.
 ///
 /// Tracks which provider produced the data and the path within that provider.
+///
+/// Not related to [`crate::provenance::Provenance`] — that type tracks
+/// evidentiary chain-of-custody (how bytes were acquired and recovered,
+/// confidence, lineage); this one only records which bridge provider/path
+/// served a UI value.
 #[derive(Debug, Clone)]
 pub struct DataOrigin {
     pub provider: Text,
@@ -208,8 +217,8 @@ pub enum BridgeResponse {
 
 /// Unified tree navigation over any forensic artifact domain.
 ///
-/// Implementations wrap existing forensic-rs trait objects (`RegistryReader`,
-/// `VirtualFileSystem`, `EventLogReader`, `ForensicDb`) and expose them as a
+/// Implementations wrap existing forensic-rs trait objects (`Registry`,
+/// `FileSystem`, `EventLogReader`, `ForensicDb`) and expose them as a
 /// navigable tree of `NodeEntry` children.
 ///
 /// `Send` is required because providers live on the bridge worker thread.
@@ -252,7 +261,7 @@ mod tests {
 
     #[test]
     fn registry_provider_is_sendable_to_bridge_worker() {
-        let provider = RegistryProvider::new(Box::new(TestingRegistry::new()));
+        let provider = RegistryProvider::new(std::sync::Arc::new(TestingRegistry::new()));
         assert_send(provider);
     }
 

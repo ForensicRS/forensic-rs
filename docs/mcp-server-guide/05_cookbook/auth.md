@@ -255,6 +255,7 @@ let policy = Arc::new(AuditedAccessPolicy::new(tenant_policy, audit_sink));
 Use source guards to enforce path-level restrictions on evidence access.
 
 ```rust
+use std::sync::Arc;
 use forensic_rs::prelude::*;
 
 // Source guards wrap evidence sources with path-based authorization
@@ -301,40 +302,60 @@ impl PathRestrictions {
     }
 }
 
-// Wrap VirtualFileSystem with path restrictions
+// Wrap a FileSystem with path restrictions. forensic-rs ships a fuller,
+// AccessPolicy-driven version of this idea as
+// `capabilities::source_guards::AuthorizedVirtualFileSystem` — this recipe
+// shows the same shape hand-rolled against a simple allow/deny list.
+//
+// Implementing just the four required `FileSystem` methods is enough: the
+// blanket `FileSystemExt` methods (`read_all()`, `exists()`, `walk()`, ...)
+// are built on top of `open()`/`metadata()`/`read_dir()`, so they inherit
+// these checks automatically — nothing extra to override.
+
 pub struct AuthorizedVfs {
-    inner: Box<dyn VirtualFileSystem>,
+    inner: Arc<dyn FileSystem>,
     restrictions: PathRestrictions,
 }
 
 impl AuthorizedVfs {
-    pub fn new(inner: Box<dyn VirtualFileSystem>, restrictions: PathRestrictions) -> Self {
+    pub fn new(inner: Arc<dyn FileSystem>, restrictions: PathRestrictions) -> Self {
         Self { inner, restrictions }
+    }
+
+    fn ensure_allowed(&self, path: &FPath) -> ForensicResult<()> {
+        if self.restrictions.check_path(path.as_str()) {
+            Ok(())
+        } else {
+            Err(ForensicError::access_denied(
+                "path",
+                format!("Access denied to path: {}", path)
+            ))
+        }
     }
 }
 
-impl VirtualFileSystem for AuthorizedVfs {
-    fn read_to_string(&mut self, path: &Path) -> ForensicResult<String> {
-        if !self.restrictions.check_path(path.to_string_lossy().as_ref()) {
-            return Err(ForensicError::access_denied(
-                "path",
-                format!("Access denied to path: {}", path.display())
-            ));
-        }
-        self.inner.read_to_string(path)
+impl FileSystem for AuthorizedVfs {
+    fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>> {
+        self.ensure_allowed(path)?;
+        self.inner.open(path)
     }
 
-    fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>> {
-        if !self.restrictions.check_path(path.to_string_lossy().as_ref()) {
-            return Err(ForensicError::access_denied(
-                "path",
-                format!("Access denied to path: {}", path.display())
-            ));
-        }
-        self.inner.read_all(path)
+    fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
+        self.ensure_allowed(path)?;
+        self.inner.metadata(path)
     }
 
-    // ... delegate other methods similarly
+    fn read_dir(
+        &self,
+        path: &FPath,
+    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+        self.ensure_allowed(path)?;
+        self.inner.read_dir(path)
+    }
+
+    fn source(&self) -> SourceKind {
+        self.inner.source()
+    }
 }
 ```
 

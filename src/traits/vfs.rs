@@ -1,169 +1,25 @@
-use std::{fmt::Display, path::Path};
-
 use crate::err::ForensicResult;
 use crate::utils::time::ForensicTimestamp;
 
-pub trait VirtualFile: std::io::Seek + std::io::Read {
+pub trait VirtualFile: std::io::Seek + std::io::Read + Send {
     fn metadata(&self) -> ForensicResult<VMetadata>;
 }
 
-#[allow(clippy::wrong_self_convention)]
-pub trait VirtualFileSystem {
-    /// Initializes a virtual filesystem from a file. Ex: a Zip FS from a file
-    fn from_file(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn VirtualFileSystem>>;
-    /// Initializes a virtual filesystem from a filesyste. Ex: a remapping of windows routes to Linux routes.
-    fn from_fs(&self, fs: Box<dyn VirtualFileSystem>)
-        -> ForensicResult<Box<dyn VirtualFileSystem>>;
-    /// Read the entire contents of a file into a string.
-    fn read_to_string(&mut self, path: &Path) -> ForensicResult<String>;
-    /// Read the entire contents of a file into a bytes vector.
-    fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>>;
-    /// Read part of the content of a file into a bytes vector.
-    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize>;
-    /// Get the metadata of a file/dir
-    fn metadata(&mut self, path: &Path) -> ForensicResult<VMetadata>;
-    /// Lists the contents of a Directory
-    fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<VDirEntry>>;
-    /// Visits directory entries one at a time.
-    ///
-    /// Implementations can override this method to avoid materializing a full
-    /// directory listing. Returning an error from `visitor` stops enumeration
-    /// and propagates that error to the caller.
-    fn visit_dir(
-        &mut self,
-        path: &Path,
-        visitor: &mut dyn FnMut(&VDirEntry) -> ForensicResult<()>,
-    ) -> ForensicResult<()> {
-        for entry in self.read_dir(path)? {
-            visitor(&entry)?;
-        }
-        Ok(())
-    }
-    /// Check if the VirtualFileSystem is an abstraction over the real filesystem and not a virtual (like a ZIP file).
-    fn is_live(&self) -> bool;
-    /// Open a file
-    fn open(&mut self, path: &Path) -> ForensicResult<Box<dyn VirtualFile>>;
-    /// Allows duplicating the existing file system
-    fn duplicate(&self) -> Box<dyn VirtualFileSystem>;
-    /// Check if a file exists
-    #[allow(unused_variables)]
-    fn exists(&self, path: &Path) -> bool {
-        false
-    }
-}
-
-impl dyn VirtualFileSystem {
-    /// Read the entire contents of a file into a string.
-    pub fn read_to_string_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<String> {
-        self.read_to_string(path.as_ref())
-    }
-
-    /// Read the entire contents of a file into a bytes vector.
-    pub fn read_all_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Vec<u8>> {
-        self.read_all(path.as_ref())
-    }
-
-    /// Read part of the content of a file into a mutable byte slice
-    pub fn read_path<P: AsRef<Path>>(
-        &mut self,
-        path: P,
-        pos: u64,
-        buf: &mut [u8],
-    ) -> ForensicResult<usize> {
-        self.read(path.as_ref(), pos, buf)
-    }
-
-    /// Get the metadata of a file/dir
-    pub fn metadata_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<VMetadata> {
-        self.metadata(path.as_ref())
-    }
-
-    /// Lists the contents of a Directory
-    pub fn read_dir_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Vec<VDirEntry>> {
-        self.read_dir(path.as_ref())
-    }
-
-    /// Open a file
-    pub fn open_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Box<dyn VirtualFile>> {
-        self.open(path.as_ref())
-    }
-
-    /// Check if a file exists
-    pub fn exists_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<bool> {
-        Ok(self.exists(path.as_ref()))
-    }
-
-    /// Recursively walk a directory tree, ignoring errors below `root`.
-    ///
-    /// This legacy convenience method is best-effort: it returns an error when
-    /// `root` cannot be enumerated, but continues when a descendant directory
-    /// cannot be read. Use [`Self::walk_dir_strict`] when every inaccessible
-    /// descendant must be reported to the caller.
-    pub fn walk_dir(
-        &mut self,
-        root: &Path,
-        visitor: &mut dyn FnMut(&Path, &VDirEntry),
-    ) -> ForensicResult<()> {
-        self.walk_dir_best_effort(root, visitor)
-    }
-
-    /// Recursively walk a directory tree, ignoring errors below `root`.
-    ///
-    /// The visitor receives the full path of each entry found. This is useful
-    /// for exploratory interfaces where partial results are acceptable.
-    pub fn walk_dir_best_effort(
-        &mut self,
-        root: &Path,
-        visitor: &mut dyn FnMut(&Path, &VDirEntry),
-    ) -> ForensicResult<()> {
-        let entries = self.read_dir(root)?;
-        for entry in &entries {
-            let child = root.join(entry.to_string());
-            visitor(&child, entry);
-            if matches!(entry, VDirEntry::Directory(_)) {
-                let _ = self.walk_dir_best_effort(&child, visitor);
-            }
-        }
-        Ok(())
-    }
-
-    /// Recursively walk a directory tree, propagating every enumeration error.
-    ///
-    /// The visitor receives the full path of each entry found. Use this mode
-    /// when an unreadable descendant must remain distinguishable from an empty
-    /// directory in forensic output.
-    pub fn walk_dir_strict(
-        &mut self,
-        root: &Path,
-        visitor: &mut dyn FnMut(&Path, &VDirEntry),
-    ) -> ForensicResult<()> {
-        let entries = self.read_dir(root)?;
-        for entry in &entries {
-            let child = root.join(entry.to_string());
-            visitor(&child, entry);
-            if matches!(entry, VDirEntry::Directory(_)) {
-                self.walk_dir_strict(&child, visitor)?;
-            }
-        }
-        Ok(())
-    }
-}
-
+#[derive(Debug, Clone)]
 pub struct VMetadata {
-    /// Creation timestamp (optional — some filesystems don't support it)
-    pub created: Option<ForensicTimestamp>,
-
-    /// Last access timestamp (optional — some filesystems don't support it)
-    pub accessed: Option<ForensicTimestamp>,
-
-    /// Last modification timestamp (optional — some filesystems don't support it)
-    pub modified: Option<ForensicTimestamp>,
-
     pub file_type: VFileType,
     pub size: u64,
+    /// Cluster-rounded / sparse-file real allocation, when the backend can
+    /// report it. `None` when unsupported or equal to `size`.
+    pub allocated_size: Option<u64>,
+    pub times: MacbTimes,
+    /// Backend-defined file identifier (NTFS file reference number, inode,
+    /// ...), for loop/hardlink detection during a walk.
+    pub id: Option<FileId>,
+    pub attributes: FileAttributes,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VFileType {
     File,
     Directory,
@@ -180,7 +36,7 @@ impl VMetadata {
         note = "use created_opt() to preserve unsupported timestamps"
     )]
     pub fn created(&self) -> ForensicTimestamp {
-        self.created.unwrap_or_else(|| {
+        self.times.created.unwrap_or_else(|| {
             crate::warn!(
                 "this filesystem has no support for creation time, using UNIX_EPOCH instead"
             );
@@ -196,7 +52,7 @@ impl VMetadata {
         note = "use accessed_opt() to preserve unsupported timestamps"
     )]
     pub fn accessed(&self) -> ForensicTimestamp {
-        self.accessed.unwrap_or_else(|| {
+        self.times.accessed.unwrap_or_else(|| {
             crate::warn!(
                 "this filesystem has no support for access time, using UNIX_EPOCH instead"
             );
@@ -212,7 +68,7 @@ impl VMetadata {
         note = "use modified_opt() to preserve unsupported timestamps"
     )]
     pub fn modified(&self) -> ForensicTimestamp {
-        self.modified.unwrap_or_else(|| {
+        self.times.modified.unwrap_or_else(|| {
             crate::warn!(
                 "this filesystem has no support for modification time, using UNIX_EPOCH instead"
             );
@@ -221,13 +77,13 @@ impl VMetadata {
     }
 
     pub fn created_opt(&self) -> Option<&ForensicTimestamp> {
-        self.created.as_ref()
+        self.times.created.as_ref()
     }
     pub fn accessed_opt(&self) -> Option<&ForensicTimestamp> {
-        self.accessed.as_ref()
+        self.times.accessed.as_ref()
     }
     pub fn modified_opt(&self) -> Option<&ForensicTimestamp> {
-        self.modified.as_ref()
+        self.times.modified.as_ref()
     }
     pub fn is_file(&self) -> bool {
         self.file_type == VFileType::File
@@ -246,119 +102,337 @@ impl VMetadata {
     }
 }
 
-pub enum VDirEntry {
-    Directory(String),
-    File(String),
-    Symlink(String),
+// ---------------------------------------------------------------------
+// RFC 0001 FileSystem redesign.
+// ---------------------------------------------------------------------
+
+use crate::core::path::{FPath, FPathBuf};
+use std::sync::Arc;
+
+/// Where a [`FileSystem`]'s data actually comes from. Replaces the old
+/// `is_live(): bool`, which couldn't distinguish "this path is absent from
+/// the evidence" ([`SourceKind::Image`]) from "this path was never
+/// collected" ([`SourceKind::Triage`]) — a distinction analysts need and a
+/// bool can't express.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    /// A running system; artifacts may change while being read.
+    Live,
+    /// A full disk/volume image; an absent path really means the file
+    /// doesn't exist.
+    Image,
+    /// A KAPE/CyLR-style targeted collection; an absent path may only mean
+    /// it wasn't collected, not that it doesn't exist on the source.
+    Triage,
+    /// Synthesized / in-memory (tests, carved reconstruction).
+    Memory,
 }
 
-impl Display for VDirEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let content = match self {
-            VDirEntry::Directory(v) => v,
-            VDirEntry::File(v) => v,
-            VDirEntry::Symlink(v) => v,
-        };
-        write!(f, "{}", content)
+/// Whether two differently-cased paths address the same entry on a given
+/// [`FileSystem`]. This is a property of the filesystem being analyzed (an
+/// NTFS image is case-insensitive, an ext4 image is case-sensitive), never
+/// of the path text — see [`crate::core::path::path_eq`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseSensitivity {
+    Sensitive,
+    Insensitive,
+}
+
+/// An opaque, backend-defined file identifier (an NTFS file reference
+/// number, an inode, ...). Two entries with the same [`FileId`] on the same
+/// [`FileSystem`] are the same underlying file — used for hardlink/loop
+/// detection during [`FileSystemExt::walk`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileId(u128);
+
+impl FileId {
+    pub fn from_raw(v: u128) -> Self {
+        FileId(v)
     }
+    pub fn as_u128(&self) -> u128 {
+        self.0
+    }
+}
+
+/// Hand-rolled bitflags for common file attributes (no `bitflags`
+/// dependency — same idiom as [`crate::utils::time::TimestampFlags`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileAttributes(u32);
+
+impl FileAttributes {
+    pub const READONLY: Self = FileAttributes(1 << 0);
+    pub const HIDDEN: Self = FileAttributes(1 << 1);
+    pub const SYSTEM: Self = FileAttributes(1 << 2);
+    pub const DIRECTORY: Self = FileAttributes(1 << 3);
+    pub const REPARSE_POINT: Self = FileAttributes(1 << 4);
+    pub const COMPRESSED: Self = FileAttributes(1 << 5);
+    pub const ENCRYPTED: Self = FileAttributes(1 << 6);
+    pub const SPARSE: Self = FileAttributes(1 << 7);
+
+    pub const fn empty() -> Self {
+        FileAttributes(0)
+    }
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+    pub const fn from_bits_truncate(bits: u32) -> Self {
+        FileAttributes(bits)
+    }
+}
+
+impl std::ops::BitOr for FileAttributes {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        FileAttributes(self.0 | rhs.0)
+    }
+}
+impl std::ops::BitOrAssign for FileAttributes {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// $MACB-style timestamps for a filesystem entry.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MacbTimes {
+    pub modified: Option<ForensicTimestamp>,
+    pub accessed: Option<ForensicTimestamp>,
+    /// `$STANDARD_INFORMATION` change time (MFT metadata change), not
+    /// creation.
+    pub changed: Option<ForensicTimestamp>,
+    pub created: Option<ForensicTimestamp>,
+    /// `$FILE_NAME` attribute times, when the backend exposes them
+    /// separately from `$STANDARD_INFORMATION`. `$SI`/`$FN` divergence is a
+    /// standard timestomping indicator.
+    pub filename_times: Option<Box<MacbTimes>>,
+}
+
+/// A directory entry yielded by [`FileSystem::read_dir`].
+#[derive(Debug, Clone)]
+pub struct DirEntry {
+    /// The full path of this entry, not just its name — avoids a
+    /// `metadata()` round trip to reconstruct the path while walking.
+    pub path: FPathBuf,
+    pub file_type: VFileType,
+    /// Populated opportunistically when the backend gets it for free (e.g.
+    /// an NTFS index or `FindFirstFile`); `None` otherwise.
+    pub metadata: Option<VMetadata>,
+}
+
+impl DirEntry {
+    pub fn file_name(&self) -> Option<&str> {
+        self.path.file_name()
+    }
+}
+
+/// Everything a backend must implement. `&self`-based throughout, so
+/// `Arc<dyn FileSystem>` can be shared across worker threads — the mechanism
+/// that makes parallel image scanning possible (see RFC 0001 §1, P5).
+pub trait FileSystem: Send + Sync {
+    fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>>;
+    fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata>;
+    fn read_dir(
+        &self,
+        path: &FPath,
+    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>>;
+    fn source(&self) -> SourceKind;
+
+    // --- defaulted: override only if applicable ---
+    fn case_sensitivity(&self) -> CaseSensitivity {
+        CaseSensitivity::Insensitive
+    }
+    fn as_streams(&self) -> Option<&dyn AlternateStreams> {
+        None
+    }
+    fn as_unallocated(&self) -> Option<&dyn Unallocated> {
+        None
+    }
+}
+
+/// Blanket-impl'd convenience layer over [`FileSystem`]. A backend author
+/// never implements this directly.
+pub trait FileSystemExt: FileSystem {
+    fn read_all(&self, path: &FPath) -> ForensicResult<Vec<u8>> {
+        let mut file = self.open(path)?;
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut buf)?;
+        Ok(buf)
+    }
+
+    fn exists(&self, path: &FPath) -> bool {
+        self.metadata(path).is_ok()
+    }
+
+    /// Lazy, `&self`-based walk — a real streaming iterator, so a caller can
+    /// bail out early on a huge image without enumerating it.
+    fn walk(
+        &self,
+        root: &FPath,
+        opts: &crate::core::fs::walk::WalkOptions,
+    ) -> crate::core::fs::walk::Walk<'_, Self> {
+        crate::core::fs::walk::Walk::new(self, root, opts.clone())
+    }
+
+    fn glob(&self, pattern: &str) -> ForensicResult<Vec<FPathBuf>> {
+        Ok(self.glob_iter(pattern).collect())
+    }
+
+    fn glob_iter(&self, pattern: &str) -> crate::core::fs::glob::Glob<'_, Self> {
+        crate::core::fs::glob::Glob::new(self, pattern, self.case_sensitivity())
+    }
+}
+impl<T: FileSystem + ?Sized> FileSystemExt for T {}
+
+/// Alternate Data Streams — a classic hiding place on NTFS. Discovered via
+/// [`FileSystem::as_streams`].
+pub trait AlternateStreams: FileSystem {
+    fn streams(&self, path: &FPath) -> ForensicResult<Vec<StreamInfo>>;
+    fn open_stream(&self, path: &FPath, stream: &str) -> ForensicResult<Box<dyn VirtualFile>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamInfo {
+    pub name: String,
+    pub size: u64,
+}
+
+/// Access to unallocated (deleted, slack) space. Discovered via
+/// [`FileSystem::as_unallocated`].
+pub trait Unallocated: FileSystem {
+    fn unallocated_regions(&self) -> ForensicResult<Vec<Region>>;
+    fn open_unallocated(&self, region: &Region) -> ForensicResult<Box<dyn VirtualFile>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    pub offset: u64,
+    pub length: u64,
+}
+
+/// Sniffs and mounts a nested filesystem out of an opened file (a ZIP, an
+/// E01 image, an OLE compound file, ...).
+pub trait FileSystemFactory: Send + Sync {
+    fn name(&self) -> &'static str;
+    /// Content-based sniff. Must restore the stream position before returning.
+    fn probe(&self, file: &mut dyn VirtualFile) -> ForensicResult<bool>;
+    fn mount(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Arc<dyn FileSystem>>;
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::Path;
+mod fs_tests {
+    use super::*;
+    use crate::core::path::FPathBuf;
+    use crate::err::ForensicError;
+    use std::collections::BTreeMap;
+    use std::io::Cursor;
 
-    use crate::err::{ForensicError, ForensicResult};
+    /// Minimal in-file test double proving `FileSystem` is object-safe and
+    /// that the `FileSystemExt` blanket impl works end to end. The real
+    /// conformance battery (workstream F) exercises the actual backends.
+    struct MiniFs {
+        files: BTreeMap<String, Vec<u8>>,
+    }
 
-    use super::{VDirEntry, VMetadata, VirtualFile, VirtualFileSystem};
-
-    struct TraversalFs;
-
-    impl VirtualFileSystem for TraversalFs {
-        fn from_file(
-            &self,
-            _file: Box<dyn VirtualFile>,
-        ) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-            Err(ForensicError::other("test", "not implemented".to_string()))
+    struct MiniFile(Cursor<Vec<u8>>);
+    impl std::io::Read for MiniFile {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.0.read(buf)
         }
-
-        fn from_fs(
-            &self,
-            _fs: Box<dyn VirtualFileSystem>,
-        ) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-            Err(ForensicError::other("test", "not implemented".to_string()))
+    }
+    impl std::io::Seek for MiniFile {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.0.seek(pos)
         }
-
-        fn read_to_string(&mut self, _path: &Path) -> ForensicResult<String> {
-            Err(ForensicError::other("test", "not implemented".to_string()))
-        }
-
-        fn read_all(&mut self, _path: &Path) -> ForensicResult<Vec<u8>> {
-            Err(ForensicError::other("test", "not implemented".to_string()))
-        }
-
-        fn read(&mut self, _path: &Path, _pos: u64, _buf: &mut [u8]) -> ForensicResult<usize> {
-            Err(ForensicError::other("test", "not implemented".to_string()))
-        }
-
-        fn metadata(&mut self, _path: &Path) -> ForensicResult<VMetadata> {
-            Err(ForensicError::other("test", "not implemented".to_string()))
-        }
-
-        fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<VDirEntry>> {
-            match path.to_string_lossy().as_ref() {
-                "root" => Ok(vec![VDirEntry::Directory("denied".to_string())]),
-                "root\\denied" | "root/denied" => {
-                    Err(ForensicError::other("test", "access denied".to_string()))
-                }
-                _ => Err(ForensicError::other("test", "unexpected path".to_string())),
-            }
-        }
-
-        fn is_live(&self) -> bool {
-            false
-        }
-
-        fn open(&mut self, _path: &Path) -> ForensicResult<Box<dyn VirtualFile>> {
-            Err(ForensicError::other("test", "not implemented".to_string()))
-        }
-
-        fn duplicate(&self) -> Box<dyn VirtualFileSystem> {
-            Box::new(TraversalFs)
+    }
+    impl VirtualFile for MiniFile {
+        fn metadata(&self) -> ForensicResult<VMetadata> {
+            Ok(VMetadata {
+                file_type: VFileType::File,
+                size: self.0.get_ref().len() as u64,
+                allocated_size: None,
+                times: MacbTimes::default(),
+                id: None,
+                attributes: FileAttributes::empty(),
+            })
         }
     }
 
+    impl FileSystem for MiniFs {
+        fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>> {
+            let bytes = self
+                .files
+                .get(path.as_str())
+                .cloned()
+                .ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
+            Ok(Box::new(MiniFile(Cursor::new(bytes))))
+        }
+        fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
+            self.open(path)?.metadata()
+        }
+        fn read_dir(
+            &self,
+            path: &FPath,
+        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+            let prefix = format!("{}/", path.as_str());
+            let entries: Vec<ForensicResult<DirEntry>> = self
+                .files
+                .keys()
+                .filter(|k| k.starts_with(&prefix))
+                .map(|k| {
+                    Ok(DirEntry {
+                        path: FPathBuf::from(k.as_str()),
+                        file_type: VFileType::File,
+                        metadata: None,
+                    })
+                })
+                .collect();
+            Ok(Box::new(entries.into_iter()))
+        }
+        fn source(&self) -> SourceKind {
+            SourceKind::Memory
+        }
+    }
+
+    fn accepts_dyn_filesystem(_fs: &dyn FileSystem) {}
+
     #[test]
-    fn best_effort_walk_ignores_descendant_errors() {
-        let mut fs = TraversalFs;
-        let mut entries = Vec::new();
-        let fs: &mut dyn VirtualFileSystem = &mut fs;
-
-        fs.walk_dir_best_effort(Path::new("root"), &mut |path, _| {
-            entries.push(path.to_path_buf())
-        })
-        .unwrap();
-
-        assert_eq!(entries, vec![Path::new("root").join("denied")]);
+    fn filesystem_is_object_safe() {
+        let fs = MiniFs {
+            files: BTreeMap::new(),
+        };
+        accepts_dyn_filesystem(&fs);
     }
 
     #[test]
-    fn strict_walk_propagates_descendant_errors() {
-        let mut fs = TraversalFs;
-        let fs: &mut dyn VirtualFileSystem = &mut fs;
+    fn read_all_round_trips_through_ext_trait() {
+        let mut files = BTreeMap::new();
+        files.insert("a.txt".to_string(), b"hello".to_vec());
+        let fs = MiniFs { files };
+        assert_eq!(fs.read_all(FPath::new("a.txt")).unwrap(), b"hello");
+        assert!(fs.exists(FPath::new("a.txt")));
+        assert!(!fs.exists(FPath::new("missing.txt")));
+    }
 
-        assert!(fs
-            .walk_dir_strict(Path::new("root"), &mut |_, _| {})
-            .is_err());
+    #[test]
+    fn arc_dyn_filesystem_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Arc<dyn FileSystem>>();
     }
 
     #[test]
     fn missing_timestamps_remain_distinguishable_from_epoch() {
         let metadata = VMetadata {
-            created: None,
-            accessed: None,
-            modified: None,
-            file_type: super::VFileType::File,
+            file_type: VFileType::File,
             size: 0,
+            allocated_size: None,
+            times: MacbTimes::default(),
+            id: None,
+            attributes: FileAttributes::empty(),
         };
 
         assert!(metadata.created_opt().is_none());

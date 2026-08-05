@@ -37,19 +37,20 @@ impl ArtifactParser for AutorunParser {
         let registry = sources.registry()
             .ok_or_else(|| ForensicError::missing_data("autoruns", "Registry required"))?;
 
-        let handle = registry.open_key(HKU, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run")?;
+        // `RegistryExt::key` takes a single hive-prefixed path string and
+        // returns a `RegKey` RAII guard — no separate hive argument, no
+        // handle to close manually (it closes when the guard drops).
+        let key = registry.key(r"HKU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run")?;
         let mut results = Vec::new();
 
-        registry.enumerate_values(&handle, &mut |name| {
-            let value = registry.read_value(&handle, name)?;
-            if let Ok(cmd) = String::try_from(&value) {
+        for (name, value) in key.values()? {
+            if let Ok(cmd) = String::try_from(value) {
                 let mut data = ForensicData::new("WORKSTATION01", self.supported_artifacts()[0].clone());
-                data.insert("autorun.name", Field::Text(Text::Owned(name.to_string())));
+                data.insert("autorun.name", Field::Text(Text::Owned(name)));
                 data.insert("autorun.command", Field::Text(Text::Owned(cmd)));
                 results.push(Ok(data));
             }
-            Ok(RegistryVisit::Continue)
-        })?;
+        }
 
         Ok(Box::new(results.into_iter()))
     }
@@ -81,12 +82,15 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
         vec![Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns))]
     }
 
-    fn analyze(&mut self, data: &ForensicData) -> ForensicResult<Vec<Finding>> {
-        let mut findings = Vec::new();
-
+    fn analyze(
+        &mut self,
+        data: &ForensicData,
+        _context: &TriageContext,
+        out: &mut Vec<Finding>,
+    ) -> ForensicResult<()> {
         let value = match data.field("autorun.command") {
             Some(Field::Text(t)) => t.to_string().to_lowercase(),
-            _ => return Ok(findings),
+            _ => return Ok(()),
         };
 
         // Check for suspicious patterns
@@ -99,20 +103,22 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
 
         for (pattern, reason) in &suspicious {
             if value.contains(pattern) {
-                findings.push(Finding::new(
+                let finding = Finding::new(
                     FindingSeverity::Medium,
                     FindingCategory::SuspiciousActivity,
                     format!("Suspicious autorun detected: {}", reason),
-                ).with_artifact(data.artifact().clone()));
+                ).with_artifact(data.artifact().clone());
+                self.findings.push(finding.clone());
+                out.push(finding);
             }
         }
 
-        self.findings.extend(findings.clone());
-        Ok(findings)
+        Ok(())
     }
 
-    fn finalize(&mut self) -> ForensicResult<Vec<Finding>> {
-        Ok(std::mem::take(&mut self.findings))
+    fn finalize(&mut self, _context: &TriageContext, out: &mut Vec<Finding>) -> ForensicResult<()> {
+        out.extend(std::mem::take(&mut self.findings));
+        Ok(())
     }
 }
 ```
@@ -198,18 +204,16 @@ impl PipelineTask for AutorunTask {
                 "Registry source required"
             ))?;
 
-        let handle = registry.open_key(HKU, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run")?;
+        let key = registry.key(r"HKU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run")?;
 
-        registry.enumerate_values(&handle, &mut |name| {
-            let value = registry.read_value(&handle, name)?;
-            if let Ok(cmd) = String::try_from(&value) {
+        for (name, value) in key.values()? {
+            if let Ok(cmd) = String::try_from(value) {
                 // Simple pattern check
                 if cmd.to_lowercase().contains("powershell") {
                     self.findings.push(format!("{}: {}", name, cmd));
                 }
             }
-            Ok(RegistryVisit::Continue)
-        })?;
+        }
 
         Ok(())
     }

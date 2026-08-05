@@ -1,8 +1,12 @@
-use std::{io::ErrorKind, path::Path, time::SystemTime};
+use std::{io::ErrorKind, time::SystemTime};
 
 use crate::{
+    core::path::{FPath, FPathBuf},
     err::{ForensicError, ForensicResult},
-    traits::vfs::{VDirEntry, VFileType, VMetadata, VirtualFile, VirtualFileSystem},
+    traits::vfs::{
+        DirEntry, FileAttributes, FileSystem, MacbTimes, SourceKind, VFileType, VMetadata,
+        VirtualFile,
+    },
     utils::time::ForensicTimestamp,
 };
 
@@ -73,46 +77,34 @@ impl VirtualFile for StdVirtualFile {
         let modified = timestamp_from(metadata.modified())?;
 
         Ok(VMetadata {
-            created,
-            accessed,
-            modified,
             file_type,
             size: metadata.len(),
+            allocated_size: None,
+            times: MacbTimes {
+                modified,
+                accessed,
+                changed: None,
+                created,
+                filename_times: None,
+            },
+            id: None,
+            attributes: FileAttributes::empty(),
         })
     }
 }
 
-impl VirtualFileSystem for StdVirtualFS {
-    fn read_to_string(&mut self, path: &Path) -> ForensicResult<String> {
-        Ok(std::fs::read_to_string(path)?)
+// ---------------------------------------------------------------------
+// RFC 0001 FileSystem redesign.
+// ---------------------------------------------------------------------
+impl FileSystem for StdVirtualFS {
+    fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>> {
+        Ok(Box::new(StdVirtualFile {
+            file: std::fs::File::open(path.to_std_path())?,
+        }))
     }
 
-    fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>> {
-        Ok(std::fs::read(path)?)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
-        use std::os::unix::prelude::FileExt;
-        let file = std::fs::File::open(path)?;
-        Ok(file.read_at(buf, pos)?)
-    }
-    #[cfg(target_os = "linux")]
-    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
-        use std::os::unix::prelude::FileExt;
-        let file = std::fs::File::open(path)?;
-        Ok(file.read_at(buf, pos)?)
-    }
-
-    #[cfg(target_os = "windows")]
-    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
-        use std::os::windows::prelude::FileExt;
-        let file = std::fs::File::open(path)?;
-        Ok(file.seek_read(buf, pos)?)
-    }
-
-    fn metadata(&mut self, path: &Path) -> ForensicResult<VMetadata> {
-        let metadata = std::fs::metadata(path)?;
+    fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
+        let metadata = std::fs::metadata(path.to_std_path())?;
         let file_type = if metadata.file_type().is_dir() {
             VFileType::Directory
         } else if metadata.file_type().is_symlink() {
@@ -126,145 +118,90 @@ impl VirtualFileSystem for StdVirtualFS {
         let modified = timestamp_from(metadata.modified())?;
 
         Ok(VMetadata {
-            created,
-            accessed,
-            modified,
             file_type,
             size: metadata.len(),
+            allocated_size: None,
+            times: MacbTimes {
+                modified,
+                accessed,
+                changed: None,
+                created,
+                filename_times: None,
+            },
+            id: None,
+            attributes: FileAttributes::empty(),
         })
     }
 
-    fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<VDirEntry>> {
-        let mut ret = Vec::with_capacity(128);
-        for dir_entry in std::fs::read_dir(path)? {
-            let entry = dir_entry?;
-            let file_type = entry.file_type()?;
-            let file_entry = if file_type.is_dir() {
-                VDirEntry::Directory(entry.file_name().to_string_lossy().into_owned())
-            } else if file_type.is_symlink() {
-                VDirEntry::Symlink(entry.file_name().to_string_lossy().into_owned())
-            } else {
-                VDirEntry::File(entry.file_name().to_string_lossy().into_owned())
-            };
-            ret.push(file_entry);
-        }
-        Ok(ret)
-    }
-
-    fn visit_dir(
-        &mut self,
-        path: &Path,
-        visitor: &mut dyn FnMut(&VDirEntry) -> ForensicResult<()>,
-    ) -> ForensicResult<()> {
-        for dir_entry in std::fs::read_dir(path)? {
-            let entry = dir_entry?;
-            let file_type = entry.file_type()?;
-            let file_entry = if file_type.is_dir() {
-                VDirEntry::Directory(entry.file_name().to_string_lossy().into_owned())
-            } else if file_type.is_symlink() {
-                VDirEntry::Symlink(entry.file_name().to_string_lossy().into_owned())
-            } else {
-                VDirEntry::File(entry.file_name().to_string_lossy().into_owned())
-            };
-            visitor(&file_entry)?;
-        }
-        Ok(())
-    }
-
-    fn is_live(&self) -> bool {
-        true
-    }
-
-    fn open(&mut self, path: &Path) -> ForensicResult<Box<dyn VirtualFile>> {
-        Ok(Box::new(StdVirtualFile {
-            file: std::fs::File::open(path)?,
-        }))
-    }
-
-    fn duplicate(&self) -> Box<dyn VirtualFileSystem> {
-        Box::new(StdVirtualFS {})
-    }
-
-    fn from_file(&self, _file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        ForensicError::no_more_data().into()
-    }
-
-    fn from_fs(
+    fn read_dir(
         &self,
-        _fs: Box<dyn VirtualFileSystem>,
-    ) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        ForensicError::no_more_data().into()
+        path: &FPath,
+    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+        let iter = std::fs::read_dir(path.to_std_path())?;
+        Ok(Box::new(iter.map(|entry| {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let file_type = if file_type.is_dir() {
+                VFileType::Directory
+            } else if file_type.is_symlink() {
+                VFileType::Symlink
+            } else {
+                VFileType::File
+            };
+            Ok(DirEntry {
+                path: FPathBuf::from(entry.path().to_string_lossy().into_owned()),
+                file_type,
+                metadata: None,
+            })
+        })))
     }
-    fn exists(&self, path: &Path) -> bool {
-        path.exists()
+
+    fn source(&self) -> SourceKind {
+        SourceKind::Live
     }
 }
 
 #[cfg(test)]
 mod tst {
-    use crate::traits::vfs::VirtualFileSystem;
     use std::io::Write;
-    use std::path::Path;
 
     use crate::core::fs::StdVirtualFS;
 
     const CONTENT: &str = "File_Content_Of_VFS";
-    const FILE_NAME: &str = "test_vfs_file.txt";
 
     #[test]
-    fn test_temp_file() {
-        let tmp = std::env::temp_dir();
-        let tmp_file = tmp.join(FILE_NAME);
+    fn new_filesystem_trait_reads_the_same_file() {
+        use crate::core::path::FPath;
+        use crate::traits::vfs::{FileSystem, FileSystemExt, SourceKind};
+
+        // An isolated per-test subdirectory, not the bare shared system temp
+        // root: `read_dir` below lists this directory's full contents, and
+        // other tests in this suite write into the shared root directly.
+        let dir = std::env::temp_dir().join(format!(
+            "forensic_rs_stdfs_new_trait_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp_file = dir.join("test_vfs_file_new_trait.txt");
         let mut file = std::fs::File::create(&tmp_file).unwrap();
         file.write_all(CONTENT.as_bytes()).unwrap();
         drop(file);
 
-        let mut std_vfs = StdVirtualFS::new();
-        test_file_content(&mut std_vfs, &tmp_file);
-        assert!(std_vfs
-            .read_dir(tmp.as_path())
+        let fs = StdVirtualFS::new();
+        assert_eq!(fs.source(), SourceKind::Live);
+        let tmp_file_str = tmp_file.to_string_lossy().into_owned();
+        let path = FPath::new(&tmp_file_str);
+        assert_eq!(fs.read_all(path).unwrap(), CONTENT.as_bytes());
+        assert!(fs.exists(path));
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let dir_path = FPath::new(&dir_str);
+        let names: Vec<String> = FileSystem::read_dir(&fs, dir_path)
             .unwrap()
-            .into_iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<String>>()
-            .contains(&"test_vfs_file.txt".to_string()));
-    }
+            .filter_map(|e| e.ok().and_then(|e| e.file_name().map(str::to_string)))
+            .collect();
+        assert!(names.contains(&"test_vfs_file_new_trait.txt".to_string()));
 
-    #[test]
-    fn visit_dir_streams_entries_and_propagates_visitor_errors() {
-        let tmp = std::env::temp_dir();
-        let tmp_file = tmp.join(FILE_NAME);
-        let mut file = std::fs::File::create(&tmp_file).unwrap();
-        file.write_all(CONTENT.as_bytes()).unwrap();
-        drop(file);
-
-        let mut std_vfs = StdVirtualFS::new();
-        let mut entries = Vec::new();
-        std_vfs
-            .visit_dir(&tmp, &mut |entry| {
-                entries.push(entry.to_string());
-                Ok(())
-            })
-            .unwrap();
-        assert!(entries.contains(&FILE_NAME.to_string()));
-
-        let result = std_vfs.visit_dir(&tmp, &mut |_| {
-            Err(crate::err::ForensicError::other("test", "stop".to_string()))
-        });
-        assert!(result.is_err());
-    }
-
-    fn test_file_content(std_vfs: &mut impl VirtualFileSystem, tmp_file: &Path) {
-        let content = std_vfs.read_to_string(tmp_file).unwrap();
-        assert_eq!(CONTENT, content);
-    }
-
-    #[test]
-    fn should_allow_boxing() {
-        struct Test {
-            _fs: Box<dyn VirtualFileSystem>,
-        }
-        let boxed = Box::new(StdVirtualFS::new());
-        let _test = Test { _fs: boxed };
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

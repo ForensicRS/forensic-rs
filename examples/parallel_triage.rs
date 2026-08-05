@@ -46,11 +46,13 @@ fn autorun_artifact() -> Artifact {
 /// Simulates an MFT parser that emits file-creation records.
 struct MockMftParser {
     records: Vec<(&'static str, u64)>, // (path, inode)
+    source: SourceHandle,
 }
 
 impl MockMftParser {
-    fn new() -> Self {
+    fn new(source: SourceHandle) -> Self {
         Self {
+            source,
             records: vec![
                 (r"C:\Windows\System32\cmd.exe",            1001),
                 (r"C:\Windows\Temp\suspicious.ps1",         1002),
@@ -72,7 +74,8 @@ impl ArtifactParser for MockMftParser {
         _sources: &'a mut TriageSources,
     ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
         let items: Vec<ForensicResult<ForensicData>> = self.records.iter().map(|(path, inode)| {
-            let mut d = ForensicData::new("WORKSTATION01", mft_artifact());
+            let provenance = self.source.mint(Acquisition::ImageRead, Recovery::Allocated);
+            let mut d = ForensicData::new("WORKSTATION01", mft_artifact(), provenance);
             d.insert(Text::Borrowed("file.path"),  Field::Text(Text::Owned(path.to_string())));
             d.insert(Text::Borrowed("file.inode"), Field::U64(*inode));
             d.insert(Text::Borrowed("@timestamp"),
@@ -87,12 +90,14 @@ impl ArtifactParser for MockMftParser {
 struct MockEvtxParser {
     channel: &'static str,
     events: Vec<(u64, u64)>, // (record_id, event_id)
+    source: SourceHandle,
 }
 
 impl MockEvtxParser {
-    fn security() -> Self {
+    fn security(source: SourceHandle) -> Self {
         Self {
             channel: "Security",
+            source,
             events: vec![
                 (1001, 4624), // Logon success
                 (1002, 4625), // Logon failure
@@ -117,7 +122,8 @@ impl ArtifactParser for MockEvtxParser {
     ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
         let channel = self.channel;
         let items: Vec<ForensicResult<ForensicData>> = self.events.iter().map(|&(record_id, event_id)| {
-            let mut d = ForensicData::new("WORKSTATION01", evt_artifact());
+            let provenance = self.source.mint(Acquisition::ImageRead, Recovery::Allocated);
+            let mut d = ForensicData::new("WORKSTATION01", evt_artifact(), provenance);
             d.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
             d.insert(Text::Borrowed("event.code"),      Field::U64(event_id));
             d.insert(Text::Borrowed("event.channel"),   Field::Text(Text::Borrowed(channel)));
@@ -135,11 +141,13 @@ impl ArtifactParser for MockEvtxParser {
 /// static data so the parser is `Send + 'static` without any real registry.
 struct MockAutorunParser {
     entries: Vec<(&'static str, &'static str)>, // (name, command)
+    source: SourceHandle,
 }
 
 impl MockAutorunParser {
-    fn new() -> Self {
+    fn new(source: SourceHandle) -> Self {
         Self {
+            source,
             entries: vec![
                 ("Malware",  r"powershell.exe -ep bypass C:\temp\malware.ps1"),
                 ("OneDrive", r"C:\Users\Alice\AppData\Local\Microsoft\OneDrive\OneDrive.exe"),
@@ -161,7 +169,8 @@ impl ArtifactParser for MockAutorunParser {
     ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
         let sid = "S-1-5-21-1366093794-4292800403-1155380978-513";
         let items: Vec<ForensicResult<ForensicData>> = self.entries.iter().map(|&(name, cmd)| {
-            let mut d = ForensicData::new("WORKSTATION01", autorun_artifact());
+            let provenance = self.source.mint(Acquisition::LiveApi, Recovery::Allocated);
+            let mut d = ForensicData::new("WORKSTATION01", autorun_artifact(), provenance);
             d.insert(Text::Borrowed("autorun.name"),  Field::Text(Text::Borrowed(name)));
             d.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Borrowed(cmd)));
             d.insert(Text::Borrowed("autorun.user"),  Field::Text(Text::Borrowed(sid)));
@@ -184,26 +193,31 @@ impl Analyzer for TempWriteAnalyzer {
     fn name(&self) -> &str { "temp_write_analyzer" }
     fn supported_artifacts(&self) -> Vec<Artifact> { vec![mft_artifact()] }
 
-    fn analyze(&mut self, data: &ForensicData) -> ForensicResult<Vec<Finding>> {
+    fn analyze(
+        &mut self,
+        data: &ForensicData,
+        _context: &TriageContext,
+        out: &mut Vec<Finding>,
+    ) -> ForensicResult<()> {
         let path = match data.field("file.path") {
             Some(Field::Text(t)) => t.to_lowercase(),
-            _ => return Ok(vec![]),
+            _ => return Ok(()),
         };
         if path.contains("\\temp\\") || path.contains("/tmp/") {
             let label = match data.field("file.path") {
                 Some(Field::Text(t)) => t.to_string(),
                 _ => String::new(),
             };
-            return Ok(vec![
+            out.push(
                 Finding::new(
                     FindingSeverity::Medium,
                     FindingCategory::SuspiciousActivity,
                     format!("File created in temp: {label}"),
                 )
                 .with_artifact(mft_artifact()),
-            ]);
+            );
         }
-        Ok(vec![])
+        Ok(())
     }
 }
 
@@ -220,24 +234,28 @@ impl Analyzer for EventGapAnalyzer {
     fn name(&self) -> &str { "event_gap_analyzer" }
     fn supported_artifacts(&self) -> Vec<Artifact> { vec![evt_artifact()] }
 
-    fn analyze(&mut self, data: &ForensicData) -> ForensicResult<Vec<Finding>> {
+    fn analyze(
+        &mut self,
+        data: &ForensicData,
+        _context: &TriageContext,
+        _out: &mut Vec<Finding>,
+    ) -> ForensicResult<()> {
         if let (Some(Field::Text(ch)), Some(Field::U64(rid))) = (
             data.field("event.channel"),
             data.field("event.record_id"),
         ) {
             self.channels.entry(ch.to_string()).or_default().push(*rid);
         }
-        Ok(vec![])
+        Ok(())
     }
 
-    fn finalize(&mut self) -> ForensicResult<Vec<Finding>> {
-        let mut findings = Vec::new();
+    fn finalize(&mut self, _context: &TriageContext, out: &mut Vec<Finding>) -> ForensicResult<()> {
         for (channel, ids) in &self.channels {
             let mut sorted = ids.clone();
             sorted.sort_unstable();
             for w in sorted.windows(2) {
                 if w[1] - w[0] > 1 {
-                    findings.push(
+                    out.push(
                         Finding::new(
                             FindingSeverity::High,
                             FindingCategory::MissingData,
@@ -249,7 +267,7 @@ impl Analyzer for EventGapAnalyzer {
                 }
             }
         }
-        Ok(findings)
+        Ok(())
     }
 }
 
@@ -262,7 +280,12 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
     // combined with an explicit parser (as in the StandardParallelTask below).
     fn supported_artifacts(&self) -> Vec<Artifact> { vec![] }
 
-    fn analyze(&mut self, data: &ForensicData) -> ForensicResult<Vec<Finding>> {
+    fn analyze(
+        &mut self,
+        data: &ForensicData,
+        _context: &TriageContext,
+        out: &mut Vec<Finding>,
+    ) -> ForensicResult<()> {
         let value = match data.field("autorun.value") {
             Some(Field::Text(t)) => t.to_lowercase(),
             _ => String::new(),
@@ -273,7 +296,7 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
         };
         for pat in &["powershell", "wscript", "mshta", "\\temp\\"] {
             if value.contains(pat) {
-                return Ok(vec![
+                out.push(
                     Finding::new(
                         FindingSeverity::High,
                         FindingCategory::SuspiciousActivity,
@@ -281,10 +304,11 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
                     )
                     .with_description(format!("Pattern '{pat}' found in autorun value"))
                     .with_artifact(autorun_artifact()),
-                ]);
+                );
+                return Ok(());
             }
         }
-        Ok(vec![])
+        Ok(())
     }
 }
 
@@ -344,18 +368,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // supported_artifacts() sets. Matching parsers are injected into the module.
     // -----------------------------------------------------------------------
 
+    // Each module/task below gets its own TriageContext, so each gets its own
+    // ProvenanceStore too — register that module's source(s) against its own
+    // context before building it, then move the resulting SourceHandle into
+    // the matching parser factory (or explicit parser, for the task below).
+    let mft_context = TriageContext::new("WORKSTATION01", "ACME-Corp");
+    let mft_source = mft_context
+        .provenance_store()
+        .register_source(SourceKey::Path(r"C:\$MFT".to_string()));
+
+    let evt_context = TriageContext::new("WORKSTATION01", "ACME-Corp");
+    let evt_source = evt_context
+        .provenance_store()
+        .register_source(SourceKey::Path("Security.evtx".to_string()));
+
     let mft_module = AnalysisModuleBuilder::new("mft_analysis")
         .analyzer(Box::new(TempWriteAnalyzer))
         // No .parser() → auto-match injects MockMftParser (artifacts overlap: MFT)
         .sources(|| TriageSources::builder().build())
-        .context(TriageContext::new("WORKSTATION01", "ACME-Corp"))
+        .context(mft_context)
         .build()?;
 
     let evt_module = AnalysisModuleBuilder::new("evt_gap_analysis")
         .analyzer(Box::new(EventGapAnalyzer::new()))
         // No .parser() → auto-match injects MockEvtxParser (artifacts overlap: WinEvt)
         .sources(|| TriageSources::builder().build())
-        .context(TriageContext::new("WORKSTATION01", "ACME-Corp"))
+        .context(evt_context)
         .build()?;
 
     // -----------------------------------------------------------------------
@@ -365,11 +403,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // but here we use StandardParallelTask so the parser is always explicit.
     // -----------------------------------------------------------------------
 
+    let autorun_context = TriageContext::new("WORKSTATION01", "ACME-Corp");
+    let autorun_source = autorun_context.provenance_store().register_source(SourceKey::Live {
+        host: "WORKSTATION01".to_string(),
+        api: "RegistryReader".to_string(),
+    });
+
     let autorun_task = StandardParallelTaskBuilder::new("registry_autoruns")
-        .parser(Box::new(MockAutorunParser::new()))
+        .parser(Box::new(MockAutorunParser::new(autorun_source)))
         .analyzer(Box::new(SuspiciousAutorunAnalyzer))
         .sources(|| TriageSources::builder().build())
-        .context(TriageContext::new("WORKSTATION01", "ACME-Corp"))
+        .context(autorun_context)
         .build()?;
 
     // -----------------------------------------------------------------------
@@ -385,8 +429,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .workers(3)
         .channel_capacity(128)
         // Factory pool — matched to modules by supported_artifacts() overlap.
-        .parser_factory(Box::new(|| Box::new(MockMftParser::new())))
-        .parser_factory(Box::new(|| Box::new(MockEvtxParser::security())))
+        .parser_factory(Box::new(move || Box::new(MockMftParser::new(mft_source.clone()))))
+        .parser_factory(Box::new(move || Box::new(MockEvtxParser::security(evt_source.clone()))))
         // Modules — receive auto-matched parsers at build() time.
         .module(mft_module)
         .module(evt_module)

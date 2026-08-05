@@ -1,0 +1,9 @@
+error[E0382]: borrow of moved value: `key`
+  --> tests/compile_fail/rawkey_no_clone.rs:10:13
+   |
+ 8 |     let key = RawKey::from_raw(0);
+   |         --- move occurs because `key` has type `RawKey`, which does not implement the `Copy` trait
+ 9 |     let _moved = key;
+   |                  --- value moved here
+10 |     let _ = key.raw();
+   |             ^^^ value borrowed here after move

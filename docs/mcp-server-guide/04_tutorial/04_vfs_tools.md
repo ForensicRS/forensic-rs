@@ -12,26 +12,48 @@ Prefetch files in `C:\Windows\Prefetch` contain execution history of application
 
 **Note:** This example uses a **mock implementation** that returns realistic-looking data without requiring actual Prefetch files.
 
-## Understanding VirtualFileSystem
+## Understanding FileSystem
 
-The `VirtualFileSystem` trait provides abstract file access:
+The `FileSystem` trait provides abstract, `&self`-based file access, so an
+`Arc<dyn FileSystem>` can be shared across worker threads:
 
 ```rust
-pub trait VirtualFileSystem: Send + Sync {
-    fn read_to_string(&mut self, path: &Path) -> ForensicResult<String>;
-    fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>>;
-    fn metadata(&mut self, path: &Path) -> ForensicResult<VMetadata>;
-    fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<VDirEntry>>;
-    fn open(&mut self, path: &Path) -> ForensicResult<Box<dyn VirtualFile>>;
-    fn duplicate(&self) -> Box<dyn VirtualFileSystem>;
-    fn exists(&mut self, path: &Path) -> bool { ... }
+pub trait FileSystem: Send + Sync {
+    fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>>;
+    fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata>;
+    fn read_dir(&self, path: &FPath)
+        -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>>;
+    fn source(&self) -> SourceKind; // Live, Image, Triage, or Memory
+
+    // Defaulted; override only if applicable
+    fn case_sensitivity(&self) -> CaseSensitivity { CaseSensitivity::Insensitive }
 }
 ```
 
+`FPath`/`FPathBuf` (`/`-normalized, drive-aware evidence paths) replace
+`std::path::Path`/`PathBuf` throughout this API.
+
+A blanket-implemented `FileSystemExt` layers ergonomic helpers on top of any
+`FileSystem` — this is what a tool author calls day to day:
+
+```rust
+pub trait FileSystemExt: FileSystem {
+    fn read_all(&self, path: &FPath) -> ForensicResult<Vec<u8>>;
+    fn exists(&self, path: &FPath) -> bool;
+    fn walk(&self, root: &FPath, opts: &WalkOptions) -> Walk<'_, Self>; // lazy, streaming DFS
+    fn glob(&self, pattern: &str) -> ForensicResult<Vec<FPathBuf>>;
+    fn glob_iter(&self, pattern: &str) -> Glob<'_, Self>;
+}
+```
+
+Note that `read_dir` returns a lazy `Box<dyn Iterator<Item = ForensicResult<DirEntry>>>`,
+not an already-collected `Vec` — entries stream out one at a time, so a caller
+can stop early without enumerating a huge directory.
+
 **Implementations:**
 - `StdVirtualFS` - Real filesystem access
-- `ChRootFileSystem` - Path remapping/chroot
-- ZIP-contained files - Via stacked VFS
+- `ChRootFileSystem` - Path remapping/chroot (wraps an `Arc<dyn FileSystem>`)
+- ZIP/E01/OLE-contained filesystems - Via `FileSystemFactory`, which sniffs and mounts a nested filesystem from an opened file
 
 ## What We're Building
 
@@ -54,7 +76,7 @@ use forensic_rs::prelude::*;
 ///
 /// Note: This is a MOCK implementation that returns realistic-looking data
 /// without requiring actual Prefetch files. For a real implementation,
-/// see the VirtualFileSystem trait and examples/triage_pipeline.rs.
+/// see the FileSystem trait and examples/triage_pipeline.rs.
 pub struct PrefetchTool {
     descriptor: ToolDescriptor,
 }
@@ -142,21 +164,21 @@ impl ForensicTool for PrefetchTool {
 
         // MOCK DATA: In a real implementation, you would:
         //
-        // 1. Get VFS from TriageSources
+        // 1. Get the FileSystem from TriageSources
         //    let vfs = sources.vfs().ok_or_else(|| ...)?;
         //
-        // 2. Read directory listing
-        //    let entries = vfs.read_dir(Path::new("C:\\Windows\\Prefetch"))?;
+        // 2. Read the directory listing (a lazy, streaming iterator - not
+        //    an already-collected Vec)
+        //    let entries = vfs.read_dir(FPath::new(r"C:\Windows\Prefetch"))?;
         //
-        // 3. Filter for .pf files
-        //    let pf_files: Vec<_> = entries.iter()
-        //        .filter(|e| e.name().ends_with(".pf"))
-        //        .collect();
+        // 3. Filter for .pf files while iterating
+        //    let pf_files = entries
+        //        .filter_map(|e| e.ok())
+        //        .filter(|e| e.file_name().is_some_and(|n| n.to_ascii_uppercase().ends_with(".PF")));
         //
         // 4. Parse each Prefetch file
-        //    for entry in pf_files.iter().take(limit) {
-        //        let path = Path::new(&entry.path());
-        //        let data = vfs.read_all(path)?;
+        //    for entry in pf_files.take(limit) {
+        //        let data = vfs.read_all(&entry.path)?;
         //        let parsed = parse_prefetch(&data)?;
         //        files.push(parsed);
         //    }
@@ -231,29 +253,32 @@ struct PrefetchFile {
 
 ## Real VFS Implementation Pattern
 
-For a real Prefetch analyzer, you would use VFS like this:
+For a real Prefetch analyzer, you would use the filesystem like this:
 
 ```rust
 // Pattern from examples/registry_and_vfs.rs
-use forensic_rs::core::fs::stdfs::StdVirtualFS;
+use forensic_rs::prelude::*;
 
-fn analyze_prefetch(sources: &mut TriageSources) -> ForensicResult<Vec<PrefetchFile>> {
+fn analyze_prefetch(sources: &TriageSources) -> ForensicResult<Vec<PrefetchFile>> {
     let vfs = sources.vfs().ok_or_else(||
-        ForensicError::missing_data("prefetch", "VFS source required")
+        ForensicError::missing_data("prefetch", SCow::Borrowed("PrefetchTool"))
     )?;
 
-    let prefetch_dir = Path::new("C:\\Windows\\Prefetch");
+    let prefetch_dir = FPath::new(r"C:\Windows\Prefetch");
     if !vfs.exists(prefetch_dir) {
         return Ok(Vec::new());
     }
 
-    let entries = vfs.read_dir(prefetch_dir)?;
     let mut files = Vec::new();
 
-    for entry in entries {
-        if entry.name().ends_with(".pf") {
-            let full_path = prefetch_dir.join(entry.name());
-            let data = vfs.read_all(&full_path)?;
+    // `read_dir` is a lazy, streaming iterator - not an already-collected Vec.
+    for entry in vfs.read_dir(prefetch_dir)? {
+        let entry = entry?;
+        let is_pf = entry
+            .file_name()
+            .is_some_and(|n| n.to_ascii_uppercase().ends_with(".PF"));
+        if is_pf {
+            let data = vfs.read_all(&entry.path)?;
             if let Some(prefetch) = parse_prefetch(&data)? {
                 files.push(prefetch);
             }
@@ -263,6 +288,10 @@ fn analyze_prefetch(sources: &mut TriageSources) -> ForensicResult<Vec<PrefetchF
     Ok(files)
 }
 ```
+
+`sources.vfs()` returns `Option<&Arc<dyn FileSystem>>`; `FileSystemExt` methods
+like `exists`/`read_all` are called directly on it thanks to auto-deref, no
+explicit `.as_ref()` needed.
 
 ## ForensicTimestamp Usage
 

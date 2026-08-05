@@ -1,8 +1,8 @@
 //! MCP stdio server example.
 //!
 //! Exposes forensic-rs capability tools over a JSON-RPC 2.0 stdio transport,
-//! demonstrating the MCP integration contract described in
-//! `MCP_INTEGRATION.md` without adding any MCP SDK or async runtime to the core.
+//! demonstrating the MCP capability integration contract without adding any
+//! MCP SDK or async runtime to the core.
 //!
 //! Run with: `cargo run --example mcp_stdio_server`
 //!
@@ -13,8 +13,19 @@
 //! Handled methods:
 //!   initialize / notifications/initialized
 //!   tools/list
-//!   tools/call  (with optional _meta.progressToken → progress notifications)
-//!   notifications/cancelled
+//!   tools/call  (with optional _meta.progressToken → progress notifications;
+//!               runs on a worker thread so the read loop stays free)
+//!   resources/list / resources/read  (browses the crate's own working
+//!               directory via a chrooted VfsProvider, forensic://{provider}/{path}
+//!               URIs; reading a container falls back to its children listing,
+//!               so a generic client can browse via plain resources/read alone;
+//!               reading a recognized container FILE — e.g. examples/sample_triage.frtriage —
+//!               additionally returns a mount_uri hint, and resources/read on a
+//!               path containing a [mount] marker browses inside it, mounted
+//!               lazily on first access and cached — see the module comment
+//!               above MiniArchiveFactory)
+//!   notifications/cancelled  (cancels the matching in-flight tools/call, keyed
+//!               by requestId)
 //!
 //! # Security note
 //! This example uses [`AllowAllPolicy`] for **trusted local** access only.
@@ -30,10 +41,11 @@
 //!   - [Deployment](../docs/mcp-server-guide/04_tutorial/08_deployment.md)
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 
 use forensic_rs::field::Text;
+use forensic_rs::prelude::testing::InMemoryVirtualFileSystem;
 use forensic_rs::prelude::*;
 
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -73,13 +85,13 @@ fn timestamp_to_iso(ts: ForensicTimestamp) -> String {
     }
 }
 
-//! Audit sink that logs all access decisions to stderr.
-//!
-//! For production use, implement `AccessAuditSink` to write to a secure
-//! audit log, SIEM system, or centralized logging service.
-//!
-//! See [Access Control Tutorial](../docs/mcp-server-guide/04_tutorial/07_access_control.md)
-//! for details on implementing audit logging.
+/// Audit sink that logs all access decisions to stderr.
+///
+/// For production use, implement `AccessAuditSink` to write to a secure
+/// audit log, SIEM system, or centralized logging service.
+///
+/// See [Access Control Tutorial](../docs/mcp-server-guide/04_tutorial/07_access_control.md)
+/// for details on implementing audit logging.
 struct StderrAuditSink;
 
 impl AccessAuditSink for StderrAuditSink {
@@ -96,14 +108,14 @@ impl AccessAuditSink for StderrAuditSink {
     }
 }
 
-//! Progress reporter that sends MCP `notifications/progress` messages.
-//!
-//! AI clients can subscribe to progress updates by providing a `_meta.progressToken`
-//! in the tools/call request. The server then sends progress notifications
-//! via stdout while processing.
-//!
-//! See [Long-Running Tools Cookbook](../docs/mcp-server-guide/05_cookbook/tools.md#recipe-5-long-running-tool-with-progress)
-//! for patterns on implementing progress reporting.
+/// Progress reporter that sends MCP `notifications/progress` messages.
+///
+/// AI clients can subscribe to progress updates by providing a `_meta.progressToken`
+/// in the tools/call request. The server then sends progress notifications
+/// via stdout while processing.
+///
+/// See [Long-Running Tools Cookbook](../docs/mcp-server-guide/05_cookbook/tools.md#recipe-5-long-running-tool-with-progress)
+/// for patterns on implementing progress reporting.
 struct StdioProgressReporter {
     id: Arc<Mutex<Option<serde_json::Value>>>,
 }
@@ -130,7 +142,7 @@ impl ProgressReporter for StdioProgressReporter {
                     "message": update.message,
                 }
             });
-            println!("{}", msg.to_string());
+            println!("{}", msg);
             std::io::stdout().flush().ok();
         }
         Ok(())
@@ -360,16 +372,16 @@ fn map_error(err: &CapabilityError) -> (i64, String, Option<serde_json::Value>) 
     }
 }
 
-//! Example tool: Returns case summary information.
-//!
-//! This tool demonstrates:
-//! - Defining `ToolDescriptor` with input/output schemas
-//! - Validating typed input with `CapabilityValue`
-//! - Returning structured results with `ToolResult::structured()`
-//! - Proper error handling with `CapabilityError`
-//!
-//! See [Your First Tool Tutorial](../docs/mcp-server-guide/04_tutorial/02_first_tool.md)
-//! for a detailed walkthrough of this pattern.
+/// Example tool: Returns case summary information.
+///
+/// This tool demonstrates:
+/// - Defining `ToolDescriptor` with input/output schemas
+/// - Validating typed input with `CapabilityValue`
+/// - Returning structured results with `ToolResult::structured()`
+/// - Proper error handling with `CapabilityError`
+///
+/// See [Your First Tool Tutorial](../docs/mcp-server-guide/04_tutorial/02_first_tool.md)
+/// for a detailed walkthrough of this pattern.
 struct CaseSummaryTool {
     descriptor: ToolDescriptor,
 }
@@ -444,16 +456,16 @@ impl ForensicTool for CaseSummaryTool {
     }
 }
 
-//! Example tool: Demonstrates progress reporting and cancellation.
-//!
-//! This tool demonstrates:
-//! - Cooperative cancellation via `context.cancellation.is_cancelled()`
-//! - Progress reporting via `context.report_progress()`
-//! - Handling of nested input parameters
-//! - Early return on cancellation
-//!
-//! See [Progress Reporting Cookbook](../docs/mcp-server-guide/05_cookbook/tools.md#recipe-5-long-running-tool-with-progress)
-//! for more progress reporting patterns.
+/// Example tool: Demonstrates progress reporting and cancellation.
+///
+/// This tool demonstrates:
+/// - Cooperative cancellation via `context.cancellation.is_cancelled()`
+/// - Progress reporting via `context.report_progress()`
+/// - Handling of nested input parameters
+/// - Early return on cancellation
+///
+/// See [Progress Reporting Cookbook](../docs/mcp-server-guide/05_cookbook/tools.md#recipe-5-long-running-tool-with-progress)
+/// for more progress reporting patterns.
 struct LongScanTool {
     descriptor: ToolDescriptor,
 }
@@ -508,7 +520,7 @@ impl ForensicTool for LongScanTool {
         input: CapabilityValue,
         context: &InvocationContext,
     ) -> CapabilityResult<ToolResult> {
-        let iterations = get_nested_u64(&input, "iterations", "value").unwrap_or(10) as u64;
+        let iterations = get_nested_u64(&input, "iterations", "value").unwrap_or(10);
 
         let mut completed = 0u64;
         for i in 0..iterations {
@@ -537,6 +549,198 @@ impl ForensicTool for LongScanTool {
         out.insert(Text::Borrowed("cancelled"), CapabilityValue::Bool(false));
         Ok(ToolResult::structured(CapabilityValue::Object(out)))
     }
+}
+
+// ============================================================================
+// Cross-family resource nesting demo (lazy mount-and-cache)
+// ============================================================================
+//
+// Demonstrates browsing *into* a container file (a zip, an E01, a registry
+// hive, ...) discovered inside the "filesystem" resource provider, without
+// ever eagerly scanning the whole evidence tree up front. See
+// docs/mcp-server-guide/07_capability_coverage.md, "Nested/Cross-Family
+// Resource Design", for the full reasoning.
+//
+// `MiniArchiveFactory` below is a toy `FileSystemFactory` — forensic-rs ships
+// no real zip/E01/OLE parser (that would need an extra dependency this crate
+// deliberately doesn't take on), so this stands in for one to demonstrate the
+// mechanism end to end. A real deployment registers a real zip/E01-aware
+// `FileSystemFactory` instead; everything else here (the mount cache, the
+// `[mount]` path convention, the `resources/read` wiring) is unchanged.
+
+const MOUNT_MARKER: &str = "[mount]";
+const MINI_ARCHIVE_MAGIC: &str = "FRTRIAGE1";
+const MINI_ARCHIVE_ENTRY_SEP: &str = "---ENTRY---";
+
+/// Parses the toy text-based "mini archive" format used by
+/// `examples/sample_triage.frtriage`: a magic first line, then
+/// `---ENTRY---`-delimited blocks of `name line` + `content lines`.
+fn parse_mini_archive(bytes: &[u8]) -> Option<InMemoryVirtualFileSystem> {
+    fn flush(fs: &mut InMemoryVirtualFileSystem, name: &Option<String>, content: &[&str]) {
+        if let Some(name) = name {
+            fs.add_file(name.clone(), content.join("\n"));
+        }
+    }
+
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.lines();
+    if lines.next()?.trim() != MINI_ARCHIVE_MAGIC {
+        return None;
+    }
+    let mut fs = InMemoryVirtualFileSystem::new();
+    let mut current_name: Option<String> = None;
+    let mut current_content: Vec<&str> = Vec::new();
+    for line in lines {
+        if line.trim() == MINI_ARCHIVE_ENTRY_SEP {
+            flush(&mut fs, &current_name, &current_content);
+            current_name = None;
+            current_content.clear();
+        } else if current_name.is_none() {
+            current_name = Some(line.trim().to_string());
+        } else {
+            current_content.push(line);
+        }
+    }
+    flush(&mut fs, &current_name, &current_content);
+    Some(fs)
+}
+
+/// Toy `FileSystemFactory`: recognizes the mini-archive magic and mounts its
+/// entries into an in-memory filesystem. Stand-in for a real zip/E01/OLE
+/// factory — see the module comment above.
+struct MiniArchiveFactory;
+
+impl FileSystemFactory for MiniArchiveFactory {
+    fn name(&self) -> &'static str {
+        "mini-archive"
+    }
+
+    fn probe(&self, file: &mut dyn VirtualFile) -> ForensicResult<bool> {
+        let start = file.stream_position()?;
+        let mut magic = vec![0u8; MINI_ARCHIVE_MAGIC.len()];
+        let matches = file.read_exact(&mut magic).is_ok() && magic == MINI_ARCHIVE_MAGIC.as_bytes();
+        file.seek(SeekFrom::Start(start))?;
+        Ok(matches)
+    }
+
+    fn mount(&self, mut file: Box<dyn VirtualFile>) -> ForensicResult<Arc<dyn FileSystem>> {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let fs = parse_mini_archive(&bytes).ok_or_else(|| {
+            ForensicError::other("MiniArchiveFactory", "malformed mini-archive".to_string())
+        })?;
+        Ok(Arc::new(fs))
+    }
+}
+
+/// Splits a resource path at the `[mount]` marker into `(container_path,
+/// inner_path)`. `"case.frtriage/[mount]/README.txt"` ->
+/// `Some(("case.frtriage", "README.txt"))`; `"case.frtriage/[mount]"` (or with
+/// a trailing slash) -> `Some(("case.frtriage", ""))` (the mount's own root).
+fn split_mount_path(path: &str) -> Option<(&str, &str)> {
+    let marker = "/[mount]";
+    let idx = path.find(marker)?;
+    let container = &path[..idx];
+    let inner = path[idx + marker.len()..].trim_start_matches('/');
+    Some((container, inner))
+}
+
+/// Builds the `forensic://{provider}/{container}/[mount]/{inner}` URI for a
+/// path inside a mounted container.
+fn mount_child_uri(provider: &str, container_path: &str, inner_path: &str) -> String {
+    let suffix = if inner_path.is_empty() {
+        String::new()
+    } else {
+        format!("/{}", inner_path)
+    };
+    encode_resource_uri(provider, &format!("{}/{}{}", container_path, MOUNT_MARKER, suffix))
+}
+
+/// Whether a resource's content looks like a recognized container format —
+/// used to hint a `mount_uri` on an otherwise-ordinary successful read.
+fn looks_like_container(content: &ResourceContent) -> bool {
+    let magic = MINI_ARCHIVE_MAGIC.as_bytes();
+    match content {
+        ResourceContent::Text { text, .. } => text.as_bytes().starts_with(magic),
+        ResourceContent::Bytes { data, .. } => data.starts_with(magic),
+        ResourceContent::Structured { .. } => false,
+    }
+}
+
+/// Encodes a `(provider, path)` resource identity into a single MCP URI, reusing
+/// the same `forensic://` scheme this file already uses for
+/// `ToolContent::ResourceReference`.
+fn encode_resource_uri(provider: &str, path: &str) -> String {
+    format!("forensic://{}/{}", provider, path)
+}
+
+/// Inverse of [`encode_resource_uri`]. The first path segment after the scheme is
+/// the provider id; everything after the first `/` is the resource path (which
+/// may itself contain further `/` or `\` separators).
+fn decode_resource_uri(uri: &str) -> Option<(String, String)> {
+    let rest = uri.strip_prefix("forensic://")?;
+    match rest.split_once('/') {
+        Some((provider, path)) => Some((provider.to_string(), path.to_string())),
+        None => Some((rest.to_string(), String::new())),
+    }
+}
+
+/// Lists the authorized children of `path` within `provider`, shaped as the
+/// same `{"uri","name","description"}` entries `resources/list` returns. Shared
+/// by `resources/list`'s uri-drilldown branch and `resources/read`'s
+/// container-read fallback (see `handle`'s `"resources/read"` arm) so the two
+/// don't duplicate the mapping.
+fn list_children_as_json(
+    scoped: &ScopedCapabilityRegistry<'_>,
+    provider: &str,
+    path: &str,
+    cancellation: &CancellationToken,
+) -> CapabilityResult<Vec<serde_json::Value>> {
+    let page = scoped.list_resources(provider, path, PageRequest::new(0, u64::MAX), cancellation)?;
+    Ok(page
+        .entries
+        .into_iter()
+        .map(|entry| {
+            serde_json::json!({
+                "uri": encode_resource_uri(&entry.id.provider, &entry.id.path),
+                "name": entry.name,
+                "description": entry.description,
+            })
+        })
+        .collect())
+}
+
+/// Maps a `ResourceContent` to an MCP `resources/read` content entry.
+fn resource_content_to_mcp(id: &ResourceId, content: ResourceContent) -> serde_json::Value {
+    let uri = encode_resource_uri(&id.provider, &id.path);
+    match content {
+        ResourceContent::Text { text, media_type } => serde_json::json!({
+            "uri": uri,
+            "mimeType": media_type.unwrap_or_else(|| "text/plain".to_string()),
+            "text": text,
+        }),
+        ResourceContent::Bytes { data, media_type } => {
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+            serde_json::json!({
+                "uri": uri,
+                "mimeType": media_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                "blob": encoded,
+            })
+        }
+        ResourceContent::Structured { value, media_type } => serde_json::json!({
+            "uri": uri,
+            "mimeType": media_type.unwrap_or_else(|| "application/json".to_string()),
+            "text": serde_json::to_string(&capability_value_to_json(&value)).unwrap_or_default(),
+        }),
+    }
+}
+
+/// Stable stringification of a JSON-RPC id, used as the cancellation-registry key.
+/// Applied identically when registering (from `tools/call`'s `req.id`) and when
+/// looking up (from `notifications/cancelled`'s `requestId`), so they always agree.
+fn request_key(id: &serde_json::Value) -> String {
+    id.to_string()
 }
 
 fn tool_to_mcp(tool: &ToolDescriptor) -> serde_json::Value {
@@ -579,18 +783,35 @@ impl McpRequest {
 struct Server {
     registry: CapabilityRegistry,
     access: AccessContext,
+    /// Live cancellation tokens for in-flight `tools/call` invocations, keyed by
+    /// the stringified JSON-RPC request id. `notifications/cancelled` looks up its
+    /// `requestId` here to reach the running call — see `handle_tools_call` and
+    /// the `"notifications/cancelled"` arm of `handle`.
+    cancellations: Mutex<BTreeMap<String, CancellationToken>>,
+    /// The same filesystem `VfsProvider` is registered with, kept directly so
+    /// `mounted_filesystem` can open a container file's raw bytes without going
+    /// through the resource-authorization layer twice.
+    vfs: Arc<dyn FileSystem>,
+    /// Registered container-format sniffers, tried in order. See
+    /// `mounted_filesystem`.
+    mount_factories: Vec<Arc<dyn FileSystemFactory>>,
+    /// Lazy mount cache, keyed by the container file's path in `vfs`. Populated
+    /// on first access — never scanned eagerly — so cost is paid only for
+    /// containers someone actually reads into. See "Nested/Cross-Family
+    /// Resource Design" in docs/mcp-server-guide/07_capability_coverage.md.
+    mounted: Mutex<BTreeMap<String, Arc<dyn FileSystem>>>,
 }
 
-//! Server setup and initialization.
-//!
-//! This demonstrates:
-//! - Creating `CapabilityRegistry` with an access policy
-//! - Wrapping policies with `AuditedAccessPolicy` for audit logging
-//! - Registering tools with the registry
-//! - Creating `AccessContext` for an authenticated principal
-//!
-//! See [Access Control Tutorial](../docs/mcp-server-guide/04_tutorial/07_access_control.md)
-//! for implementing custom access policies.
+/// Server setup and initialization.
+///
+/// This demonstrates:
+/// - Creating `CapabilityRegistry` with an access policy
+/// - Wrapping policies with `AuditedAccessPolicy` for audit logging
+/// - Registering tools with the registry
+/// - Creating `AccessContext` for an authenticated principal
+///
+/// See [Access Control Tutorial](../docs/mcp-server-guide/04_tutorial/07_access_control.md)
+/// for implementing custom access policies.
 impl Server {
     fn new() -> Self {
         let audit = Arc::new(StderrAuditSink);
@@ -603,13 +824,121 @@ impl Server {
             .register_tool(Arc::new(LongScanTool::new()))
             .unwrap();
 
+        // Expose the crate's own working directory as browsable evidence via
+        // `resources/list`/`resources/read`, chrooted (not the raw host root) —
+        // a real deployment would chroot to an actual evidence/triage directory
+        // instead of ".". Mirrors the pattern in `examples/registry_and_vfs.rs`.
+        let vfs: Arc<dyn FileSystem> =
+            Arc::new(ChRootFileSystem::new(".", Arc::new(StdVirtualFS::new())));
+        registry
+            .register_resource_provider(Arc::new(VfsProvider::new(Arc::clone(&vfs))))
+            .unwrap();
+
         let access = AccessContext::new("analyst-local", "local-triage")
             .with_session("stdio-session")
             .with_role("incident-response");
 
-        Self { registry, access }
+        Self {
+            registry,
+            access,
+            cancellations: Mutex::new(BTreeMap::new()),
+            vfs,
+            mount_factories: vec![Arc::new(MiniArchiveFactory)],
+            mounted: Mutex::new(BTreeMap::new()),
+        }
     }
-}
+
+    /// Returns the mounted filesystem for a container file at `container_path`
+    /// (within `self.vfs`), mounting and caching it on first access. Never
+    /// scans anything beyond the one file actually being accessed — see the
+    /// module comment above `MiniArchiveFactory`.
+    fn mounted_filesystem(&self, container_path: &str) -> CapabilityResult<Arc<dyn FileSystem>> {
+        if let Some(fs) = self.mounted.lock().unwrap().get(container_path) {
+            return Ok(Arc::clone(fs));
+        }
+        let mut file = self.vfs.open(FPath::new(container_path)).map_err(|_| {
+            CapabilityError::new(CapabilityErrorKind::NotFound, "container not found")
+        })?;
+        let mut matched_index = None;
+        for (index, factory) in self.mount_factories.iter().enumerate() {
+            if factory.probe(&mut *file).unwrap_or(false) {
+                matched_index = Some(index);
+                break;
+            }
+        }
+        let Some(index) = matched_index else {
+            return Err(CapabilityError::new(
+                CapabilityErrorKind::InvalidInput,
+                "not a recognized container format",
+            ));
+        };
+        let mounted = self.mount_factories[index].mount(file).map_err(|_| {
+            CapabilityError::new(CapabilityErrorKind::Internal, "failed to mount container")
+        })?;
+        self.mounted
+            .lock()
+            .unwrap()
+            .insert(container_path.to_string(), Arc::clone(&mounted));
+        Ok(mounted)
+    }
+
+    /// Reads or lists `inner_path` inside the container mounted at
+    /// `container_path`, mounting it on demand via `mounted_filesystem`. Called
+    /// from the `"resources/read"` arm of `handle` whenever the requested path
+    /// contains a `[mount]` marker.
+    fn read_mounted(
+        &self,
+        provider: &str,
+        container_path: &str,
+        inner_path: &str,
+    ) -> CapabilityResult<serde_json::Value> {
+        let fs = self.mounted_filesystem(container_path)?;
+        let uri = mount_child_uri(provider, container_path, inner_path);
+        let inner = if inner_path.is_empty() { "/" } else { inner_path };
+
+        if let Ok(bytes) = fs.read_all(FPath::new(inner)) {
+            return Ok(match String::from_utf8(bytes) {
+                Ok(text) => serde_json::json!({ "uri": uri, "mimeType": "text/plain", "text": text }),
+                Err(err) => {
+                    use base64::Engine;
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(err.into_bytes());
+                    serde_json::json!({
+                        "uri": uri,
+                        "mimeType": "application/octet-stream",
+                        "blob": encoded,
+                    })
+                }
+            });
+        }
+
+        let entries = fs.read_dir(FPath::new(inner)).map_err(|_| {
+            CapabilityError::new(
+                CapabilityErrorKind::NotFound,
+                "not found in mounted container",
+            )
+        })?;
+        let children: Vec<serde_json::Value> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| {
+                let name = entry.file_name().unwrap_or_default().to_string();
+                let child_inner = if inner_path.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", inner_path, name)
+                };
+                serde_json::json!({
+                    "uri": mount_child_uri(provider, container_path, &child_inner),
+                    "name": name,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "uri": uri,
+            "mimeType": "application/json",
+            "text": serde_json::to_string(&serde_json::json!({ "children": children }))
+                .unwrap_or_default(),
+        }))
+    }
 
     fn handle(&self, req: McpRequest) -> Option<String> {
         match req.method.as_str() {
@@ -617,7 +946,7 @@ impl Server {
                 let id = req.id?;
                 let result = serde_json::json!({
                     "protocolVersion": "2025-06-18",
-                    "capabilities": { "tools": {} },
+                    "capabilities": { "tools": {}, "resources": {} },
                     "serverInfo": {
                         "name": "forensic-rs-mcp-stdio",
                         "version": "0.1.0"
@@ -640,80 +969,152 @@ impl Server {
                         .to_string(),
                 )
             }
-            "tools/call" => {
-                let name = req.params.get("name")?.as_str()?;
-                let args = req.params.get("arguments").unwrap_or(&serde_json::Value::Null);
-                let progress_token = req
-                    .params
-                    .get("_meta")
-                    .and_then(|m| m.get("progressToken"))
-                    .cloned();
-                let token = Arc::new(Mutex::new(progress_token));
-
+            // "tools/call" is intentionally not handled here — `main()` dispatches
+            // it directly to `handle_tools_call` on a worker thread instead, so
+            // this blocking-loop-based `handle` never runs a long tool call itself.
+            "resources/list" => {
+                let id = req.id?;
                 let scoped = self.registry.scope(self.access.clone());
-                let invocation = {
-                    let reporter = Arc::new(StdioProgressReporter::new(token));
-                    InvocationContext::new(self.access.clone())
-                        .with_progress_reporter(reporter)
+                let cancellation = CancellationToken::new();
+                let uri = req.params.get("uri").and_then(|v| v.as_str());
+
+                let list_result: CapabilityResult<Vec<serde_json::Value>> = match uri {
+                    None => Ok(scoped
+                        .list_resource_providers()
+                        .into_iter()
+                        .map(|descriptor| {
+                            serde_json::json!({
+                                "uri": encode_resource_uri(&descriptor.id, ""),
+                                "name": descriptor.title,
+                                "description": descriptor.description,
+                            })
+                        })
+                        .collect()),
+                    Some(uri) => match decode_resource_uri(uri) {
+                        Some((provider, path)) => {
+                            list_children_as_json(&scoped, &provider, &path, &cancellation)
+                        }
+                        None => Err(CapabilityError::new(
+                            CapabilityErrorKind::InvalidInput,
+                            "invalid resource uri",
+                        )),
+                    },
                 };
 
-                let input = json_to_value(args);
-                let result = scoped.invoke_tool(name, input, invocation);
-
-                match result {
-                    Ok(tool_result) => {
-                        let mut content = tool_result_to_mcp_content(&tool_result);
-                        if let Some(ref structured_val) = tool_result.structured {
-                            let json_str = serde_json::to_string(&capability_value_to_json(structured_val)).unwrap_or_default();
-                            content.push(serde_json::json!({
-                                "type": "text",
-                                "text": json_str
-                            }));
-                        }
-                        let structured = tool_result.structured.as_ref()
-                            .map(capability_value_to_json);
-                        let response = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": req.id,
-                            "result": {
-                                "content": content,
-                                "structuredContent": structured,
-                                "isError": false
-                            }
-                        });
-                        Some(response.to_string())
+                Some(match list_result {
+                    Ok(resources) => {
+                        let result = serde_json::json!({ "resources": resources });
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
                     }
                     Err(err) => {
                         let (code, msg, data) = map_error(&err);
-                        let response = serde_json::json!({
+                        serde_json::json!({
                             "jsonrpc": "2.0",
-                            "id": req.id,
-                            "error": {
-                                "code": code,
-                                "message": msg,
-                                "data": data
-                            }
-                        });
-                        Some(response.to_string())
+                            "id": id,
+                            "error": { "code": code, "message": msg, "data": data }
+                        })
+                        .to_string()
                     }
-                }
+                })
+            }
+            "resources/read" => {
+                let id = req.id?;
+                let scoped = self.registry.scope(self.access.clone());
+                let cancellation = CancellationToken::new();
+                let uri = req.params.get("uri").and_then(|v| v.as_str());
+
+                let read_result: CapabilityResult<serde_json::Value> =
+                    match uri.and_then(decode_resource_uri) {
+                        Some((provider, path)) => {
+                            // A `[mount]` marker means the caller is asking to
+                            // browse *inside* an already-discovered container
+                            // file (see the `mount_uri` hint added below) —
+                            // handled directly against the mounted filesystem,
+                            // bypassing the resource-provider registry entirely
+                            // (the mounted filesystem isn't a registered
+                            // `ResourceProvider`, just a plain `FileSystem`).
+                            if let Some((container_path, inner_path)) = split_mount_path(&path) {
+                                self.read_mounted(&provider, container_path, inner_path)
+                            } else {
+                                let resource_id = ResourceId::new(provider, path);
+                                match scoped.read_resource(&resource_id, &cancellation) {
+                                    Ok(content) => {
+                                        let mut value =
+                                            resource_content_to_mcp(&resource_id, content.clone());
+                                        if looks_like_container(&content) {
+                                            if let serde_json::Value::Object(map) = &mut value {
+                                                map.insert(
+                                                    "mount_uri".to_string(),
+                                                    serde_json::Value::String(mount_child_uri(
+                                                        &resource_id.provider,
+                                                        &resource_id.path,
+                                                        "",
+                                                    )),
+                                                );
+                                            }
+                                        }
+                                        Ok(value)
+                                    }
+                                    Err(read_err) => {
+                                        // Not readable as content — this may be a
+                                        // container (a directory, a registry key, ...)
+                                        // rather than a leaf. Fall back to its
+                                        // children listing so a generic MCP client
+                                        // can still browse it via plain
+                                        // `resources/read`, without needing this
+                                        // server's non-standard
+                                        // `resources/list?uri=...` convention. If it
+                                        // isn't a container either, surface the
+                                        // original read error.
+                                        match list_children_as_json(
+                                            &scoped,
+                                            &resource_id.provider,
+                                            &resource_id.path,
+                                            &cancellation,
+                                        ) {
+                                            Ok(children) => Ok(serde_json::json!({
+                                                "uri": encode_resource_uri(&resource_id.provider, &resource_id.path),
+                                                "mimeType": "application/json",
+                                                "text": serde_json::to_string(&serde_json::json!({ "children": children }))
+                                                    .unwrap_or_default(),
+                                            })),
+                                            Err(_) => Err(read_err),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None => Err(CapabilityError::new(
+                            CapabilityErrorKind::InvalidInput,
+                            "invalid resource uri",
+                        )),
+                    };
+
+                Some(match read_result {
+                    Ok(contents) => {
+                        let result = serde_json::json!({ "contents": [contents] });
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
+                    }
+                    Err(err) => {
+                        let (code, msg, data) = map_error(&err);
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": { "code": code, "message": msg, "data": data }
+                        })
+                        .to_string()
+                    }
+                })
             }
             "notifications/cancelled" => {
-                let token = req
-                    .params
-                    .get("progressToken")
-                    .and_then(|t| {
-                        if t.is_null() {
-                            None
-                        } else {
-                            Some(t.clone())
-                        }
-                    })
-                    .or_else(|| {
-                        req.params.get("_meta").and_then(|m| m.get("progressToken").cloned())
-                    });
-                if let Some(t) = token {
-                    eprintln!("[SERVER] cancelled notification for token={}", t);
+                // Per the MCP spec, `requestId` is the id of the original request
+                // being cancelled (not `progressToken`, which the previous version
+                // of this handler incorrectly read).
+                if let Some(id) = req.params.get("requestId").cloned() {
+                    let key = request_key(&id);
+                    if let Some(token) = self.cancellations.lock().unwrap().get(&key) {
+                        token.cancel();
+                    }
                 }
                 None
             }
@@ -730,28 +1131,108 @@ impl Server {
             }
         }
     }
+
+    /// Handles `tools/call`. Run on a worker thread by `main()` (not through
+    /// `handle`), so the main stdin-reading loop stays free to receive and
+    /// dispatch a `notifications/cancelled` while a long call is in flight.
+    ///
+    /// Registers a `CancellationToken` in `self.cancellations`, keyed by the
+    /// request id, for the duration of the call — see `request_key` and the
+    /// `"notifications/cancelled"` arm of `handle`.
+    fn handle_tools_call(&self, req: McpRequest) -> Option<String> {
+        let name = req.params.get("name")?.as_str()?;
+        let args = req.params.get("arguments").unwrap_or(&serde_json::Value::Null);
+        let progress_token = req
+            .params
+            .get("_meta")
+            .and_then(|m| m.get("progressToken"))
+            .cloned();
+        let token = Arc::new(Mutex::new(progress_token));
+
+        let scoped = self.registry.scope(self.access.clone());
+        let cancellation = CancellationToken::new();
+        let key = req.id.as_ref().map(request_key);
+        if let Some(key) = &key {
+            self.cancellations
+                .lock()
+                .unwrap()
+                .insert(key.clone(), cancellation.clone());
+        }
+
+        let mut invocation = {
+            let reporter = Arc::new(StdioProgressReporter::new(token));
+            InvocationContext::new(self.access.clone())
+                .with_progress_reporter(reporter)
+        };
+        invocation.cancellation = cancellation;
+
+        let input = json_to_value(args);
+        let result = scoped.invoke_tool(name, input, invocation);
+
+        if let Some(key) = &key {
+            self.cancellations.lock().unwrap().remove(key);
+        }
+
+        Some(match result {
+            Ok(tool_result) => {
+                let mut content = tool_result_to_mcp_content(&tool_result);
+                if let Some(ref structured_val) = tool_result.structured {
+                    let json_str = serde_json::to_string(&capability_value_to_json(structured_val)).unwrap_or_default();
+                    content.push(serde_json::json!({
+                        "type": "text",
+                        "text": json_str
+                    }));
+                }
+                let structured = tool_result.structured.as_ref()
+                    .map(capability_value_to_json);
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "result": {
+                        "content": content,
+                        "structuredContent": structured,
+                        "isError": false
+                    }
+                })
+                .to_string()
+            }
+            Err(err) => {
+                let (code, msg, data) = map_error(&err);
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "error": {
+                        "code": code,
+                        "message": msg,
+                        "data": data
+                    }
+                })
+                .to_string()
+            }
+        })
+    }
 }
 
-//! Main entry point for the MCP stdio server.
-//!
-//! The server:
-//! 1. Initializes the `Server` (registry, policies, tools)
-//! 2. Reads JSON-RPC requests line-by-line from stdin
-//! 3. Handles each method (initialize, tools/list, tools/call, etc.)
-//! 4. Writes JSON-RPC responses to stdout, diagnostics to stderr
-//!
-//! For a complete walkthrough of building this server from scratch,
-//! see the [Quickstart Guide](../docs/mcp-server-guide/03_quickstart.md).
-//!
-//! For production deployment considerations, see:
-//! - [Deployment Tutorial](../docs/mcp-server-guide/04_tutorial/08_deployment.md)
-//! - [Troubleshooting Guide](../docs/mcp-server-guide/06_troubleshooting.md)
+/// Main entry point for the MCP stdio server.
+///
+/// The server:
+/// 1. Initializes the `Server` (registry, policies, tools)
+/// 2. Reads JSON-RPC requests line-by-line from stdin
+/// 3. Handles each method (initialize, tools/list, tools/call, etc.)
+/// 4. Writes JSON-RPC responses to stdout, diagnostics to stderr
+///
+/// For a complete walkthrough of building this server from scratch,
+/// see the [Quickstart Guide](../docs/mcp-server-guide/03_quickstart.md).
+///
+/// For production deployment considerations, see:
+/// - [Deployment Tutorial](../docs/mcp-server-guide/04_tutorial/08_deployment.md)
+/// - [Troubleshooting Guide](../docs/mcp-server-guide/06_troubleshooting.md)
 fn main() {
     eprintln!(
         "[forensic-rs MCP stdio server] Trusted local example — do not expose to untrusted clients"
     );
 
-    let server = Server::new();
+    let server = Arc::new(Server::new());
     let stdin = std::io::stdin();
     let reader = BufReader::new(stdin.lock());
 
@@ -772,7 +1253,7 @@ fn main() {
                     "id": null,
                     "error": { "code": -32700, "message": format!("parse error: {}", e) }
                 });
-                println!("{}", resp.to_string());
+                println!("{}", resp);
                 std::io::stdout().flush().ok();
                 continue;
             }
@@ -786,13 +1267,31 @@ fn main() {
                     "id": null,
                     "error": { "code": -32600, "message": "invalid request" }
                 });
-                println!("{}", resp.to_string());
+                println!("{}", resp);
                 std::io::stdout().flush().ok();
                 continue;
             }
         };
 
-        if let Some(response) = server.handle(req) {
+        if req.method.as_str() == "tools/call" {
+            // Run on a worker thread so the main loop keeps reading stdin — in
+            // particular so a `notifications/cancelled` for this call can
+            // actually be received and dispatched while the call is in flight.
+            // One thread per call, fire-and-forget, no pool: an acceptable
+            // simplification for a trusted-local reference example, not a
+            // production concurrency model. Concurrent `println!` calls each
+            // lock stdout for their own full write, so responses/progress
+            // notifications from different threads won't interleave mid-line —
+            // only their relative order is nondeterministic, which is inherent
+            // to real concurrency.
+            let server = Arc::clone(&server);
+            std::thread::spawn(move || {
+                if let Some(response) = server.handle_tools_call(req) {
+                    println!("{}", response);
+                    std::io::stdout().flush().ok();
+                }
+            });
+        } else if let Some(response) = server.handle(req) {
             println!("{}", response);
             std::io::stdout().flush().ok();
         }

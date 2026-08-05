@@ -1,3 +1,10 @@
+//! Flat, offset-based byte readers (`read_*_at(buffer, pos)`).
+//!
+//! For new code, prefer [`crate::parsing::ByteReader`], which tracks position
+//! automatically and covers `u8`/`i8`/`i16`/`i32`/`i64`/`f32`/`f64`/strings/
+//! fixed arrays. These functions remain for existing single-offset lookups
+//! and are not deprecated, but are not being expanded further.
+
 use crate::err::ForensicResult;
 
 /// Reads a little-endian `u16` at `pos`.

@@ -295,6 +295,9 @@ impl ForensicTimestamp {
         Ok(timestamp)
     }
 
+    // A calendar constructor naturally has one argument per component;
+    // grouping them would only add ceremony for callers.
+    #[allow(clippy::too_many_arguments)]
     pub fn try_with_ymd_and_hms_nanos(
         year: i64,
         month: u8,
@@ -710,6 +713,57 @@ fn civil_from_days(days: i64) -> (i64, u8, u8) {
     (year, month as u8, day as u8)
 }
 
+#[cfg(feature = "serde")]
+impl Serialize for ForensicTimestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("ForensicTimestamp", 4)?;
+        state.serialize_field("utc_seconds", &self.utc_seconds)?;
+        state.serialize_field("nanoseconds", &self.nanoseconds)?;
+        state.serialize_field(
+            "utc_offset_minutes",
+            &self.utc_offset_minutes(),
+        )?;
+        state.serialize_field("flags", &self.flags.bits())?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for ForensicTimestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct TimestampParts {
+            utc_seconds: i64,
+            nanoseconds: u32,
+            utc_offset_minutes: Option<i16>,
+            flags: u16,
+        }
+
+        let parts = TimestampParts::deserialize(deserializer)?;
+        Self::try_from_parts(
+            parts.utc_seconds,
+            parts.nanoseconds,
+            parts.utc_offset_minutes,
+            TimestampFlags::from_bits_retain(parts.flags),
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl Default for ForensicTimestamp {
+    fn default() -> Self {
+        Self::from_parts_unchecked(0, 0, None, TimestampFlags::default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,56 +856,5 @@ mod tests {
         let json = serde_json::to_string(&timestamp).unwrap();
         assert!(json.contains("utc_offset_minutes"));
         assert_eq!(serde_json::from_str::<ForensicTimestamp>(&json).unwrap(), timestamp);
-    }
-}
-
-#[cfg(feature = "serde")]
-impl Serialize for ForensicTimestamp {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeStruct;
-
-        let mut state = serializer.serialize_struct("ForensicTimestamp", 4)?;
-        state.serialize_field("utc_seconds", &self.utc_seconds)?;
-        state.serialize_field("nanoseconds", &self.nanoseconds)?;
-        state.serialize_field(
-            "utc_offset_minutes",
-            &self.utc_offset_minutes(),
-        )?;
-        state.serialize_field("flags", &self.flags.bits())?;
-        state.end()
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> Deserialize<'de> for ForensicTimestamp {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct TimestampParts {
-            utc_seconds: i64,
-            nanoseconds: u32,
-            utc_offset_minutes: Option<i16>,
-            flags: u16,
-        }
-
-        let parts = TimestampParts::deserialize(deserializer)?;
-        Self::try_from_parts(
-            parts.utc_seconds,
-            parts.nanoseconds,
-            parts.utc_offset_minutes,
-            TimestampFlags::from_bits_retain(parts.flags),
-        )
-        .map_err(serde::de::Error::custom)
-    }
-}
-
-impl Default for ForensicTimestamp {
-    fn default() -> Self {
-        Self::from_parts_unchecked(0, 0, None, TimestampFlags::default())
     }
 }

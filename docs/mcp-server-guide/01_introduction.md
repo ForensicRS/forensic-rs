@@ -118,4 +118,3 @@ ForensicBridge and MCP share the same underlying providers but serve different c
 
 - Continue to [Architecture](./02_architecture.md) for a deeper dive into components
 - Jump to [Quickstart](./03_quickstart.md) to build a minimal server in 5 minutes
-- See [MCP Integration Design](../MCP_INTEGRATION.md) for the full technical specification

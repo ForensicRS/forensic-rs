@@ -36,6 +36,7 @@ We recommend following this guide in order:
    - [Deployment](./04_tutorial/08_deployment.md)
 5. **[Cookbook](./05_cookbook/tools.md)** - Reusable patterns and recipes
 6. **[Troubleshooting](./06_troubleshooting.md)** - FAQ and common issues
+7. **[Capability Coverage & Roadmap](./07_capability_coverage.md)** - What's implemented, what's built but not wired up, and what's still missing (resources, prompts, sampling, roots, and more)
 
 ## Scenario: Incident Response Case Analysis
 
@@ -53,8 +54,8 @@ Our server exposes four forensic tools:
 ## Quick Links
 
 - [ForensicRS Main Documentation](../README.md)
-- [MCP Integration Design](../MCP_INTEGRATION.md)
 - [Existing Examples](../examples/mcp_stdio_server.rs)
+- [Capability Coverage & Roadmap](./07_capability_coverage.md)
 - [ForensicRS crates.io](https://crates.io/crates/forensic-rs)
 
 ## Getting Help

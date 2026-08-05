@@ -1,4 +1,5 @@
-use crate::traits::{registry::RegistryReader, vfs::VirtualFileSystem};
+use crate::traits::{registry::Registry, vfs::FileSystem};
+use std::sync::Arc;
 
 /// Holds the data sources available to parsers during pipeline execution.
 ///
@@ -9,14 +10,19 @@ use crate::traits::{registry::RegistryReader, vfs::VirtualFileSystem};
 /// Sources are optional. `registry` is retained for live-system and legacy
 /// callers that already own a reader. Registry hives discovered in a VFS
 /// should be opened through `RegistryReaderFactory`, like other derived files.
+///
+/// `Arc`, not `Box`: both `FileSystem` and `Registry` are `Send + Sync` with
+/// `&self`-based reads, so the same already-open source can be shared
+/// (cloned cheaply) across parallel pipeline workers instead of being
+/// re-opened per task (RFC 0001 §1, P5).
 pub struct TriageSources {
-    vfs: Option<Box<dyn VirtualFileSystem>>,
-    registry: Option<Box<dyn RegistryReader>>,
+    vfs: Option<Arc<dyn FileSystem>>,
+    registry: Option<Arc<dyn Registry>>,
 }
 
 impl TriageSources {
     /// Create sources with both VFS and registry.
-    pub fn new(vfs: Box<dyn VirtualFileSystem>, registry: Box<dyn RegistryReader>) -> Self {
+    pub fn new(vfs: Arc<dyn FileSystem>, registry: Arc<dyn Registry>) -> Self {
         Self {
             vfs: Some(vfs),
             registry: Some(registry),
@@ -28,20 +34,14 @@ impl TriageSources {
         TriageSourcesBuilder::default()
     }
 
-    /// Access the virtual filesystem, if available.
-    pub fn vfs(&mut self) -> Option<&mut dyn VirtualFileSystem> {
-        match &mut self.vfs {
-            Some(v) => Some(&mut **v),
-            None => None,
-        }
+    /// Access the filesystem, if available.
+    pub fn vfs(&self) -> Option<&Arc<dyn FileSystem>> {
+        self.vfs.as_ref()
     }
 
     /// Access a pre-opened live or compatibility registry reader, if available.
-    pub fn registry(&self) -> Option<&dyn RegistryReader> {
-        match &self.registry {
-            Some(r) => Some(&**r),
-            None => None,
-        }
+    pub fn registry(&self) -> Option<&Arc<dyn Registry>> {
+        self.registry.as_ref()
     }
 
     /// Whether a VFS source has been configured.
@@ -58,17 +58,17 @@ impl TriageSources {
 /// Builder for constructing `TriageSources` with the available evidence.
 #[derive(Default)]
 pub struct TriageSourcesBuilder {
-    vfs: Option<Box<dyn VirtualFileSystem>>,
-    registry: Option<Box<dyn RegistryReader>>,
+    vfs: Option<Arc<dyn FileSystem>>,
+    registry: Option<Arc<dyn Registry>>,
 }
 
 impl TriageSourcesBuilder {
-    pub fn vfs(mut self, vfs: Box<dyn VirtualFileSystem>) -> Self {
+    pub fn vfs(mut self, vfs: Arc<dyn FileSystem>) -> Self {
         self.vfs = Some(vfs);
         self
     }
 
-    pub fn registry(mut self, registry: Box<dyn RegistryReader>) -> Self {
+    pub fn registry(mut self, registry: Arc<dyn Registry>) -> Self {
         self.registry = Some(registry);
         self
     }

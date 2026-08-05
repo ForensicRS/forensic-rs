@@ -23,9 +23,9 @@ In this way, the same tools can be used if we want to make a triage processor li
 
 ### Supported artifacts
 
-* **Windows Registry**: See [`RegistryReader`](./src/traits/registry/mod.rs) trait. Opened `RegKeyHandle` values close automatically on drop, support explicit `close()`, and can be traversed with `walk_keys()`.
+* **Windows Registry**: See [`Registry`/`RegistryExt`](./src/traits/registry/mod.rs) traits. `RegistryExt::key()` opens a single hive-prefixed path (e.g. `r"HKLM\SOFTWARE\..."`) into a lifetime-tied `RegKey` handle that closes automatically on drop and also supports explicit `close()`. Windows-specific semantics (`system_root()`, `users()`, `build()`) live as free functions over `&dyn Registry` in [`traits::registry::windows`](./src/traits/registry/windows.rs).
 * **SQL databases**: See [`SqlStatement`](./src/traits/sql.rs) trait and the richer [`ForensicDb`](./src/traits/db.rs) abstraction. Parsers discover database files through a VFS and use `ForensicDbFactory` to open each database without losing access to companion files such as SQLite WAL files. A basic sqlite wrapper example is included in the SQL trait tests.
-* **File Systems**: Read files and directories with support for stacked virtual filesystems (e.g., a file inside a ZIP inside another ZIP). Use `walk_dir_strict()` when inaccessible descendants must be reported, `walk_dir_best_effort()` for partial exploration, and `visit_dir()` for streaming directory entries. See [`VirtualFileSystem`](./src/traits/vfs.rs) and the standard library implementation [`StdVirtualFS`](./src/core/fs/stdfs.rs).
+* **File Systems**: Read files and directories with support for stacked virtual filesystems (e.g., a file inside a ZIP inside another ZIP), composed via `MountTable`/`OverlayFs` or mounted on demand through a `FileSystemFactory`. `FileSystemExt::walk()` returns a lazy, streaming iterator driven by `WalkOptions` (`skip_errors` tolerates unreadable descendants instead of aborting the walk, `max_depth` bounds recursion); `FileSystemExt::glob()`/`glob_iter()` match paths against a pattern. See [`FileSystem`/`FileSystemExt`](./src/traits/vfs.rs) and the standard library implementation [`StdVirtualFS`](./src/core/fs/stdfs.rs).
 * **Windows Event Logs**: Abstract `EventLogReader` trait for querying event log records with filtering by event ID, time range, provider, severity, and channel. File-backed logs are discovered through a VFS and opened with `EventLogReaderFactory`. Includes a fallible `EventLogIterator` and `EventLogQuery` builder. See [`src/traits/events.rs`](./src/traits/events.rs).
 * **Timestamps**: `ForensicTimestamp` — a 16-byte, 16-byte-aligned UTC timestamp with nanosecond precision, optional source offset, and precision/provenance flags. `Timestamp128` is an alias for the same type. Constructors cover Windows FILETIME, Unix secs/millis/micros/nanos, OLE Automation dates, WebKit/Chrome, macOS HFS+, Cocoa/Core Data, and `SystemTime`.
 * **Windows Decompression**: LZNT1, LZ77 and LZ77+Huffman algorithms per the MS-XCA specification. See [`decompress()`](./src/utils/win/decompress/mod.rs).
@@ -34,7 +34,7 @@ In this way, the same tools can be used if we want to make a triage processor li
 * **ECS Field Dictionary**: ~80 Elastic Common Schema field name constants for consistent artifact field naming. See [`src/dictionary.rs`](./src/dictionary.rs).
 * **User Activity Tracking**: `ForensicActivity` with enriched `ProgramExecution` (arguments, working directory, run count) and extended `FileSystemActivity` variants (Rename, Read, Write). See [`src/activity.rs`](./src/activity.rs).
 * **ForensicBridge**: A channel-based multi-threaded bridge that exposes all artifact domains (registry, VFS, event logs, databases) as navigable trees for UI consumers such as VSCode extensions. Supports pagination, cooperative cancellation, and extensible `ProviderHook`s for injecting virtual parsed nodes. See [`src/bridge/`](./src/bridge/).
-* **MCP capability integration**: Protocol-neutral, caller-scoped tools and resources for external MCP servers, including non-disclosing access control, source guards, progress, cancellation, and trusted audit records. See [`MCP_INTEGRATION.md`](./MCP_INTEGRATION.md).
+* **MCP capability integration**: Protocol-neutral, caller-scoped tools and resources for external MCP servers, including non-disclosing access control, source guards, progress, cancellation, and trusted audit records. See the [MCP Server Developer Guide](./docs/mcp-server-guide/).
 
 
 ### Registry Example
@@ -44,19 +44,34 @@ So we will also have libraries that extracts data from the registry, theses libr
 Here is where this framework comes to help with the traits:
 
 ```rust
-pub trait RegistryReader {
-    fn open_key(&self, hive: RegHiveKey, key_path: &str) -> ForensicResult<RegKeyHandle>;
-    fn open_subkey(&self, parent: &RegKeyHandle, subkey: &str) -> ForensicResult<RegKeyHandle>;
-    fn read_value(&self, key: &RegKeyHandle, value_name: &str) -> ForensicResult<RegValue>;
-    fn enumerate_values(&self, key: &RegKeyHandle, visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>) -> ForensicResult<()>;
-    fn enumerate_keys(&self, key: &RegKeyHandle, visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>) -> ForensicResult<()>;
+pub trait Registry: Send + Sync {
+    fn root(&self, hive: PredefinedHive) -> ForensicResult<RawKey>;
+    fn open_raw(&self, parent: &RawKey, name: &str) -> ForensicResult<RawKey>;
+    fn close_raw(&self, key: &RawKey);
+    fn read_raw(&self, key: &RawKey, value: &str) -> ForensicResult<RegValue>;
+    fn values_raw(&self, key: &RawKey) -> ForensicResult<Vec<(String, RegValue)>>;
+    fn keys_raw(&self, key: &RawKey) -> ForensicResult<Vec<KeyEntry>>;
+    fn info_raw(&self, key: &RawKey) -> ForensicResult<KeyInfo>;
+}
+```
+
+`Registry` is the mechanical, backend-implemented core, keyed by an opaque `RawKey`. Analysis code instead uses the blanket-impl'd `RegistryExt`, which turns a single hive-prefixed path string into a lifetime-tied `RegKey` handle:
+
+```rust
+use forensic_rs::prelude::*;
+
+fn read_system_root(reg: &dyn Registry) -> ForensicResult<String> {
+    let key = reg.key(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion")?;
+    let system_root: String = key.value("SystemRoot")?.try_into()?;
+    Ok(system_root)
+    // `key` closes automatically here, when it goes out of scope.
 }
 ```
 
 So now we can write our analysis library without knowing if we are accessing a live system or a hive file.
-* LiveRegistry Library: implements the *RegistryReader* trait.
-* HiveParser Library: implements the *RegistryReader* trait.
-* ShellBags analyzer: accepts a *RegistryReader* as a parameter to access the registry.
+* LiveRegistry Library: implements the *Registry* trait.
+* HiveParser Library: implements the *Registry* trait.
+* ShellBags analyzer: accepts a `&dyn Registry` as a parameter to access the registry.
 
 And ShellBags analyzer can be used in a EDR-like agent or as a analysis tool in a forensic case.
 
@@ -89,6 +104,8 @@ fn test_database_content<'a>(statement : &mut dyn SqlStatement) -> ForensicResul
 Extracted from [StdVirtualFS](./src/core/fs/stdfs.rs) tests.
 
 ```rust
+use forensic_rs::prelude::*;
+
 const CONTENT: &'static str = "File_Content_Of_VFS";
 let tmp = std::env::temp_dir();
 let tmp_file = tmp.join("test_vfs_file.txt");
@@ -96,28 +113,32 @@ let mut file = std::fs::File::create(&tmp_file).unwrap();
 file.write_all(CONTENT.as_bytes()).unwrap();
 drop(file);
 
-let mut std_vfs = StdVirtualFS::new();
-let content = std_vfs.read_to_string(&tmp_file).unwrap();
+let fs = StdVirtualFS::new();
+let tmp_file_str = tmp_file.to_string_lossy().into_owned();
+let path = FPath::new(&tmp_file_str);
+let content = String::from_utf8(fs.read_all(path).unwrap()).unwrap();
 assert_eq!(CONTENT, content);
 ```
 
-VFS trait objects also accept `PathBuf` and `&str` via ergonomic `_path`-suffixed wrappers:
+`FileSystem` is `&self`-based and object-safe, so an `Arc<dyn FileSystem>` can be
+shared across worker threads. Ergonomic helpers such as `read_all()`, `exists()`,
+`walk()`, and `glob()` come from the blanket-impl'd `FileSystemExt` — automatically
+available on every backend, with no separate implementation required:
 
 ```rust
-let mut vfs: Box<dyn VirtualFileSystem> = Box::new(StdVirtualFS::new());
-let bytes = vfs.read_all_path("/var/log/syslog")?;
-let entries = vfs.read_dir_path("/var/log")?;
+use std::sync::Arc;
+use forensic_rs::core::fs::walk::WalkOptions;
 
-// Preserve access failures during recursive evidence collection.
-vfs.walk_dir_strict(std::path::Path::new("/var/log"), &mut |path, entry| {
-    println!("{}: {}", path.display(), entry);
-})?;
+let vfs: Arc<dyn FileSystem> = Arc::new(StdVirtualFS::new());
+let bytes = vfs.read_all(FPath::new("/var/log/syslog"))?;
+let present = vfs.exists(FPath::new("/var/log/syslog"));
 
-// Process large directories without materializing their full listing.
-vfs.visit_dir(std::path::Path::new("/var/log"), &mut |entry| {
-    println!("{entry}");
-    Ok(())
-})?;
+// Lazily stream a directory tree; tolerate unreadable descendants instead of
+// aborting the whole walk (the default `WalkOptions::skip_errors`).
+for entry in vfs.walk(FPath::new("/var/log"), &WalkOptions::default()) {
+    let entry = entry?;
+    println!("{}: {:?}", entry.path, entry.file_type);
+}
 ```
 
 `VMetadata::created_opt()`, `accessed_opt()`, and `modified_opt()` preserve
@@ -191,15 +212,18 @@ let ts2: ForensicTimestamp = ft.into();
 
 ### Registry Handle Example
 
-`RegKeyHandle` is an RAII value that automatically closes the opened key when dropped:
+`RegKey` is a lifetime-tied RAII guard that automatically closes the opened key
+when dropped. It cannot outlive the `Registry` it was opened from, and cannot be
+mixed up with a key opened from a different reader — both are enforced at
+compile time:
 
 ```rust
 use forensic_rs::prelude::*;
 
-fn read_user_profile(reader: &dyn RegistryReader, user_sid: &str) -> ForensicResult<String> {
-    let key = reader.open_key(HKU, user_sid)?;
-    // key is automatically closed when `guard` goes out of scope
-    let profile: String = reader.read_value(&key, "ProfileImagePath")?.try_into()?;
+fn read_user_profile(reader: &dyn Registry, user_sid: &str) -> ForensicResult<String> {
+    let key = reader.key(&format!(r"HKU\{}", user_sid))?;
+    // `key` is automatically closed when it goes out of scope.
+    let profile: String = key.value("ProfileImagePath")?.try_into()?;
     Ok(profile)
 }
 ```
@@ -234,14 +258,15 @@ Query filters are optional and combinable — an empty `EventLogQuery::new()` ma
 `ForensicBridge` exposes all artifact domains (registry, VFS, event logs, databases) as navigable trees consumable by any UI layer (VSCode extensions, web frontends, etc.) via a thread-safe channel-based protocol.
 
 ```rust
+use std::sync::Arc;
 use forensic_rs::bridge::server::ForensicBridgeBuilder;
 use forensic_rs::bridge::providers::{RegistryProvider, VfsProvider};
 use forensic_rs::core::fs::stdfs::StdVirtualFS;
 
 // Build the bridge — all providers are owned by the worker thread
 let client = ForensicBridgeBuilder::new()
-    .add_provider(RegistryProvider::new(my_registry_reader))
-    .add_provider(VfsProvider::new(StdVirtualFS::new()))
+    .add_provider(RegistryProvider::new(my_registry))          // my_registry: Arc<dyn Registry>
+    .add_provider(VfsProvider::new(Arc::new(StdVirtualFS::new())))
     .spawn();              // → BridgeClient (Clone + Send)
 
 // The client can be cloned and sent across threads
@@ -307,7 +332,7 @@ impl ProviderHook for ShellbagHook {
 }
 
 let client = ForensicBridgeBuilder::new()
-    .add_provider(RegistryProvider::new(my_registry).with_hook(Box::new(ShellbagHook)))
+    .add_provider(RegistryProvider::new(my_registry).with_hook(Box::new(ShellbagHook)))    // my_registry: Arc<dyn Registry>
     .spawn();
 ```
 
@@ -332,17 +357,29 @@ assert_eq!("This is log name: ERROR", log_receiver.recv().unwrap());
 ```
 
 
-## Notifications and Alerts
+## Findings and Anomalies
 
-To simplify the detection of anomalies when processing or analyzing artifacts, we can use the notifications. It uses a syntax similar as that of the [log](https://crates.io/crates/log) crate.
+Logs are for the engineer debugging the tool — they're easy to miss and carry no severity or structure. Forensic alerts don't go through logging macros; they use two value-carried mechanisms instead, so they can't be silently dropped the way a log line can:
+
+- **`Anomalies`**: cheap (16 bytes), always-present, attached to the value a parser produced. When two sources disagree, or a checksum fails, that's evidence, not necessarily a hard error — `ForensicData::set_parsed` folds a value's `Anomalies` straight into the record.
+- **`Finding`**: a structured, severity-ranked observation (`FindingSeverity`, `FindingCategory`) produced by an `Analyzer` and routed to every `TriageSink`.
+
+The rule: if an analyst would want it in the case report, it's a `Finding` (or an `Anomaly` on the value it describes). If only an engineer debugging the tool wants it, it's a log. If the tool can't proceed, it's a `ForensicError`.
+
 ```rust
-// For production use initialize_notifier(notifier) instead of testing_notifier_dummy()
-let notification_receiver = testing_notifier_dummy();
-notify_high!(NotificationType::AntiForensicsDetected, "The registry key {} is not present. The only possibility is that someone deleted it.", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
-assert_eq!(r"The registry key HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList is not present. The only possibility is that someone deleted it.", notification_receiver.recv().unwrap().data);
+fn analyze(&mut self, data: &ForensicData, context: &TriageContext, out: &mut Vec<Finding>) -> ForensicResult<()> {
+    if /* suspicious condition */ true {
+        out.push(Finding::new(
+            FindingSeverity::High,
+            FindingCategory::AntiForensics,
+            "The registry key HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList is not present. The only possibility is that someone deleted it.",
+        ));
+    }
+    Ok(())
+}
 ```
 
 ## List of libraries
-* **frnsc-liveregistry-rs**: Implements *RegistryReader* using the Windows API to access the registry of a live system. https://github.com/ForensicRS/frnsc-liveregistry-rs
+* **frnsc-liveregistry-rs**: Implements *Registry* using the Windows API to access the registry of a live system. https://github.com/ForensicRS/frnsc-liveregistry-rs
 * **reg-analyzer-rs**: Analyzes registry artifacts for evidences. https://github.com/SecSamDev/reg-analyzer-rs
-* **Hive Reader**: Implements *RegistryReader* parsing HIVE files. https://github.com/ForensicRS/frnsc-hive
+* **Hive Reader**: Implements *Registry* parsing HIVE files. https://github.com/ForensicRS/frnsc-hive

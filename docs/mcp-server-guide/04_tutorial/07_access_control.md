@@ -335,4 +335,3 @@ When implementing access control:
 ## Next Steps
 
 - [Deployment](./08_deployment.md) - Build and deploy your MCP server
-- See [MCP_INTEGRATION.md:393-445](../../MCP_INTEGRATION.md) for complete authorization details

@@ -54,14 +54,17 @@ ForensicRS includes providers for all major artifact domains:
 ## Registering Resource Providers
 
 ```rust
+use std::sync::Arc;
 use forensic_rs::bridge::providers::{RegistryProvider, VfsProvider};
 
-let registry = RegistryProvider::new(my_registry_reader);
-let vfs = VfsProvider::new(my_vfs);
+// `my_registry: Arc<dyn Registry>` and `my_vfs: Arc<dyn FileSystem>` - the
+// same shared handles you would hand to `TriageSources::new`.
+let registry_provider = RegistryProvider::new(Arc::clone(&my_registry));
+let vfs_provider = VfsProvider::new(Arc::clone(&my_vfs));
 
-let mut registry = CapabilityRegistry::new(policy);
-registry.register_resource_provider(Arc::new(registry))?;
-registry.register_resource_provider(Arc::new(vfs))?;
+let mut cap_registry = CapabilityRegistry::new(policy);
+cap_registry.register_resource_provider(Arc::new(registry_provider))?;
+cap_registry.register_resource_provider(Arc::new(vfs_provider))?;
 ```
 
 ## Implementing a Custom Resource Provider
@@ -71,7 +74,7 @@ Here's how to implement `VfsProvider` for exposing filesystem access:
 ```rust
 // src/resources/vfs_provider.rs
 
-use std::path::Path;
+use std::sync::Arc;
 use forensic_rs::prelude::*;
 use forensic_rs::bridge::providers::VfsProvider;
 
@@ -80,7 +83,7 @@ pub struct MyVfsProvider {
 }
 
 impl MyVfsProvider {
-    pub fn new(vfs: Box<dyn VirtualFileSystem>) -> Self {
+    pub fn new(vfs: Arc<dyn FileSystem>) -> Self {
         Self {
             inner: VfsProvider::new(vfs)
         }
@@ -150,7 +153,7 @@ use forensic_rs::bridge::providers::RegistryProvider;
 
 /// Sets up registry resources for a forensic case
 fn setup_registry_resources(
-    registry: Box<dyn RegistryReader>,
+    registry: Arc<dyn Registry>,
 ) -> CapabilityRegistry {
     // Create registry provider
     let reg_provider = RegistryProvider::new(registry);

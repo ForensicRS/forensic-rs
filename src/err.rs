@@ -108,6 +108,8 @@ The error system includes convenient macros for common validation patterns:
 See individual method documentation for detailed usage examples and parameters.
 */
 
+use crate::core::path::{FPath, FPathBuf};
+
 /// Type alias for Results that may return forensic parsing errors
 pub type ForensicResult<T> = Result<T, ForensicError>;
 
@@ -265,7 +267,7 @@ macro_rules! registry_value_not_found {
     };
 }
 
-use crate::{prelude::RegHiveKey, scow::SCow};
+use crate::{scow::SCow, traits::registry::PredefinedHive};
 
 /// The main error type for forensic artifact parsing operations.
 ///
@@ -349,6 +351,7 @@ use crate::{prelude::RegHiveKey, scow::SCow};
 /// }
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ForensicError {
     /// Buffer access and bounds checking errors
     ///
@@ -407,6 +410,26 @@ pub enum ForensicError {
         /// Human-readable error message
         message: String,
     },
+
+    /// Wraps another error with filesystem path and/or byte-offset context,
+    /// attached after construction via [`ForensicError::with_path`]/
+    /// [`ForensicError::with_offset`] (RFC 0001 §6).
+    ///
+    /// This is how a lower-level error with no path field at origin (e.g. a
+    /// `Buffer`/`Format` error deep in a parser) gets annotated by an outer
+    /// frame that knows which file was being scanned, without every
+    /// category needing its own path field. Registry path context is
+    /// unaffected — `RegistryError::{KeyNotFound,ValueNotFound}` already
+    /// carry a hive-relative `key_path`, a different grammar than a
+    /// filesystem `FPath`, and keep using that mechanism instead.
+    Contextualized {
+        /// The underlying error.
+        inner: Box<ForensicError>,
+        /// Filesystem path being processed when this error occurred.
+        path: Option<Box<FPathBuf>>,
+        /// Byte offset into the source being processed.
+        offset: Option<u64>,
+    },
 }
 
 /// Buffer access and bounds checking errors
@@ -437,6 +460,7 @@ pub enum ForensicError {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BufferError {
     /// Buffer doesn't contain enough data for the requested operation
     ///
@@ -548,6 +572,7 @@ impl std::fmt::Display for BufferError {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FormatError {
     /// General format validation failure
     ///
@@ -670,6 +695,7 @@ impl std::fmt::Display for FormatError {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CompressionError {
     /// Algorithm-specific error during compression/decompression
     ///
@@ -795,6 +821,7 @@ impl std::fmt::Display for CompressionError {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DataAccessError {
     /// Expected data is missing or not found
     ///
@@ -883,7 +910,7 @@ impl std::fmt::Display for DataAccessError {
 /// use forensic_rs::prelude::*;
 ///
 /// fn get_windows_version(registry: &Registry) -> ForensicResult<String> {
-///     let key = RegHiveKey::HKEY_LOCAL_MACHINE;
+///     let key = PredefinedHive::LocalMachine;
 ///     let path = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
 ///     let value_name = "ProductName";
 ///     
@@ -905,13 +932,14 @@ impl std::fmt::Display for DataAccessError {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegistryError {
     /// Registry key not found at the specified path
     ///
     /// Used when attempting to access a registry key that doesn't exist.
     KeyNotFound {
         /// The registry hive key (e.g., HKEY_LOCAL_MACHINE)
-        key: RegHiveKey,
+        key: PredefinedHive,
         /// Optional sub-path within the hive
         key_path: Option<SCow>,
     },
@@ -921,7 +949,7 @@ pub enum RegistryError {
     /// Used when attempting to access a registry value that doesn't exist.
     ValueNotFound {
         /// The registry hive key where the value was expected
-        key: RegHiveKey,
+        key: PredefinedHive,
         /// Optional sub-path within the hive  
         key_path: Option<SCow>,
         /// Name of the value that was not found
@@ -1036,6 +1064,7 @@ impl std::fmt::Display for RegistryError {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CastError {
     /// General type conversion failure
     ///
@@ -1114,6 +1143,7 @@ impl std::fmt::Display for CastError {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TimestampError {
     /// Timestamp value is invalid or malformed
     ///
@@ -1634,8 +1664,12 @@ impl ForensicError {
     ///     Ok(())
     /// }
     /// ```
-    pub fn path_not_found(path: String) -> Self {
-        Self::DataAccess(DataAccessError::PathNotFound { path })
+    pub fn path_not_found(path: impl Into<FPathBuf>) -> Self {
+        let path = path.into();
+        Self::DataAccess(DataAccessError::PathNotFound {
+            path: path.to_string(),
+        })
+        .with_path(path)
     }
 
     /// Creates an access denied error
@@ -1682,12 +1716,12 @@ impl ForensicError {
     /// ```ignore
     /// use forensic_rs::prelude::*;
     ///
-    /// fn get_registry_key(hive: RegHiveKey, path: &str) -> ForensicResult<RegistryKey> {
+    /// fn get_registry_key(hive: PredefinedHive, path: &str) -> ForensicResult<RegistryKey> {
     ///     // ... attempt to find key
     ///     Err(ForensicError::registry_key_not_found(hive, Some(path.into())))
     /// }
     /// ```
-    pub fn registry_key_not_found(key: RegHiveKey, key_path: Option<SCow>) -> Self {
+    pub fn registry_key_not_found(key: PredefinedHive, key_path: Option<SCow>) -> Self {
         Self::Registry(RegistryError::KeyNotFound { key, key_path })
     }
 
@@ -1707,14 +1741,14 @@ impl ForensicError {
     /// fn get_windows_version() -> ForensicResult<String> {
     ///     // ... attempt to read ProductName value
     ///     Err(ForensicError::registry_value_not_found(
-    ///         RegHiveKey::HkeyLocalMachine,
+    ///         PredefinedHive::LocalMachine,
     ///         Some("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion".into()),
     ///         "ProductName"
     ///     ))
     /// }
     /// ```
     pub fn registry_value_not_found(
-        key: RegHiveKey,
+        key: PredefinedHive,
         key_path: Option<SCow>,
         value_name: impl Into<SCow>,
     ) -> Self {
@@ -2040,6 +2074,64 @@ impl ForensicError {
             message: err,
         }
     }
+
+    // ========================================================================
+    // Context attachment (RFC 0001 §6) — filesystem-only. Registry path
+    // context stays on `RegistryError::{KeyNotFound,ValueNotFound}.key_path`
+    // (a different, hive-relative grammar); `.with_path()`/`.path()` do not
+    // apply to it.
+    // ========================================================================
+
+    /// Attaches (or replaces) filesystem path context. Chainable at the call
+    /// site: `some_op().map_err(|e| e.with_path(&path))?`.
+    pub fn with_path(self, path: impl Into<FPathBuf>) -> Self {
+        let path = Some(Box::new(path.into()));
+        match self {
+            Self::Contextualized { inner, offset, .. } => Self::Contextualized {
+                inner,
+                path,
+                offset,
+            },
+            other => Self::Contextualized {
+                inner: Box::new(other),
+                path,
+                offset: None,
+            },
+        }
+    }
+
+    /// Attaches (or replaces) a byte-offset into the source being processed.
+    pub fn with_offset(self, offset: u64) -> Self {
+        match self {
+            Self::Contextualized { inner, path, .. } => Self::Contextualized {
+                inner,
+                path,
+                offset: Some(offset),
+            },
+            other => Self::Contextualized {
+                inner: Box::new(other),
+                path: None,
+                offset: Some(offset),
+            },
+        }
+    }
+
+    /// The filesystem path attached via [`Self::with_path`] (or
+    /// [`Self::path_not_found`]'s auto-populated one), if any.
+    pub fn path(&self) -> Option<&FPath> {
+        match self {
+            Self::Contextualized { path: Some(p), .. } => Some(p.as_path()),
+            _ => None,
+        }
+    }
+
+    /// The byte offset attached via [`Self::with_offset`], if any.
+    pub fn offset(&self) -> Option<u64> {
+        match self {
+            Self::Contextualized { offset, .. } => *offset,
+            _ => None,
+        }
+    }
 }
 
 impl Clone for ForensicError {
@@ -2064,6 +2156,15 @@ impl Clone for ForensicError {
             Self::Other { category, message } => Self::Other {
                 category,
                 message: message.clone(),
+            },
+            Self::Contextualized {
+                inner,
+                path,
+                offset,
+            } => Self::Contextualized {
+                inner: inner.clone(),
+                path: path.clone(),
+                offset: *offset,
             },
         }
     }
@@ -2101,6 +2202,18 @@ impl PartialEq for ForensicError {
                     message: m2,
                 },
             ) => c1 == c2 && m1 == m2,
+            (
+                Self::Contextualized {
+                    inner: i1,
+                    path: p1,
+                    offset: o1,
+                },
+                Self::Contextualized {
+                    inner: i2,
+                    path: p2,
+                    offset: o2,
+                },
+            ) => i1 == i2 && p1 == p2 && o1 == o2,
             _ => false,
         }
     }
@@ -2157,6 +2270,20 @@ impl std::fmt::Display for ForensicError {
             ForensicError::Other { category, message } => {
                 write!(f, "{} error: {}", category, message)
             }
+            ForensicError::Contextualized {
+                inner,
+                path,
+                offset,
+            } => {
+                inner.fmt(f)?;
+                if let Some(path) = path {
+                    write!(f, " (path: {path})")?;
+                }
+                if let Some(offset) = offset {
+                    write!(f, " (offset: {offset:#x})")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -2168,6 +2295,7 @@ impl std::error::Error for ForensicError {
                 source: Some(source),
                 ..
             } => Some(source.as_ref()),
+            ForensicError::Contextualized { inner, .. } => std::error::Error::source(inner.as_ref()),
             _ => None,
         }
     }
@@ -2207,4 +2335,48 @@ fn io_error_preserves_source() {
         error.to_string(),
         "IO error (PermissionDenied): reading evidence file"
     );
+}
+
+#[test]
+fn with_path_attaches_context_and_is_retrievable() {
+    let err = ForensicError::buffer_too_small(4, 2, "u32").with_path("C:\\evidence\\file.bin");
+    assert_eq!(err.path().unwrap().as_str(), "C:/evidence/file.bin");
+    assert!(err.to_string().contains("path: C:/evidence/file.bin"));
+}
+
+#[test]
+fn with_offset_attaches_context_and_is_retrievable() {
+    let err = ForensicError::buffer_too_small(4, 2, "u32").with_offset(0x1a3);
+    assert_eq!(err.offset(), Some(0x1a3));
+    assert!(err.to_string().contains("offset: 0x1a3"));
+}
+
+#[test]
+fn with_path_then_with_offset_accumulates_both() {
+    let err = ForensicError::no_more_data()
+        .with_path("C:\\evidence\\file.bin")
+        .with_offset(16);
+    assert_eq!(err.path().unwrap().as_str(), "C:/evidence/file.bin");
+    assert_eq!(err.offset(), Some(16));
+}
+
+#[test]
+fn path_without_context_is_none() {
+    let err = ForensicError::no_more_data();
+    assert_eq!(err.path(), None);
+    assert_eq!(err.offset(), None);
+}
+
+#[test]
+fn path_not_found_auto_populates_path_context() {
+    let err = ForensicError::path_not_found("C:\\missing\\file.txt");
+    assert_eq!(err.path().unwrap().as_str(), "C:/missing/file.txt");
+}
+
+#[test]
+fn contextualized_error_clones_and_compares_equal() {
+    let a = ForensicError::no_more_data().with_path("C:\\a").with_offset(1);
+    let b = ForensicError::no_more_data().with_path("C:\\a").with_offset(1);
+    assert_eq!(a, a.clone());
+    assert_eq!(a, b);
 }

@@ -1,28 +1,26 @@
 //! Path-level authorization wrappers for forensic pipeline sources.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
+use crate::core::path::FPath;
 use crate::err::{ForensicError, ForensicResult};
 use crate::traits::db::{
     ForensicColumnDef, ForensicColumnType, ForensicDb, ForensicRows, ForensicTable,
     ForensicValueRef,
 };
 use crate::traits::events::{EventLogIterator, EventLogQuery, EventLogReader, EventRecord};
-use crate::traits::registry::{
-    RegHiveKey, RegKeyHandle, RegValueType, RegistryKeyInfo, RegistryOpenOptions, RegistryReader,
-    RegistryVisit,
-};
-use crate::traits::vfs::{VDirEntry, VMetadata, VirtualFile, VirtualFileSystem};
+use crate::traits::registry::{KeyEntry, KeyInfo, PredefinedHive, RawKey, RegValue, Registry};
+use crate::traits::vfs::{CaseSensitivity, DirEntry, FileSystem, SourceKind, VMetadata, VirtualFile};
 
 use super::{AccessContext, AccessKind, AccessPolicy, AccessRequest};
 
-/// A virtual filesystem that checks source policy before every data operation.
+/// A filesystem that checks source policy before every data operation.
 ///
 /// Denied paths return a generic source error without revealing whether the
 /// underlying filesystem contains the requested entry.
 pub struct AuthorizedVirtualFileSystem {
-    inner: Box<dyn VirtualFileSystem>,
+    inner: Arc<dyn FileSystem>,
     policy: Arc<dyn AccessPolicy>,
     access: AccessContext,
     source_id: String,
@@ -30,7 +28,7 @@ pub struct AuthorizedVirtualFileSystem {
 
 impl AuthorizedVirtualFileSystem {
     pub fn new(
-        inner: Box<dyn VirtualFileSystem>,
+        inner: Arc<dyn FileSystem>,
         policy: Arc<dyn AccessPolicy>,
         access: AccessContext,
         source_id: impl Into<String>,
@@ -43,21 +41,8 @@ impl AuthorizedVirtualFileSystem {
         }
     }
 
-    fn wrap(&self, inner: Box<dyn VirtualFileSystem>) -> Box<dyn VirtualFileSystem> {
-        Box::new(Self::new(
-            inner,
-            Arc::clone(&self.policy),
-            self.access.clone(),
-            self.source_id.clone(),
-        ))
-    }
-
-    fn ensure_source(&self) -> ForensicResult<()> {
-        self.ensure_path(None)
-    }
-
-    fn ensure_path(&self, path: Option<&Path>) -> ForensicResult<()> {
-        let target = path.map(|path| path.to_string_lossy());
+    fn ensure_path(&self, path: Option<&FPath>) -> ForensicResult<()> {
+        let target = path.map(|path| path.to_string());
         let request = match target.as_deref() {
             Some(target) => {
                 AccessRequest::new(AccessKind::UseSource, &self.source_id).with_target(target)
@@ -75,87 +60,80 @@ impl AuthorizedVirtualFileSystem {
     }
 }
 
-impl VirtualFileSystem for AuthorizedVirtualFileSystem {
-    fn from_file(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        self.ensure_source()?;
-        self.inner.from_file(file).map(|inner| self.wrap(inner))
-    }
-
-    fn from_fs(
-        &self,
-        fs: Box<dyn VirtualFileSystem>,
-    ) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        self.ensure_source()?;
-        self.inner.from_fs(fs).map(|inner| self.wrap(inner))
-    }
-
-    fn read_to_string(&mut self, path: &Path) -> ForensicResult<String> {
-        self.ensure_path(Some(path))?;
-        self.inner.read_to_string(path)
-    }
-
-    fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>> {
-        self.ensure_path(Some(path))?;
-        self.inner.read_all(path)
-    }
-
-    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
-        self.ensure_path(Some(path))?;
-        self.inner.read(path, pos, buf)
-    }
-
-    fn metadata(&mut self, path: &Path) -> ForensicResult<VMetadata> {
-        self.ensure_path(Some(path))?;
-        self.inner.metadata(path)
-    }
-
-    fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<VDirEntry>> {
-        self.ensure_path(Some(path))?;
-        self.inner.read_dir(path)
-    }
-
-    fn visit_dir(
-        &mut self,
-        path: &Path,
-        visitor: &mut dyn FnMut(&VDirEntry) -> ForensicResult<()>,
-    ) -> ForensicResult<()> {
-        self.ensure_path(Some(path))?;
-        self.inner.visit_dir(path, visitor)
-    }
-
-    fn is_live(&self) -> bool {
-        self.ensure_source().is_ok() && self.inner.is_live()
-    }
-
-    fn open(&mut self, path: &Path) -> ForensicResult<Box<dyn VirtualFile>> {
+impl FileSystem for AuthorizedVirtualFileSystem {
+    fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>> {
         self.ensure_path(Some(path))?;
         self.inner.open(path)
     }
 
-    fn duplicate(&self) -> Box<dyn VirtualFileSystem> {
-        self.wrap(self.inner.duplicate())
+    fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
+        self.ensure_path(Some(path))?;
+        self.inner.metadata(path)
     }
 
-    fn exists(&self, path: &Path) -> bool {
-        self.ensure_path(Some(path)).is_ok() && self.inner.exists(path)
+    fn read_dir(
+        &self,
+        path: &FPath,
+    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+        self.ensure_path(Some(path))?;
+        let policy = Arc::clone(&self.policy);
+        let access = self.access.clone();
+        let source_id = self.source_id.clone();
+        let inner_iter = self.inner.read_dir(path)?;
+        Ok(Box::new(inner_iter.filter(move |entry| match entry {
+            Ok(entry) => {
+                let target = entry.path.to_string();
+                let request =
+                    AccessRequest::new(AccessKind::UseSource, &source_id).with_target(&target);
+                policy.evaluate(&access, &request).is_allowed()
+            }
+            // Let read errors surface rather than being silently dropped.
+            Err(_) => true,
+        })))
+    }
+
+    fn source(&self) -> SourceKind {
+        self.inner.source()
+    }
+
+    fn case_sensitivity(&self) -> CaseSensitivity {
+        self.inner.case_sensitivity()
+    }
+
+    fn as_streams(&self) -> Option<&dyn crate::traits::vfs::AlternateStreams> {
+        // Not threaded through the authorization boundary yet — a stream
+        // read would need its own `ensure_path` gate, deferred until a
+        // backend actually implements `AlternateStreams`.
+        None
+    }
+
+    fn as_unallocated(&self) -> Option<&dyn crate::traits::vfs::Unallocated> {
+        None
     }
 }
 
 /// A registry reader that authorizes key and value paths before exposing them.
 ///
-/// Registry handles opened through this wrapper retain their logical path, so
-/// subsequent value reads and enumeration callbacks can be authorized without
-/// relying on backend-specific handle internals.
+/// [`RawKey`]'s fields are deliberately private (RFC 0001 P2 — it's what
+/// makes cross-reader misuse a compile error), so unlike the old
+/// `RegKeyHandle::with_access_path`/`access_path()` mechanism this wrapper
+/// no longer has anywhere on the handle itself to stash the authorized path
+/// string. Instead it mints and owns *its own* `RawKey` ids, keeping a
+/// side table from each of its own ids to `(inner reader's RawKey,
+/// authorized path)` — the same bookkeeping shape `TestingRegistry` itself
+/// uses for its handle cache.
 pub struct AuthorizedRegistryReader {
-    inner: Box<dyn RegistryReader>,
+    inner: Arc<dyn Registry>,
     policy: Arc<dyn AccessPolicy>,
     access: AccessContext,
     source_id: String,
+    paths: Mutex<HashMap<u64, (RawKey, String)>>,
+    counter: Mutex<u64>,
 }
 
 impl AuthorizedRegistryReader {
     pub fn new(
-        inner: Box<dyn RegistryReader>,
+        inner: Arc<dyn Registry>,
         policy: Arc<dyn AccessPolicy>,
         access: AccessContext,
         source_id: impl Into<String>,
@@ -165,20 +143,9 @@ impl AuthorizedRegistryReader {
             policy,
             access,
             source_id: source_id.into(),
+            paths: Mutex::new(HashMap::new()),
+            counter: Mutex::new(0),
         }
-    }
-
-    fn wrap(&self, inner: Box<dyn RegistryReader>) -> Box<dyn RegistryReader> {
-        Box::new(Self::new(
-            inner,
-            Arc::clone(&self.policy),
-            self.access.clone(),
-            self.source_id.clone(),
-        ))
-    }
-
-    fn ensure_source(&self) -> ForensicResult<()> {
-        self.ensure_target(None)
     }
 
     fn ensure_target(&self, target: Option<&str>) -> ForensicResult<()> {
@@ -198,24 +165,6 @@ impl AuthorizedRegistryReader {
         }
     }
 
-    fn key_path<'a>(&self, key: &'a RegKeyHandle) -> ForensicResult<&'a str> {
-        key.access_path().ok_or_else(|| {
-            ForensicError::other(
-                "AuthorizedRegistryReader",
-                "source path is unavailable".to_string(),
-            )
-        })
-    }
-
-    fn hive_path(hive: RegHiveKey, key_path: &str) -> String {
-        let hive = format!("{hive:?}");
-        if key_path.is_empty() {
-            hive
-        } else {
-            format!("{hive}\\{key_path}")
-        }
-    }
-
     fn child_path(parent: &str, child: &str) -> String {
         if parent.is_empty() {
             child.to_string()
@@ -225,97 +174,118 @@ impl AuthorizedRegistryReader {
             format!("{parent}\\{child}")
         }
     }
+
+    fn mint(&self, inner_key: RawKey, path: String) -> RawKey {
+        let mut counter = self
+            .counter
+            .lock()
+            .expect("AuthorizedRegistryReader counter lock poisoned");
+        *counter += 1;
+        let id = *counter;
+        self.paths
+            .lock()
+            .expect("AuthorizedRegistryReader paths lock poisoned")
+            .insert(id, (inner_key, path));
+        RawKey::from_raw(id)
+    }
+
+    fn unknown_handle() -> ForensicError {
+        ForensicError::other("AuthorizedRegistryReader", "unknown handle".to_string())
+    }
 }
 
-impl RegistryReader for AuthorizedRegistryReader {
-    fn open_key(&self, hive: RegHiveKey, key_path: &str) -> ForensicResult<RegKeyHandle> {
-        let path = Self::hive_path(hive, key_path);
-        self.ensure_target(Some(&path))?;
-        self.inner
-            .open_key(hive, key_path)
-            .map(|key| key.with_access_path(path))
+impl Registry for AuthorizedRegistryReader {
+    fn root(&self, hive: PredefinedHive) -> ForensicResult<RawKey> {
+        // No policy check here: the bare hive prefix isn't itself a target
+        // the caller asked for — `RegistryExt::key(path)` resolves hive +
+        // subpath in two calls (`root` then `open_raw`), and `open_raw`
+        // checks the *combined* path, matching the old `open_key(hive,
+        // key_name)`'s single whole-path check. Checking here too would
+        // deny paths a whole-path-scoped policy (like this module's own
+        // tests) intends to allow.
+        let inner_key = self.inner.root(hive)?;
+        Ok(self.mint(inner_key, hive.to_string()))
     }
 
-    fn open_key_with_options(
-        &self,
-        hive: RegHiveKey,
-        key_path: &str,
-        options: &RegistryOpenOptions,
-    ) -> ForensicResult<RegKeyHandle> {
-        let path = Self::hive_path(hive, key_path);
-        self.ensure_target(Some(&path))?;
-        self.inner
-            .open_key_with_options(hive, key_path, options)
-            .map(|key| key.with_access_path(path))
+    fn open_raw(&self, parent: &RawKey, name: &str) -> ForensicResult<RawKey> {
+        let (path, inner_key) = {
+            let paths = self
+                .paths
+                .lock()
+                .expect("AuthorizedRegistryReader paths lock poisoned");
+            let (parent_inner, parent_path) =
+                paths.get(&parent.raw()).ok_or_else(Self::unknown_handle)?;
+            let path = Self::child_path(parent_path, name);
+            self.ensure_target(Some(&path))?;
+            (path, self.inner.open_raw(parent_inner, name)?)
+        };
+        Ok(self.mint(inner_key, path))
     }
 
-    fn open_subkey(&self, parent: &RegKeyHandle, subkey: &str) -> ForensicResult<RegKeyHandle> {
-        let path = Self::child_path(self.key_path(parent)?, subkey);
-        self.ensure_target(Some(&path))?;
-        self.inner
-            .open_subkey(parent, subkey)
-            .map(|key| key.with_access_path(path))
+    fn close_raw(&self, key: &RawKey) {
+        let entry = self
+            .paths
+            .lock()
+            .expect("AuthorizedRegistryReader paths lock poisoned")
+            .remove(&key.raw());
+        if let Some((inner_key, _path)) = entry {
+            self.inner.close_raw(&inner_key);
+        }
     }
 
-    fn read_raw_value_into(
-        &self,
-        key: &RegKeyHandle,
-        value_name: &str,
-        buf: &mut [u8],
-    ) -> ForensicResult<(RegValueType, usize)> {
-        let path = Self::child_path(self.key_path(key)?, value_name);
-        self.ensure_target(Some(&path))?;
-        self.inner.read_raw_value_into(key, value_name, buf)
+    fn read_raw(&self, key: &RawKey, value: &str) -> ForensicResult<RegValue> {
+        let paths = self
+            .paths
+            .lock()
+            .expect("AuthorizedRegistryReader paths lock poisoned");
+        let (inner_key, path) = paths.get(&key.raw()).ok_or_else(Self::unknown_handle)?;
+        let full = Self::child_path(path, value);
+        self.ensure_target(Some(&full))?;
+        self.inner.read_raw(inner_key, value)
     }
 
-    fn enumerate_keys(
-        &self,
-        key: &RegKeyHandle,
-        visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-    ) -> ForensicResult<()> {
-        let parent = self.key_path(key)?.to_string();
-        self.ensure_target(Some(&parent))?;
-        self.inner.enumerate_keys(key, &mut |name| {
-            let path = Self::child_path(&parent, name);
-            if self.ensure_target(Some(&path)).is_ok() {
-                visitor(name)
-            } else {
-                Ok(RegistryVisit::Continue)
-            }
-        })
-    }
-
-    fn enumerate_values(
-        &self,
-        key: &RegKeyHandle,
-        visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-    ) -> ForensicResult<()> {
-        let parent = self.key_path(key)?.to_string();
-        self.ensure_target(Some(&parent))?;
-        self.inner.enumerate_values(key, &mut |name| {
-            let path = Self::child_path(&parent, name);
-            if self.ensure_target(Some(&path)).is_ok() {
-                visitor(name)
-            } else {
-                Ok(RegistryVisit::Continue)
-            }
-        })
-    }
-
-    fn key_info(&self, key: &RegKeyHandle) -> ForensicResult<RegistryKeyInfo> {
-        let path = self.key_path(key)?;
+    fn values_raw(&self, key: &RawKey) -> ForensicResult<Vec<(String, RegValue)>> {
+        let paths = self
+            .paths
+            .lock()
+            .expect("AuthorizedRegistryReader paths lock poisoned");
+        let (inner_key, path) = paths.get(&key.raw()).ok_or_else(Self::unknown_handle)?;
         self.ensure_target(Some(path))?;
-        self.inner.key_info(key)
+        let all = self.inner.values_raw(inner_key)?;
+        Ok(all
+            .into_iter()
+            .filter(|(name, _)| {
+                let full = Self::child_path(path, name);
+                self.ensure_target(Some(&full)).is_ok()
+            })
+            .collect())
     }
 
-    fn mount_file(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn RegistryReader>> {
-        self.ensure_source()?;
-        self.inner.mount_file(file).map(|reader| self.wrap(reader))
+    fn keys_raw(&self, key: &RawKey) -> ForensicResult<Vec<KeyEntry>> {
+        let paths = self
+            .paths
+            .lock()
+            .expect("AuthorizedRegistryReader paths lock poisoned");
+        let (inner_key, path) = paths.get(&key.raw()).ok_or_else(Self::unknown_handle)?;
+        self.ensure_target(Some(path))?;
+        let all = self.inner.keys_raw(inner_key)?;
+        Ok(all
+            .into_iter()
+            .filter(|entry| {
+                let full = Self::child_path(path, &entry.name);
+                self.ensure_target(Some(&full)).is_ok()
+            })
+            .collect())
     }
 
-    fn mount_fs(&self, fs: Box<dyn VirtualFileSystem>) -> ForensicResult<Box<dyn RegistryReader>> {
-        self.ensure_source()?;
-        self.inner.mount_fs(fs).map(|reader| self.wrap(reader))
+    fn info_raw(&self, key: &RawKey) -> ForensicResult<KeyInfo> {
+        let paths = self
+            .paths
+            .lock()
+            .expect("AuthorizedRegistryReader paths lock poisoned");
+        let (inner_key, path) = paths.get(&key.raw()).ok_or_else(Self::unknown_handle)?;
+        self.ensure_target(Some(path))?;
+        self.inner.info_raw(inner_key)
     }
 }
 
@@ -604,7 +574,8 @@ mod tests {
         ForensicValue, ForensicValueRef,
     };
     use crate::traits::events::{EventLogQuery, EventLogReader};
-    use crate::traits::registry::{RegistryReader, HKU};
+    use crate::traits::registry::RegistryExt;
+    use crate::traits::vfs::FileSystemExt;
     use crate::utils::testing::{basic_event_log, TestingRegistry};
 
     struct PathPolicy;
@@ -640,18 +611,26 @@ mod tests {
             .write_all(b"hidden")
             .unwrap();
 
-        let mut filesystem = AuthorizedVirtualFileSystem::new(
-            Box::new(StdVirtualFS::new()),
+        let filesystem = AuthorizedVirtualFileSystem::new(
+            Arc::new(StdVirtualFS::new()),
             Arc::new(PathPolicy),
             AccessContext::new("analyst", "tenant"),
             "evidence-vfs",
         );
-        assert_eq!(filesystem.read_to_string(&allowed).unwrap(), "visible");
+        let allowed_str = allowed.to_string_lossy().into_owned();
+        let denied_str = denied.to_string_lossy().into_owned();
         assert_eq!(
-            filesystem.read_to_string(&denied).unwrap_err().to_string(),
+            String::from_utf8(filesystem.read_all(FPath::new(&allowed_str)).unwrap()).unwrap(),
+            "visible"
+        );
+        assert_eq!(
+            filesystem
+                .read_all(FPath::new(&denied_str))
+                .unwrap_err()
+                .to_string(),
             "AuthorizedVirtualFileSystem error: source path is unavailable"
         );
-        assert!(!filesystem.exists(&denied));
+        assert!(!filesystem.exists(FPath::new(&denied_str)));
 
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -678,27 +657,22 @@ mod tests {
     #[test]
     fn registry_reader_hides_denied_keys_and_values() {
         let registry = AuthorizedRegistryReader::new(
-            Box::new(TestingRegistry::new()),
+            Arc::new(TestingRegistry::new()),
             Arc::new(RegistryPathPolicy),
             AccessContext::new("analyst", "tenant"),
             "evidence-registry",
         );
-        let key_path = r"S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment";
-        let key = registry.open_key(HKU, key_path).unwrap();
-        assert!(registry.read_value(&key, "USERPROFILE").is_ok());
+        let key_path =
+            r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment";
+        let key = registry.key(key_path).unwrap();
+        assert!(key.value("USERPROFILE").is_ok());
         assert_eq!(
-            registry
-                .read_value(&key, "USERNAME")
-                .unwrap_err()
-                .to_string(),
+            key.value("USERNAME").unwrap_err().to_string(),
             "AuthorizedRegistryReader error: source path is unavailable"
         );
         assert_eq!(
             registry
-                .open_key(
-                    HKU,
-                    r"S-1-5-21-1366093794-4292800403-1155380978-513\Control Panel"
-                )
+                .key(r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Control Panel")
                 .unwrap_err()
                 .to_string(),
             "AuthorizedRegistryReader error: source path is unavailable"

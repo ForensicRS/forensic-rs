@@ -1,4 +1,5 @@
 pub mod fs;
+pub mod path;
 
 pub type UserEnvVars = std::collections::BTreeMap<String, String>;
 pub type UsersEnvVars = std::collections::BTreeMap<String, UserEnvVars>;

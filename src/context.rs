@@ -58,7 +58,12 @@ pub fn set_host(host: String) {
 }
 
 #[test]
-fn should_initialize_log_with_context() {
+fn should_initialize_and_read_back_context() {
+    // `ForensicData` no longer has a zero-argument `Default`/context-pulling
+    // constructor — every `ForensicData` requires a real `ProvenanceId`
+    // (see `src/data.rs`), which the thread-local `ForensicContext` has no
+    // way to supply. This test now only covers the thread-local context
+    // mechanism itself, not `ForensicData`.
     use crate::artifact::Artifact;
     use crate::artifact::RegistryArtifacts;
     let context = ForensicContext {
@@ -68,14 +73,11 @@ fn should_initialize_log_with_context() {
         metadata: BTreeMap::new(),
     };
     initialize_context(context);
-    let log = crate::data::ForensicData::default();
-    assert_eq!("Agent007", log.host());
-    assert_eq!(
-        "MI6",
-        TryInto::<&str>::try_into(log.field(crate::dictionary::ARTIFACT_TENANT).unwrap()).unwrap()
-    );
+    let restored = crate::context::context();
+    assert_eq!("Agent007", restored.host);
+    assert_eq!("MI6", restored.tenant);
     assert_eq!(
         Into::<Artifact>::into(RegistryArtifacts::AutoRuns),
-        *log.artifact()
+        restored.artifact
     );
 }

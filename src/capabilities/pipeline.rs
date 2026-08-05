@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::pipeline::sources::TriageSources;
-use crate::traits::registry::RegistryReader;
-use crate::traits::vfs::VirtualFileSystem;
+use crate::traits::registry::Registry;
+use crate::traits::vfs::FileSystem;
 
 use super::{
     AccessContext, AccessKind, AccessPolicy, AccessRequest, AuthorizedRegistryReader,
@@ -218,12 +218,12 @@ impl AuthorizedPipelineContext<'_> {
         )
     }
 
-    /// Wrap a declared virtual filesystem so every path access is authorized.
+    /// Wrap a declared filesystem so every path access is authorized.
     pub fn virtual_file_system(
         &self,
         id: impl Into<String>,
-        inner: Box<dyn VirtualFileSystem>,
-    ) -> CapabilityResult<Box<dyn VirtualFileSystem>> {
+        inner: Arc<dyn FileSystem>,
+    ) -> CapabilityResult<Arc<dyn FileSystem>> {
         let id = id.into();
         if !self
             .requirements
@@ -231,7 +231,7 @@ impl AuthorizedPipelineContext<'_> {
         {
             return Err(CapabilityError::not_found());
         }
-        Ok(Box::new(AuthorizedVirtualFileSystem::new(
+        Ok(Arc::new(AuthorizedVirtualFileSystem::new(
             inner,
             Arc::clone(self.policy),
             self.access.clone(),
@@ -243,8 +243,8 @@ impl AuthorizedPipelineContext<'_> {
     pub fn registry(
         &self,
         id: impl Into<String>,
-        inner: Box<dyn RegistryReader>,
-    ) -> CapabilityResult<Box<dyn RegistryReader>> {
+        inner: Arc<dyn Registry>,
+    ) -> CapabilityResult<Arc<dyn Registry>> {
         let id = id.into();
         if !self
             .requirements
@@ -252,7 +252,7 @@ impl AuthorizedPipelineContext<'_> {
         {
             return Err(CapabilityError::not_found());
         }
-        Ok(Box::new(AuthorizedRegistryReader::new(
+        Ok(Arc::new(AuthorizedRegistryReader::new(
             inner,
             Arc::clone(self.policy),
             self.access.clone(),
@@ -449,11 +449,11 @@ mod tests {
         };
 
         assert!(matches!(
-            context.virtual_file_system("other-vfs", Box::new(crate::core::fs::StdVirtualFS::new())),
+            context.virtual_file_system("other-vfs", Arc::new(crate::core::fs::StdVirtualFS::new())),
             Err(error) if error == CapabilityError::not_found()
         ));
         assert!(matches!(
-            context.registry("other-registry", Box::new(crate::utils::testing::TestingRegistry::new())),
+            context.registry("other-registry", Arc::new(crate::utils::testing::TestingRegistry::new())),
             Err(error) if error == CapabilityError::not_found()
         ));
     }

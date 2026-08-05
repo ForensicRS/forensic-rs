@@ -1,0 +1,13 @@
+error[E0451]: fields `source`, `acquisition`, `recovery` and `derived_from` of struct `Provenance` are private
+  --> tests/compile_fail/provenance_no_struct_literal.rs:8:9
+   |
+ 7 |     let _provenance = forensic_rs::provenance::Provenance {
+   |                       ----------------------------------- in this type
+ 8 |         source: unimplemented!(),
+   |         ^^^^^^ private field
+ 9 |         acquisition: unimplemented!(),
+   |         ^^^^^^^^^^^ private field
+10 |         recovery: unimplemented!(),
+   |         ^^^^^^^^ private field
+11 |         derived_from: unimplemented!(),
+   |         ^^^^^^^^^^^^ private field

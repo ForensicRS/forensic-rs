@@ -65,7 +65,7 @@ use crate::{
 
 use super::{
     context::TriageContext,
-    finding::Finding,
+    finding::{AnomalyTally, Finding},
     sources::TriageSources,
     traits::{Analyzer, Enricher, TriageSink},
     ErrorAction,
@@ -215,11 +215,22 @@ impl ParallelPipelineTask for StandardParallelTask {
 
         let mut items_processed: u64 = 0;
         let mut findings_count: u64 = 0;
+        let mut anomaly_tally = AnomalyTally::new();
+
+        // Captured before `parse()` borrows `self.parser` mutably for the
+        // lifetime of the returned iterator — `self.parser.name()` would
+        // otherwise conflict with that borrow in the error arms below.
+        let parser_label = format!("parser '{}'", self.parser.name());
 
         // Obtain the record iterator from the parser.
         let iter = match self.parser.parse(&mut sources) {
             Ok(iter) => iter,
             Err(e) => {
+                let finding = Finding::from_error(parser_label.clone(), &e);
+                if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                    return;
+                }
+                findings_count += 1;
                 let _ = tx.send(PipelineEvent::TaskError {
                     task: task_name.clone(),
                     error: e,
@@ -227,7 +238,7 @@ impl ParallelPipelineTask for StandardParallelTask {
                 let _ = tx.send(PipelineEvent::TaskDone {
                     task: task_name,
                     items_processed: 0,
-                    findings_count: 0,
+                    findings_count,
                 });
                 return;
             }
@@ -241,6 +252,11 @@ impl ParallelPipelineTask for StandardParallelTask {
             let mut data = match item_result {
                 Ok(d) => d,
                 Err(e) => {
+                    let finding = Finding::from_error(parser_label.clone(), &e);
+                    if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                        return;
+                    }
+                    findings_count += 1;
                     let _ = tx.send(PipelineEvent::TaskError {
                         task: task_name.clone(),
                         error: e,
@@ -251,6 +267,7 @@ impl ParallelPipelineTask for StandardParallelTask {
                     }
                 }
             };
+            let artifact = data.artifact().clone();
 
             // Enrich the record in-place.
             for enricher in &mut self.enrichers {
@@ -258,6 +275,12 @@ impl ParallelPipelineTask for StandardParallelTask {
                     break 'records;
                 }
                 if let Err(e) = enricher.enrich(&mut data, &mut context) {
+                    let finding = Finding::from_error(format!("enricher '{}'", enricher.name()), &e)
+                        .with_artifact(artifact.clone());
+                    if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                        return;
+                    }
+                    findings_count += 1;
                     let _ = tx.send(PipelineEvent::TaskError {
                         task: task_name.clone(),
                         error: e,
@@ -268,8 +291,11 @@ impl ParallelPipelineTask for StandardParallelTask {
                 }
             }
 
+            // Anomalies observed while parsing/enriching this record feed the
+            // task-wide tally instead of becoming one finding each.
+            anomaly_tally.record(data.anomalies());
+
             // Run matching analyzers.
-            let artifact = data.artifact().clone();
             for (analyzer, supported) in self.analyzers.iter_mut().zip(&analyzer_artifacts) {
                 if cancellation.is_cancelled() {
                     break 'records;
@@ -277,24 +303,28 @@ impl ParallelPipelineTask for StandardParallelTask {
                 if !supported.is_empty() && !supported.contains(&artifact) {
                     continue;
                 }
-                match analyzer.analyze(&data) {
-                    Ok(new_findings) => {
-                        for f in new_findings {
-                            findings_count += 1;
-                            // Block if channel is full — provides backpressure.
-                            if tx.send(PipelineEvent::Finding(f)).is_err() {
-                                return; // receiver gone
-                            }
-                        }
+                let mut new_findings = Vec::new();
+                let outcome = analyzer.analyze(&data, &context, &mut new_findings);
+                for f in new_findings {
+                    findings_count += 1;
+                    // Block if channel is full — provides backpressure.
+                    if tx.send(PipelineEvent::Finding(f)).is_err() {
+                        return; // receiver gone
                     }
-                    Err(e) => {
-                        let _ = tx.send(PipelineEvent::TaskError {
-                            task: task_name.clone(),
-                            error: e,
-                        });
-                        if self.error_action == ErrorAction::Halt {
-                            break 'records;
-                        }
+                }
+                if let Err(e) = outcome {
+                    let finding = Finding::from_error(format!("analyzer '{}'", analyzer.name()), &e)
+                        .with_artifact(artifact.clone());
+                    if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                        return;
+                    }
+                    findings_count += 1;
+                    let _ = tx.send(PipelineEvent::TaskError {
+                        task: task_name.clone(),
+                        error: e,
+                    });
+                    if self.error_action == ErrorAction::Halt {
+                        break 'records;
                     }
                 }
             }
@@ -308,21 +338,33 @@ impl ParallelPipelineTask for StandardParallelTask {
 
         // Finalize analyzers (aggregate / cross-record findings).
         for analyzer in &mut self.analyzers {
-            match analyzer.finalize() {
-                Ok(new_findings) => {
-                    for f in new_findings {
-                        findings_count += 1;
-                        if tx.send(PipelineEvent::Finding(f)).is_err() {
-                            return;
-                        }
-                    }
+            let mut new_findings = Vec::new();
+            let outcome = analyzer.finalize(&context, &mut new_findings);
+            for f in new_findings {
+                findings_count += 1;
+                if tx.send(PipelineEvent::Finding(f)).is_err() {
+                    return;
                 }
-                Err(e) => {
-                    let _ = tx.send(PipelineEvent::TaskError {
-                        task: task_name.clone(),
-                        error: e,
-                    });
+            }
+            if let Err(e) = outcome {
+                let finding = Finding::from_error(format!("analyzer '{}' finalize", analyzer.name()), &e);
+                if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                    return;
                 }
+                findings_count += 1;
+                let _ = tx.send(PipelineEvent::TaskError {
+                    task: task_name.clone(),
+                    error: e,
+                });
+            }
+        }
+
+        // Flush this task's anomaly tally into aggregate findings — one per
+        // flag observed, not one per anomalous record.
+        for finding in anomaly_tally.into_findings() {
+            findings_count += 1;
+            if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                return;
             }
         }
 
@@ -537,6 +579,7 @@ impl ParallelPipelineTask for AnalysisModule {
 
         let mut total_items: u64 = 0;
         let mut total_findings: u64 = 0;
+        let mut anomaly_tally = AnomalyTally::new();
 
         'parsers: for parser in &mut self.parsers {
             if cancellation.is_cancelled() {
@@ -546,9 +589,18 @@ impl ParallelPipelineTask for AnalysisModule {
                 continue 'parsers;
             }
 
+            // Captured before `parse()` borrows `parser` mutably for the
+            // lifetime of the returned iterator.
+            let parser_label = format!("parser '{}'", parser.name());
+
             let iter = match parser.parse(&mut sources) {
                 Ok(iter) => iter,
                 Err(e) => {
+                    let finding = Finding::from_error(parser_label.clone(), &e);
+                    if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                        return;
+                    }
+                    total_findings += 1;
                     let _ = tx.send(PipelineEvent::TaskError {
                         task: task_name.clone(),
                         error: e,
@@ -568,6 +620,11 @@ impl ParallelPipelineTask for AnalysisModule {
                 let mut data = match item_result {
                     Ok(d) => d,
                     Err(e) => {
+                        let finding = Finding::from_error(parser_label.clone(), &e);
+                        if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                            return;
+                        }
+                        total_findings += 1;
                         let _ = tx.send(PipelineEvent::TaskError {
                             task: task_name.clone(),
                             error: e,
@@ -578,12 +635,19 @@ impl ParallelPipelineTask for AnalysisModule {
                         }
                     }
                 };
+                let artifact = data.artifact().clone();
 
                 for enricher in &mut self.enrichers {
                     if cancellation.is_cancelled() {
                         break 'parsers;
                     }
                     if let Err(e) = enricher.enrich(&mut data, &mut context) {
+                        let finding = Finding::from_error(format!("enricher '{}'", enricher.name()), &e)
+                            .with_artifact(artifact.clone());
+                        if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                            return;
+                        }
+                        total_findings += 1;
                         let _ = tx.send(PipelineEvent::TaskError {
                             task: task_name.clone(),
                             error: e,
@@ -594,28 +658,35 @@ impl ParallelPipelineTask for AnalysisModule {
                     }
                 }
 
-                let artifact = data.artifact().clone();
+                // Anomalies observed while parsing/enriching this record feed
+                // the task-wide tally instead of becoming one finding each.
+                anomaly_tally.record(data.anomalies());
+
                 if cancellation.is_cancelled() {
                     break 'parsers;
                 }
                 if analyzer_artifacts.is_empty() || analyzer_artifacts.contains(&artifact) {
-                    match self.analyzer.analyze(&data) {
-                        Ok(new_findings) => {
-                            for f in new_findings {
-                                total_findings += 1;
-                                if tx.send(PipelineEvent::Finding(f)).is_err() {
-                                    return;
-                                }
-                            }
+                    let mut new_findings = Vec::new();
+                    let outcome = self.analyzer.analyze(&data, &context, &mut new_findings);
+                    for f in new_findings {
+                        total_findings += 1;
+                        if tx.send(PipelineEvent::Finding(f)).is_err() {
+                            return;
                         }
-                        Err(e) => {
-                            let _ = tx.send(PipelineEvent::TaskError {
-                                task: task_name.clone(),
-                                error: e,
-                            });
-                            if self.error_action == ErrorAction::Halt {
-                                break 'parsers;
-                            }
+                    }
+                    if let Err(e) = outcome {
+                        let finding = Finding::from_error(format!("analyzer '{}'", self.analyzer.name()), &e)
+                            .with_artifact(artifact.clone());
+                        if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                            return;
+                        }
+                        total_findings += 1;
+                        let _ = tx.send(PipelineEvent::TaskError {
+                            task: task_name.clone(),
+                            error: e,
+                        });
+                        if self.error_action == ErrorAction::Halt {
+                            break 'parsers;
                         }
                     }
                 }
@@ -628,20 +699,32 @@ impl ParallelPipelineTask for AnalysisModule {
         }
 
         // Finalize once after all parsers — enables cross-parser analysis.
-        match self.analyzer.finalize() {
-            Ok(findings) => {
-                for f in findings {
-                    total_findings += 1;
-                    if tx.send(PipelineEvent::Finding(f)).is_err() {
-                        return;
-                    }
-                }
+        let mut finalize_findings = Vec::new();
+        let outcome = self.analyzer.finalize(&context, &mut finalize_findings);
+        for f in finalize_findings {
+            total_findings += 1;
+            if tx.send(PipelineEvent::Finding(f)).is_err() {
+                return;
             }
-            Err(e) => {
-                let _ = tx.send(PipelineEvent::TaskError {
-                    task: task_name.clone(),
-                    error: e,
-                });
+        }
+        if let Err(e) = outcome {
+            let finding = Finding::from_error(format!("analyzer '{}' finalize", self.analyzer.name()), &e);
+            if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                return;
+            }
+            total_findings += 1;
+            let _ = tx.send(PipelineEvent::TaskError {
+                task: task_name.clone(),
+                error: e,
+            });
+        }
+
+        // Flush the tally into aggregate findings — one per flag observed,
+        // not one per anomalous record.
+        for finding in anomaly_tally.into_findings() {
+            total_findings += 1;
+            if tx.send(PipelineEvent::Finding(finding)).is_err() {
+                return;
             }
         }
 
@@ -1133,54 +1216,19 @@ mod tests {
         pipeline::{
             finding::Finding, sinks::FindingCollector, sources::TriageSources, traits::TriageSink,
         },
+        utils::testing::TestParserBuilder,
     };
 
     // -------------------------------------------------------------------
     // Mini mock parser
     // -------------------------------------------------------------------
 
-    struct MockParser {
-        records: Vec<ForensicData>,
-    }
-
-    impl MockParser {
-        fn with_records(n: usize, host: &str) -> Self {
-            let records = (0..n)
-                .map(|i| {
-                    let mut d = ForensicData::new(host, Artifact::Unknown);
-                    d.add_field("index", crate::field::Field::U64(i as u64));
-                    d
-                })
-                .collect();
-            Self { records }
-        }
-    }
-
-    impl crate::traits::forensic::ArtifactParser for MockParser {
-        fn name(&self) -> &str {
-            "mock_parser"
-        }
-        fn description(&self) -> &str {
-            "mock"
-        }
-        fn version(&self) -> &str {
-            "0.1"
-        }
-        fn supported_artifacts(&self) -> Vec<Artifact> {
-            vec![]
-        }
-
-        fn can_parse(&self, _sources: &TriageSources) -> bool {
-            true
-        }
-
-        fn parse<'a>(
-            &'a mut self,
-            _sources: &'a mut TriageSources,
-        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
-            let iter = self.records.drain(..).map(Ok);
-            Ok(Box::new(iter.collect::<Vec<_>>().into_iter()))
-        }
+    fn mock_parser_with_records(n: usize, host: &str) -> crate::utils::testing::TestParser {
+        TestParserBuilder::new("mock_parser")
+            .description("mock")
+            .version("0.1")
+            .with_records(n, host, Artifact::Unknown)
+            .build()
     }
 
     // -------------------------------------------------------------------
@@ -1226,13 +1274,13 @@ mod tests {
     #[test]
     fn two_tasks_run_and_both_reach_sink() {
         let task_a = StandardParallelTaskBuilder::new("task_a")
-            .parser(Box::new(MockParser::with_records(5, "host-a")))
+            .parser(Box::new(mock_parser_with_records(5, "host-a")))
             .sources(empty_sources)
             .build()
             .unwrap();
 
         let task_b = StandardParallelTaskBuilder::new("task_b")
-            .parser(Box::new(MockParser::with_records(3, "host-b")))
+            .parser(Box::new(mock_parser_with_records(3, "host-b")))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1262,7 +1310,7 @@ mod tests {
             .map(|i| -> Box<dyn ParallelPipelineTask> {
                 Box::new(
                     StandardParallelTaskBuilder::new(format!("task_{}", i))
-                        .parser(Box::new(MockParser::with_records(2, "h")))
+                        .parser(Box::new(mock_parser_with_records(2, "h")))
                         .sources(empty_sources)
                         .build()
                         .unwrap(),
@@ -1322,7 +1370,7 @@ mod tests {
             .unwrap();
 
         let good_task = StandardParallelTaskBuilder::new("good")
-            .parser(Box::new(MockParser::with_records(4, "h")))
+            .parser(Box::new(mock_parser_with_records(4, "h")))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1348,7 +1396,7 @@ mod tests {
     #[test]
     fn pre_cancelled_pipeline_skips_builtin_task_work() {
         let task = StandardParallelTaskBuilder::new("cancelled")
-            .parser(Box::new(MockParser::with_records(4, "h")))
+            .parser(Box::new(mock_parser_with_records(4, "h")))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1379,15 +1427,20 @@ mod tests {
                 "cancelling_analyzer"
             }
 
-            fn analyze(&mut self, _data: &ForensicData) -> ForensicResult<Vec<Finding>> {
+            fn analyze(
+                &mut self,
+                _data: &ForensicData,
+                _context: &TriageContext,
+                _out: &mut Vec<Finding>,
+            ) -> ForensicResult<()> {
                 self.cancellation.cancel();
-                Ok(Vec::new())
+                Ok(())
             }
         }
 
         let cancellation = CancellationToken::new();
         let task = StandardParallelTaskBuilder::new("cancelled_in_flight")
-            .parser(Box::new(MockParser::with_records(4, "h")))
+            .parser(Box::new(mock_parser_with_records(4, "h")))
             .analyzer(Box::new(CancellingAnalyzer {
                 cancellation: cancellation.clone(),
             }))
@@ -1422,7 +1475,7 @@ mod tests {
         }
 
         let healthy_task = StandardParallelTaskBuilder::new("healthy")
-            .parser(Box::new(MockParser::with_records(2, "h")))
+            .parser(Box::new(mock_parser_with_records(2, "h")))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1474,54 +1527,29 @@ mod tests {
         fn supported_artifacts(&self) -> Vec<crate::artifact::Artifact> {
             self.artifacts.clone()
         }
-        fn analyze(&mut self, _data: &ForensicData) -> ForensicResult<Vec<Finding>> {
+        fn analyze(
+            &mut self,
+            _data: &ForensicData,
+            _context: &TriageContext,
+            _out: &mut Vec<Finding>,
+        ) -> ForensicResult<()> {
             self.count += 1;
-            Ok(vec![])
+            Ok(())
         }
     }
 
     // A mock parser that advertises a specific artifact type.
-    struct TypedMockParser {
-        records: Vec<ForensicData>,
+    fn typed_mock_parser(
+        n: usize,
+        host: &str,
         artifact: crate::artifact::Artifact,
-    }
-
-    impl TypedMockParser {
-        fn new(n: usize, host: &str, artifact: crate::artifact::Artifact) -> Self {
-            let records = (0..n)
-                .map(|i| {
-                    let mut d = ForensicData::new(host, artifact.clone());
-                    d.add_field("index", crate::field::Field::U64(i as u64));
-                    d
-                })
-                .collect();
-            Self { records, artifact }
-        }
-    }
-
-    impl crate::traits::forensic::ArtifactParser for TypedMockParser {
-        fn name(&self) -> &str {
-            "typed_mock_parser"
-        }
-        fn description(&self) -> &str {
-            "typed mock"
-        }
-        fn version(&self) -> &str {
-            "0.1"
-        }
-        fn supported_artifacts(&self) -> Vec<crate::artifact::Artifact> {
-            vec![self.artifact.clone()]
-        }
-        fn can_parse(&self, _: &TriageSources) -> bool {
-            true
-        }
-        fn parse<'a>(
-            &'a mut self,
-            _sources: &'a mut TriageSources,
-        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
-            let items: Vec<_> = self.records.drain(..).map(Ok).collect();
-            Ok(Box::new(items.into_iter()))
-        }
+    ) -> crate::utils::testing::TestParser {
+        TestParserBuilder::new("typed_mock_parser")
+            .description("typed mock")
+            .version("0.1")
+            .with_records(n, host, artifact.clone())
+            .with_artifact(artifact)
+            .build()
     }
 
     #[test]
@@ -1535,7 +1563,7 @@ mod tests {
 
         let module = AnalysisModuleBuilder::new("mod")
             .analyzer(Box::new(CountingAnalyzer::new()))
-            .parser(Box::new(MockParser::with_records(4, "h"))) // explicit
+            .parser(Box::new(mock_parser_with_records(4, "h"))) // explicit
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1545,7 +1573,7 @@ mod tests {
             .module(module)
             .parser_factory(Box::new(move || {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
-                Box::new(MockParser::with_records(0, "h"))
+                Box::new(mock_parser_with_records(0, "h"))
             }))
             .sink(Box::new(CountingSink::new()))
             .build()
@@ -1572,7 +1600,7 @@ mod tests {
             .workers(1)
             .module(module)
             .parser_factory(Box::new(|| {
-                Box::new(TypedMockParser::new(5, "h", Artifact::Unknown))
+                Box::new(typed_mock_parser(5, "h", Artifact::Unknown))
             }))
             .sink(Box::new(CountingSink::new()))
             .build()
@@ -1604,11 +1632,11 @@ mod tests {
             .workers(1)
             .module(module)
             .parser_factory(Box::new(move || {
-                Box::new(TypedMockParser::new(3, "h", registry_artifact.clone()))
+                Box::new(typed_mock_parser(3, "h", registry_artifact.clone()))
             }))
             .parser_factory(Box::new(|| {
                 // Artifact::Unknown does NOT overlap with Registry::AutoRuns
-                Box::new(TypedMockParser::new(99, "h", Artifact::Unknown))
+                Box::new(typed_mock_parser(99, "h", Artifact::Unknown))
             }))
             .sink(Box::new(CountingSink::new()))
             .build()
@@ -1643,7 +1671,7 @@ mod tests {
                 )],
                 Box::new(move || {
                     counter.fetch_add(1, Ordering::SeqCst);
-                    Box::new(MockParser::with_records(1, "h"))
+                    Box::new(mock_parser_with_records(1, "h"))
                 }),
             )
             .sink(Box::new(CountingSink::new()))
@@ -1674,7 +1702,7 @@ mod tests {
             .module(module)
             .parser_factory(Box::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
-                Box::new(TypedMockParser::new(1, "h", Artifact::Unknown))
+                Box::new(typed_mock_parser(1, "h", Artifact::Unknown))
             }))
             .sink(Box::new(CountingSink::new()))
             .build()

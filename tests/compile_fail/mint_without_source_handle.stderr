@@ -1,0 +1,16 @@
+error[E0603]: tuple struct constructor `ProvenanceId` is private
+ --> tests/compile_fail/mint_without_source_handle.rs:6:40
+  |
+6 |     let _id = forensic_rs::provenance::ProvenanceId(0);
+  |                                        ^^^^^^^^^^^^ private tuple struct constructor
+  |
+ ::: src/provenance/ids.rs
+  |
+  | pub struct ProvenanceId(pub(super) u32);
+  |                         -------------- a constructor is private if any of the fields is private
+  |
+note: the tuple struct constructor `ProvenanceId` is defined here
+ --> src/provenance/mod.rs
+  |
+  | pub use ids::{ProvenanceId, SourceId};
+  |               ^^^^^^^^^^^^

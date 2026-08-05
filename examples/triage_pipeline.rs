@@ -19,7 +19,15 @@ use forensic_rs::utils::testing::TestingRegistry;
 // 1. Parser: reads Windows autorun registry keys
 // ---------------------------------------------------------------------------
 
-struct AutorunParser;
+struct AutorunParser {
+    source: SourceHandle,
+}
+
+impl AutorunParser {
+    fn new(source: SourceHandle) -> Self {
+        Self { source }
+    }
+}
 
 impl ArtifactParser for AutorunParser {
     fn name(&self) -> &str { "autoruns" }
@@ -36,38 +44,31 @@ impl ArtifactParser for AutorunParser {
     ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
         let registry = sources.registry()
             .ok_or(ForensicError::missing_data("Registry source required", SCow::Borrowed("AutorunParser")))?;
-        let users = registry.list_users()?;
+        let users = windows::users(registry.as_ref())?;
         let mut records = Vec::new();
 
-        for user_sid in &users {
-            let run_path = format!(r"{}\Software\Microsoft\Windows\CurrentVersion\Run", user_sid);
-            let key = match registry.open_key(HKU, &run_path) {
+        for user in &users {
+            let run_path = format!(r"HKU\{}\Software\Microsoft\Windows\CurrentVersion\Run", user.sid);
+            let key = match registry.key(&run_path) {
                 Ok(k) => k,
                 Err(_) => continue,
             };
 
-            let mut value_names: Vec<String> = Vec::new();
-            if registry.enumerate_values(&key, &mut |name| {
-                value_names.push(name.to_string());
-                Ok(RegistryVisit::Continue)
-            }).is_err() {
-                continue;
-            }
+            let values = match key.values() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
-            for value_name in &value_names {
-                let reg_val = match registry.read_value(&key, value_name) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        records.push(Err(e));
-                        continue;
-                    }
-                };
-
+            for (value_name, reg_val) in &values {
+                // Read through the Registry trait, live-API semantics:
+                // allocated (the key/value exists as read), but not
+                // reproducible byte-for-byte the way an image read would be.
+                let provenance = self.source.mint(Acquisition::LiveApi, Recovery::Allocated);
                 let mut data = ForensicData::new("WORKSTATION01",
-                    Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)));
+                    Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)), provenance);
                 data.insert(Text::Borrowed("autorun.name"), Field::Text(Text::Owned(value_name.clone())));
                 data.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Owned(format!("{:?}", reg_val))));
-                data.insert(Text::Borrowed(USER_NAME), Field::Text(Text::Owned(user_sid.clone())));
+                data.insert(Text::Borrowed(USER_NAME), Field::Text(Text::Owned(user.sid.clone())));
                 data.insert(Text::Borrowed("@timestamp"),
                     Field::Date(Filetime::with_ymd_and_hms(2024, 3, 15, 10, 30, 0, 0).into()));
 
@@ -139,12 +140,15 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
         vec![Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns))]
     }
 
-    fn analyze(&mut self, data: &ForensicData) -> ForensicResult<Vec<Finding>> {
-        let mut findings = Vec::new();
-
+    fn analyze(
+        &mut self,
+        data: &ForensicData,
+        _context: &TriageContext,
+        out: &mut Vec<Finding>,
+    ) -> ForensicResult<()> {
         let value = match data.field("autorun.value") {
             Some(Field::Text(t)) => t.to_string().to_lowercase(),
-            _ => return Ok(findings),
+            _ => return Ok(()),
         };
 
         // Flag autoruns pointing to temp directories or using suspicious tools
@@ -171,11 +175,11 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
                 .with_artifact(Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)))
                 .with_related_data(data.clone());
 
-                findings.push(finding);
+                out.push(finding);
             }
         }
 
-        Ok(findings)
+        Ok(())
     }
 }
 
@@ -244,12 +248,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let vfs = StdVirtualFS::new();
 
-    let mut sources = TriageSources::new(Box::new(vfs), Box::new(registry));
+    let mut sources = TriageSources::new(std::sync::Arc::new(vfs), std::sync::Arc::new(registry));
+
+    // Register the registry as a source before building the parser, so every
+    // autorun record it emits mints a real ProvenanceId against it.
+    let context = TriageContext::new("WORKSTATION01", "ACME-Corp");
+    let registry_source = context
+        .provenance_store()
+        .register_source(SourceKey::Live { host: "WORKSTATION01".to_string(), api: "RegistryReader".to_string() });
 
     // Build the pipeline
     let mut pipeline = TriagePipeline::builder()
-        .context(TriageContext::new("WORKSTATION01", "ACME-Corp"))
-        .parser(Box::new(AutorunParser))
+        .context(context)
+        .parser(Box::new(AutorunParser::new(registry_source)))
         .enricher(Box::new(UserProfileEnricher::new()))
         .analyzer(Box::new(SuspiciousAutorunAnalyzer))
         .sink(Box::new(ReportSink::new()))

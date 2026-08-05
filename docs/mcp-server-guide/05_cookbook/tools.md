@@ -201,8 +201,8 @@ impl ForensicTool for FileExtractTool {
         let path = fields.get("path").and_then(CapabilityValue::as_text)
             .ok_or_else(|| CapabilityError::new(CapabilityErrorKind::InvalidInput, "path required"))?;
 
-        // In real implementation, read from VFS
-        // let content = vfs.read_all(Path::new(path))?;
+        // In real implementation, read from VFS (vfs: Arc<dyn FileSystem>)
+        // let content = vfs.read_all(FPath::new(path))?;
 
         // Mock binary content
         let content = vec![0x50, 0x4B, 0x03, 0x04];  // ZIP magic bytes

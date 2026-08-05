@@ -434,6 +434,5 @@ fn test_tool_directly() {
 ## Getting More Help
 
 1. **Check existing examples**: See [examples/mcp_stdio_server.rs](../../examples/mcp_stdio_server.rs)
-2. **Review MCP Integration docs**: See [MCP_INTEGRATION.md](../../MCP_INTEGRATION.md)
-3. **Ask on Discord**: Join the [ForensicRS Discord](https://discord.gg/uVq4289B)
-4. **File an issue**: Report bugs at [GitHub Issues](https://github.com/ForensicRS/forensic-rs/issues)
+2. **Ask on Discord**: Join the [ForensicRS Discord](https://discord.gg/uVq4289B)
+3. **File an issue**: Report bugs at [GitHub Issues](https://github.com/ForensicRS/forensic-rs/issues)

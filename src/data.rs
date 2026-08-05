@@ -4,9 +4,9 @@ use std::{borrow::Cow, collections::BTreeMap};
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize};
 
 use crate::{
-    context::context,
     field::{Field, FieldAccess, Ip, Text},
     prelude::{Artifact, *},
+    provenance::ProvenanceId,
     utils::time::ForensicTimestamp,
 };
 
@@ -14,34 +14,17 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct ForensicData {
     artifact: Artifact,
+    provenance: ProvenanceId,
+    anomalies: Anomalies,
     pub(crate) fields: BTreeMap<Text, Field>,
 }
 
-impl Default for ForensicData {
-    fn default() -> Self {
-        let context = context();
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            Text::Borrowed(ARTIFACT_HOST),
-            Field::Text(Text::Owned(context.host)),
-        );
-        fields.insert(
-            Text::Borrowed(ARTIFACT_TENANT),
-            Field::Text(Text::Owned(context.tenant)),
-        );
-        fields.insert(
-            Text::Borrowed(ARTIFACT_NAME),
-            Field::Text(Text::Owned(context.artifact.to_string())),
-        );
-        Self {
-            fields,
-            artifact: context.artifact,
-        }
-    }
-}
-
 impl ForensicData {
-    pub fn new(host: &str, artifact: Artifact) -> Self {
+    /// `provenance` must be a real [`ProvenanceId`] obtained from a
+    /// [`crate::provenance::SourceHandle`] (directly, or via `derive`/`merge`)
+    /// — there is no zero-argument constructor for `ForensicData`, precisely
+    /// so every record flowing through the framework carries real provenance.
+    pub fn new(host: &str, artifact: Artifact, provenance: ProvenanceId) -> Self {
         let mut fields = BTreeMap::new();
         fields.insert(
             Text::Borrowed(ARTIFACT_HOST),
@@ -51,11 +34,26 @@ impl ForensicData {
             Text::Borrowed(ARTIFACT_NAME),
             Field::Text(Text::Owned(artifact.to_string())),
         );
-        Self { fields, artifact }
+        Self {
+            fields,
+            artifact,
+            provenance,
+            anomalies: Anomalies::default(),
+        }
     }
 
     pub fn artifact(&self) -> &Artifact {
         &self.artifact
+    }
+
+    pub fn provenance(&self) -> ProvenanceId {
+        self.provenance
+    }
+
+    /// For enrichers that re-derive provenance after inspecting/transforming
+    /// content (e.g. via [`crate::provenance::ProvenanceStore::derive`]).
+    pub fn set_provenance(&mut self, provenance: ProvenanceId) {
+        self.provenance = provenance;
     }
 
     pub fn host(&self) -> &str {
@@ -230,6 +228,56 @@ impl ForensicData {
         self.fields.insert(Text::Borrowed(field_name), value.into());
     }
 
+    /// Ergonomic setter for a value whose provenance was tracked separately
+    /// from this record's own (e.g. a `$FN` timestamp recovered from slack
+    /// while the record overall came from an allocated read — see
+    /// [`crate::provenance::Tracked`]'s own docs for the canonical example).
+    /// Stores `tracked`'s value under `field_name` via the same `Into<Field>`
+    /// conversion as [`Self::set`], and returns the value's own
+    /// [`ProvenanceId`] rather than silently discarding or overwriting
+    /// `self.provenance()` with it — callers who need the two reconciled
+    /// should explicitly [`crate::provenance::ProvenanceStore::merge`] before
+    /// calling [`Self::set_provenance`]. This only removes the boilerplate of
+    /// unpacking `Tracked<T>` at the call site.
+    pub fn set_tracked<T>(&mut self, field_name: &'static str, tracked: Tracked<T>) -> ProvenanceId
+    where
+        Field: From<T>,
+    {
+        let provenance = tracked.provenance();
+        self.set(field_name, tracked.into_untracked());
+        provenance
+    }
+
+    /// Ergonomic setter for [`crate::provenance::Parsed`]: stores `parsed.value`
+    /// under `field_name`, folds `parsed.anomalies` into this record's own
+    /// [`Anomalies`] (see [`Self::anomalies`]), and returns just the value's
+    /// [`ProvenanceId`] — mirroring [`Self::set_tracked`]. Anomalies observed
+    /// while parsing a field are evidence about the record as a whole, so
+    /// they are never left for the caller to (accidentally) drop.
+    pub fn set_parsed<T>(&mut self, field_name: &'static str, parsed: Parsed<T>) -> ProvenanceId
+    where
+        Field: From<T>,
+    {
+        self.anomalies.merge(parsed.anomalies);
+        self.set(field_name, parsed.value);
+        parsed.provenance
+    }
+
+    /// Anomalies observed while parsing this record's fields (folded in by
+    /// [`Self::set_parsed`]). Cheap: [`Anomalies`] is 16 bytes and allocates
+    /// nothing unless a detail message was recorded.
+    pub fn anomalies(&self) -> &Anomalies {
+        &self.anomalies
+    }
+
+    /// This record's confidence, combining its provenance chain with the
+    /// anomalies observed while parsing it. Equivalent to
+    /// `store.confidence(self.provenance(), self.anomalies())`, without
+    /// requiring the call site to construct a placeholder `Anomalies`.
+    pub fn confidence(&self, store: &ProvenanceStore) -> Confidence {
+        store.confidence(self.provenance, &self.anomalies)
+    }
+
     /// Obtains the field value as a `ForensicTimestamp`, if it is a `Field::Date`.
     pub fn get_date(&self, field_name: &str) -> Option<&ForensicTimestamp> {
         match self.fields.get(field_name) {
@@ -325,28 +373,6 @@ impl ForensicData {
     }
 }
 
-pub struct ForensicDataInspector<'a> {
-    iter: std::collections::btree_map::Iter<'a, Cow<'static, str>, String>,
-}
-pub struct ForensicDataInspectorMut<'a> {
-    iter: std::collections::btree_map::IterMut<'a, Cow<'static, str>, String>,
-}
-
-impl<'a> Iterator for ForensicDataInspector<'a> {
-    type Item = (&'a Cow<'a, str>, &'a String);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|wrapper| (wrapper.0, wrapper.1))
-    }
-}
-impl<'a> Iterator for ForensicDataInspectorMut<'a> {
-    type Item = (&'a Cow<'a, str>, &'a mut String);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|wrapper| (wrapper.0, wrapper.1))
-    }
-}
-
 impl std::fmt::Display for ForensicData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -433,13 +459,35 @@ impl<'de> Visitor<'de> for DataVisitor {
         while let Some((key, value)) = map.next_entry()? {
             fields.insert(Cow::Owned(key), value);
         }
-        if let Some(artf) = fields.get(ARTIFACT_NAME) {
-            if let Field::Text(artf) = artf {
-                artifact = (&artf[..]).into();
-            }
+        if let Some(Field::Text(artf)) = fields.get(ARTIFACT_NAME) {
+            artifact = (&artf[..]).into();
         }
-        Ok(ForensicData { artifact, fields })
+        Ok(ForensicData {
+            artifact,
+            fields,
+            provenance: unresolved_deserialized_provenance(),
+            anomalies: Anomalies::default(),
+        })
     }
+}
+
+/// This field-only JSON representation predates provenance and doesn't
+/// encode it (see [`ProvenanceStore::to_side_table`](crate::provenance::ProvenanceStore::to_side_table)
+/// for the format that does). Mints a fresh id from a throwaway,
+/// immediately-dropped store, so the id is guaranteed to be unresolvable
+/// against any real [`crate::provenance::ProvenanceStore`] a caller queries it
+/// with — [`crate::provenance::ProvenanceStore::confidence`]/`get` degrade
+/// this to `Unknown`/`None` gracefully, the same as any other dangling
+/// reference, rather than silently claiming a specific confidence level this
+/// code has no basis for.
+#[cfg(feature = "serde")]
+fn unresolved_deserialized_provenance() -> ProvenanceId {
+    use crate::provenance::{Acquisition, ProvenanceStore, Recovery, SourceKey};
+    ProvenanceStore::new()
+        .register_source(SourceKey::Synthetic(
+            "forensic_data::deserialize (no provenance in this wire format)".to_string(),
+        ))
+        .mint(Acquisition::LiveApi, Recovery::Allocated)
 }
 
 #[cfg(test)]
@@ -447,12 +495,13 @@ mod data_tests {
     #[cfg(feature = "serde")]
     use crate::artifact::{Artifact, WindowsArtifacts};
     use crate::prelude::RegistryArtifacts;
+    use crate::utils::testing::test_provenance_id;
 
     use super::ForensicData;
 
     #[test]
     fn iterate_fields_test() {
-        let mut data = ForensicData::new("host007", RegistryArtifacts::ShellBags.into());
+        let mut data = ForensicData::new("host007", RegistryArtifacts::ShellBags.into(), test_provenance_id());
         data.insert("field001".into(), "value001".into());
         data.insert("field002".into(), "value002".into());
         data.insert("field003".into(), "value003".into());
@@ -467,7 +516,7 @@ mod data_tests {
     #[cfg(feature = "serde")]
     #[test]
     fn should_serialize_data() {
-        let mut data = ForensicData::new("host007", RegistryArtifacts::ShellBags.into());
+        let mut data = ForensicData::new("host007", RegistryArtifacts::ShellBags.into(), test_provenance_id());
         data.insert("field001".into(), "value001".into());
         data.insert("field002".into(), "value002".into());
         data.insert("field003".into(), "value003".into());

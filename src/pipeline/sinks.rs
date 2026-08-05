@@ -65,7 +65,7 @@ impl TriageSink for TimelineSink {
 
     fn on_data(&mut self, data: &ForensicData) -> ForensicResult<()> {
         if let Some(Field::Date(ft)) = data.field(&self.timestamp_field) {
-            let ts: ForensicTimestamp = (*ft).into();
+            let ts: ForensicTimestamp = *ft;
             self.record_count += 1;
             self.earliest = Some(match self.earliest {
                 Some(e) if e <= ts => e,
@@ -97,6 +97,12 @@ pub struct FindingCollector {
     min_severity: FindingSeverity,
     total_count: u64,
     by_severity: BTreeMap<FindingSeverity, u64>,
+}
+
+impl Default for FindingCollector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FindingCollector {
@@ -304,20 +310,20 @@ mod tests {
     use super::*;
     use crate::{
         artifact::Artifact, data::ForensicData, pipeline::finding::FindingCategory,
-        utils::time::Filetime,
+        utils::testing::test_provenance_id, utils::time::Filetime,
     };
 
     #[test]
     fn timeline_sink_should_track_stats() {
         let mut sink = TimelineSink::new("@timestamp");
 
-        let mut data_late = ForensicData::new("h", Artifact::Unknown);
+        let mut data_late = ForensicData::new("h", Artifact::Unknown, test_provenance_id());
         data_late.add_field(
             "@timestamp",
             Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 14, 0, 0, 0).into()),
         );
 
-        let mut data_early = ForensicData::new("h", Artifact::Unknown);
+        let mut data_early = ForensicData::new("h", Artifact::Unknown, test_provenance_id());
         data_early.add_field(
             "@timestamp",
             Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 8, 0, 0, 0).into()),
@@ -334,7 +340,7 @@ mod tests {
     #[test]
     fn timeline_sink_should_count_missing_timestamps() {
         let mut sink = TimelineSink::new("@timestamp");
-        let data = ForensicData::new("h", Artifact::Unknown); // no @timestamp field
+        let data = ForensicData::new("h", Artifact::Unknown, test_provenance_id()); // no @timestamp field
         sink.on_data(&data).unwrap();
         assert_eq!(sink.record_count(), 0);
         assert_eq!(sink.missing_timestamp_count(), 1);
@@ -371,7 +377,7 @@ mod tests {
     #[test]
     fn jsonl_timeline_should_write_records() {
         let mut sink = JsonlTimelineSink::new(Vec::new());
-        let mut data = ForensicData::new("h", Artifact::Unknown);
+        let mut data = ForensicData::new("h", Artifact::Unknown, test_provenance_id());
         data.add_field(
             "@timestamp",
             Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()),

@@ -23,40 +23,84 @@ The `TriageSources` type provides access to forensic evidence:
 
 ```rust
 pub struct TriageSources {
-    vfs: Option<Box<dyn VirtualFileSystem>>,
-    registry: Option<Box<dyn RegistryReader>>,
+    vfs: Option<Arc<dyn FileSystem>>,
+    registry: Option<Arc<dyn Registry>>,
 }
 
 impl TriageSources {
-    pub fn vfs(&mut self) -> Option<&mut dyn VirtualFileSystem> { ... }
-    pub fn registry(&self) -> Option<&dyn RegistryReader> { ... }
+    pub fn vfs(&self) -> Option<&Arc<dyn FileSystem>> { ... }
+    pub fn registry(&self) -> Option<&Arc<dyn Registry>> { ... }
     pub fn has_vfs(&self) -> bool { ... }
     pub fn has_registry(&self) -> bool { ... }
 }
 ```
 
+Both sources are `Arc`-based: `FileSystem` and `Registry` are `&self`-based
+and `Send + Sync`, so the same already-open source can be shared cheaply
+across parallel pipeline workers instead of being re-opened per task.
+
 For this tool, we need the registry source.
 
-## RegistryReader Trait
+## Registry and RegistryExt Traits
 
-The `RegistryReader` trait provides registry access:
+The `Registry` trait is the minimal, mechanical core every backend implements:
 
 ```rust
-pub trait RegistryReader {
-    fn open_key(&self, hive: RegHiveKey, key_path: &str) -> ForensicResult<RegKeyHandle>;
-    fn open_subkey(&self, parent: &RegKeyHandle, subkey: &str) -> ForensicResult<RegKeyHandle>;
-    fn read_value(&self, key: &RegKeyHandle, value_name: &str) -> ForensicResult<RegValue>;
-    fn enumerate_values(&self, key: &RegKeyHandle, visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>) -> ForensicResult<()>;
-    fn enumerate_keys(&self, key: &RegKeyHandle, visitor: &mut dyn FnMut(&str) ForensicResult<RegistryVisit>) -> ForensicResult<()>;
+pub trait Registry: Send + Sync {
+    fn root(&self, hive: PredefinedHive) -> ForensicResult<RawKey>;
+    fn open_raw(&self, parent: &RawKey, name: &str) -> ForensicResult<RawKey>;
+    fn close_raw(&self, key: &RawKey);
+    fn read_raw(&self, key: &RawKey, value: &str) -> ForensicResult<RegValue>;
+    fn values_raw(&self, key: &RawKey) -> ForensicResult<Vec<(String, RegValue)>>;
+    fn keys_raw(&self, key: &RawKey) -> ForensicResult<Vec<KeyEntry>>;
+    fn info_raw(&self, key: &RawKey) -> ForensicResult<KeyInfo>;
 }
 
-pub enum RegHiveKey {
-    HKEY_LOCAL_MACHINE,
-    HKEY_CURRENT_USER,
-    HKEY_CLASSES_ROOT,
-    HKEY_USERS,
-    HKEY_CURRENT_CONFIG,
+pub enum PredefinedHive {
+    ClassesRoot,
+    CurrentConfig,
+    CurrentUser,
+    LocalMachine,
+    Users,
+    PerformanceData,
+    PerformanceText,
+    PerformanceNlsText,
+    DynData,
 }
+```
+
+You will rarely call `Registry`'s raw methods directly. Instead, use the
+blanket-implemented `RegistryExt` convenience layer — this is the day-to-day
+API a tool author works with:
+
+```rust
+pub trait RegistryExt: Registry {
+    // `path` is a single hive-prefixed string, e.g.
+    // r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" — accepts both
+    // short (HKLM) and long (HKEY_LOCAL_MACHINE) forms, case-insensitively.
+    fn key(&self, path: &str) -> ForensicResult<RegKey<'_, Self>>;
+    fn value(&self, path: &str, name: &str) -> ForensicResult<RegValue>;
+    fn keys_at(&self, path: &str) -> ForensicResult<Vec<KeyEntry>>;
+    fn values_at(&self, path: &str) -> ForensicResult<Vec<(String, RegValue)>>;
+    fn for_each_user_hive(
+        &self,
+        f: &mut dyn FnMut(&str, RegKey<'_, Self>) -> ForensicResult<()>,
+    ) -> ForensicResult<()>;
+}
+```
+
+`RegKey` is a lifetime-tied RAII guard returned by `key()`/`open()` — it
+closes automatically when it goes out of scope (its `Drop` impl calls
+`close_raw`), it cannot outlive the `Registry` it was opened from, and it
+cannot be mixed up with a key opened from a different reader. There's no
+`close_key()` to remember to call:
+
+```rust
+let key = registry.key(r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run")?;
+let values: Vec<(String, RegValue)> = key.values()?;
+let subkeys: Vec<KeyEntry> = key.keys()?;
+let child = key.open("SomeSubkey")?; // another RegKey, same lifetime family
+// `key` (and `child`) close automatically here, at end of scope.
 ```
 
 ## Complete Implementation
@@ -145,15 +189,15 @@ impl ForensicTool for AutorunTool {
         // Get registry source from context
         // Note: In a real implementation, TriageSources would be passed via context
         // For this example, we demonstrate the pattern
+        //
+        // Each entry is a single hive-prefixed path string — the `Registry`/
+        // `RegistryExt` API takes one path argument, not a separate hive enum
+        // plus a relative subkey.
         let registry_paths = vec![
-            (RegHiveKey::HKEY_LOCAL_MACHINE,
-             "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"),
-            (RegHiveKey::HKEY_LOCAL_MACHINE,
-             "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"),
-            (RegHiveKey::HKEY_CURRENT_USER,
-             "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"),
-            (RegHiveKey::HKEY_CURRENT_USER,
-             "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"),
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+            r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+            r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
         ];
 
         // Check cancellation before starting
@@ -166,35 +210,38 @@ impl ForensicTool for AutorunTool {
         let total = registry_paths.len() as u64;
 
         // Query each registry path
-        for (hive_key, subkey_path) in &registry_paths {
+        for path in &registry_paths {
             // Report progress
             checked += 1;
             context.report_progress(
                 ProgressUpdate::new(checked)
                     .with_total(total)
-                    .with_message(format!("Checking {:?}", hive_key))
+                    .with_message(format!("Checking {}", path))
             ).ok();
 
             // Filter by hive if specified
             if let Some(h) = hive {
                 let h_lower = h.to_lowercase();
-                match hive_key {
-                    RegHiveKey::HKEY_LOCAL_MACHINE if !h_lower.contains("lm") && !h_lower.contains("local") => continue,
-                    RegHiveKey::HKEY_CURRENT_USER if !h_lower.contains("cu") && !h_lower.contains("user") => continue,
-                    _ => {}
+                let is_local_machine = path.starts_with("HKLM");
+                let is_current_user = path.starts_with("HKCU");
+                if is_local_machine && !h_lower.contains("lm") && !h_lower.contains("local") {
+                    continue;
+                }
+                if is_current_user && !h_lower.contains("cu") && !h_lower.contains("user") {
+                    continue;
                 }
             }
 
-            // Query this registry key (pseudocode - requires registry reader)
-            // let values = query_run_key(registry, hive_key, subkey_path)?;
-            // for (value_name, command) in values {
+            // Query this registry key (pseudocode - requires a `Registry` source)
+            // let key = registry.key(path)?;
+            // for (value_name, value) in key.values()? {
             //     entries.push(...);
-            // }
+            // } // `key` closes automatically when it drops at the end of scope
 
             // For demo: add mock data if this is the first iteration
             if entries.is_empty() {
                 entries.push(AutorunEntry {
-                    key: format!("{:?}\\{}", hive_key, subkey_path),
+                    key: path.to_string(),
                     value: "SecurityHealth".to_string(),
                     command: "C:\\Windows\\System32\\SecurityHealthSystray.exe".to_string(),
                     type_: "Run".to_string(),
@@ -234,23 +281,41 @@ struct AutorunEntry {
 For a complete implementation that uses actual registry data, see the pattern from `examples/triage_pipeline.rs:24-80`. The key integration points are:
 
 ```rust
-// 1. Create TriageSources with a registry reader
-let registry = MyRegistryReader::new(); // implements RegistryReader
+use std::sync::Arc;
+
+// 1. Create TriageSources with a registry
+let registry: Arc<dyn Registry> = Arc::new(MyRegistry::new()); // implements `Registry`
 let sources = TriageSources::builder()
-    .registry(Box::new(registry))
+    .registry(registry)
     .build();
 
 // 2. Pass sources to tool via context or thread-local
-// This varies by implementation - check your registry reader's API
+// This varies by implementation - check how your server wires
+// `TriageSources` into `ForensicTool::invoke`
 
-// 3. Query registry keys
-let handle = registry.open_key(HKU, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run")?;
-let mut values = Vec::new();
-registry.enumerate_values(&handle, &mut |name| {
-    let value = registry.read_value(&handle, name)?;
-    values.push((name.to_string(), value));
-    Ok(RegistryVisit::Continue)
-})?;
+// 3. Query registry keys via RegistryExt/RegKey - a single hive-prefixed
+// path, no separate hive argument. The key closes automatically when it
+// drops at the end of scope.
+if let Some(registry) = sources.registry() {
+    let key = registry.key(r"HKU\S-1-5-21-...\SOFTWARE\Microsoft\Windows\CurrentVersion\Run")?;
+    let values: Vec<(String, RegValue)> = key.values()?;
+    for (value_name, value) in &values {
+        println!("{} = {:?}", value_name, value);
+    }
+}
+
+// `for_each_user_hive` expands `*` over every user SID under HKEY_USERS -
+// useful for a "check this Run key for every user" tool like this one.
+if let Some(registry) = sources.registry() {
+    registry.for_each_user_hive(&mut |sid, hku| {
+        if let Ok(run_key) = hku.open(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run") {
+            for (value_name, value) in run_key.values()? {
+                println!("[{}] {} = {:?}", sid, value_name, value);
+            }
+        }
+        Ok(())
+    })?;
+}
 ```
 
 ## Understanding ForensicsData
@@ -287,5 +352,5 @@ pub enum Field {
 
 ## Next Steps
 
-- [VFS Tools](./04_vfs_tools.md) - Analyze Prefetch files via VirtualFileSystem
+- [VFS Tools](./04_vfs_tools.md) - Analyze Prefetch files via FileSystem
 - See [examples/triage_pipeline.rs:24-80](../../examples/triage_pipeline.rs) for real parser implementation

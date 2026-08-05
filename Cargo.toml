@@ -15,14 +15,14 @@ default = ["serde"]
 serde = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
-serde = {version = "1", optional = true}
+serde = {version = "1", optional = true, features = ["derive"]}
 serde_json = {version = "1", optional = true}
 
 [dev-dependencies]
-sqlite = "0.28.1"
 anyhow = "1"
 criterion = "0.5"
 base64 = "0.22"
+trybuild = "1"
 
 [[example]]
 name = "triage_pipeline"
@@ -43,6 +43,10 @@ path = "examples/parallel_triage.rs"
 [[example]]
 name = "mcp_stdio_server"
 path = "examples/mcp_stdio_server.rs"
+
+[[example]]
+name = "byte_parsing"
+path = "examples/byte_parsing.rs"
 
 [[bench]]
 name = "unpack"

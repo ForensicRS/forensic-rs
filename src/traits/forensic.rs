@@ -62,7 +62,7 @@ pub enum TimeContext {
     Other(Cow<'static, str>),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TimelineData {
     pub time: ForensicTimestamp,
     pub data: ForensicData,
@@ -130,7 +130,7 @@ mod artifacts {
         data::ForensicData,
         pipeline::sources::TriageSources,
         prelude::{Artifact, ForensicResult, RegistryArtifacts},
-        utils::testing::TestingRegistry,
+        utils::testing::{test_provenance_id, TestingRegistry},
     };
 
     struct Parser123 {
@@ -143,6 +143,7 @@ mod artifacts {
                 items: vec![Ok(ForensicData::new(
                     "123",
                     RegistryArtifacts::ShellBags.into(),
+                    test_provenance_id(),
                 ))],
             }
         }
@@ -175,8 +176,8 @@ mod artifacts {
     fn should_iterate_parser() {
         let mut parser = Parser123::new();
         let mut sources = TriageSources::new(
-            Box::new(StdVirtualFS::new()),
-            Box::new(TestingRegistry::new()),
+            std::sync::Arc::new(StdVirtualFS::new()),
+            std::sync::Arc::new(TestingRegistry::new()),
         );
         let mut iter = parser.parse(&mut sources).unwrap();
         let artfct: Artifact = RegistryArtifacts::ShellBags.into();

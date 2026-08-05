@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use crate::core::UsersEnvVars;
 use crate::err::ForensicResult;
+use crate::traits::registry::{windows, Registry, RegistryExt};
 
-use crate::traits::registry::{RegValue, RegistryReader, HKLM, HKU};
+const CURRENT_VERSION: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion";
 
 /// Extract the principal environment variables for all users which have a profile:
 /// * USERPROFILE
@@ -21,19 +22,20 @@ use crate::traits::registry::{RegValue, RegistryReader, HKLM, HKU};
 /// * HOMEPATH
 /// * HOMEDRIVE
 /// * USERNAME
-pub fn get_env_vars_of_users(reg_reader: &dyn RegistryReader) -> ForensicResult<UsersEnvVars> {
-    let system_root_path = system_root(reg_reader);
-    let system_dive = &system_root_path[0..system_root_path.len().min(2)];
-    let system_dive: String = if system_dive.is_empty() {
-        "C:"
-    } else {
-        system_dive
-    }
-    .into();
-    let program_files = program_files(reg_reader);
-    let program_data = program_data(reg_reader);
+pub fn get_env_vars_of_users(reg: &dyn Registry) -> ForensicResult<UsersEnvVars> {
+    let system_root_path = system_root(reg);
+    let system_dive: String = {
+        let s = &system_root_path[0..system_root_path.len().min(2)];
+        if s.is_empty() {
+            "C:".into()
+        } else {
+            s.into()
+        }
+    };
+    let program_files = program_files(reg);
+    let program_data = program_data(reg);
 
-    let profiles = list_all_profiles(reg_reader, &system_root_path)?;
+    let profiles = list_all_profiles(reg)?;
     let mut map = BTreeMap::new();
     for (user_sid, user_home) in profiles {
         let mut user_map = BTreeMap::new();
@@ -51,7 +53,7 @@ pub fn get_env_vars_of_users(reg_reader: &dyn RegistryReader) -> ForensicResult<
             "ProgramW6432".into(),
             program_files.program_files_w6432.clone(),
         );
-        for (k, v) in user_specific_env_vars(reg_reader, &user_sid, &user_home) {
+        for (k, v) in user_specific_env_vars(reg, &user_sid, &user_home) {
             user_map.insert(k, v);
         }
         map.insert(user_sid, user_map);
@@ -59,95 +61,62 @@ pub fn get_env_vars_of_users(reg_reader: &dyn RegistryReader) -> ForensicResult<
     Ok(map)
 }
 
-fn list_all_profiles(
-    reg_reader: &dyn RegistryReader,
-    system_root: &str,
-) -> ForensicResult<BTreeMap<String, String>> {
-    let key = reg_reader.open_key(
-        HKLM,
-        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList",
-    )?;
+/// Converts an [`crate::core::path::FPathBuf`]-normalized (`/`-separated)
+/// path string back to the backslash form real Windows environment variable
+/// values use. `windows::system_root`/`windows::users` route through
+/// `FPathBuf`, which normalizes separators for internal path-manipulation
+/// purposes; the values handed back here are meant to look like genuine
+/// `%SystemRoot%`/`%USERPROFILE%` values (and downstream string-splitting in
+/// [`user_specific_env_vars`] assumes backslashes), so it's converted back
+/// at the boundary.
+fn win_sep(s: String) -> String {
+    s.replace('/', "\\")
+}
 
+// Ports the original's `list_all_profiles` (which walked ProfileList only) on
+// top of `windows::users`, which correlates ProfileList *and* HKEY_USERS.
+// Entries with an empty profile_path (HKU-only, no ProfileList match) are
+// filtered out here to match the original's `if !profile_path.is_empty()`
+// gate exactly.
+fn list_all_profiles(reg: &dyn Registry) -> ForensicResult<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
-
-    // Use callback-based enumeration to collect user SIDs
-    let mut user_sids = Vec::new();
-    reg_reader.enumerate_keys(&key, &mut |sid_name| {
-        user_sids.push(sid_name.to_string());
-        Ok(crate::traits::registry::RegistryVisit::Continue)
-    })?;
-
-    // Process each user SID
-    for user_sid in user_sids {
-        let user_key = match reg_reader.open_subkey(&key, &user_sid) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let mut profile_path: String = match reg_reader.read_value(&user_key, "ProfileImagePath") {
-            Ok(v) => v.try_into().unwrap_or_default(),
-            Err(_) => continue,
-        };
-
-        if profile_path.starts_with("%systemroot%") || profile_path.starts_with("%SystemRoot%") {
-            profile_path = format!("{}{}", system_root, &profile_path[12..])
+    for profile in windows::users(reg)? {
+        if profile.profile_path.as_str().is_empty() {
+            continue;
         }
-
-        if !profile_path.is_empty() {
-            if user_sid == "S-1-5-18" {
-                map.insert(String::new(), profile_path.clone());
-            }
-            map.insert(user_sid, profile_path);
+        let path = win_sep(profile.profile_path.to_string());
+        if profile.sid == "S-1-5-18" {
+            map.insert(String::new(), path.clone());
         }
+        map.insert(profile.sid, path);
     }
     Ok(map)
 }
 
-fn system_root(reg_reader: &dyn RegistryReader) -> String {
-    let key = match reg_reader.open_key(HKLM, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") {
-        Ok(v) => v,
-        Err(_) => return r"C:\Windows".into(),
-    };
-    let value = reg_reader
-        .read_value(&key, "SystemRoot")
-        .unwrap_or_else(|_| RegValue::SZ(r"C:\Windows".into()));
-    value.try_into().unwrap_or_else(|_| r"C:\Windows".into())
+fn system_root(reg: &dyn Registry) -> String {
+    windows::system_root(reg)
+        .map(|p| win_sep(p.to_string()))
+        .unwrap_or_else(|_| r"C:\Windows".into())
 }
 
-fn program_data(reg_reader: &dyn RegistryReader) -> String {
-    let key = match reg_reader.open_key(
-        HKLM,
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
-    ) {
-        Ok(v) => v,
-        Err(_) => return r"C:\ProgramData".into(),
-    };
-    let value = reg_reader
-        .read_value(&key, "Common AppData")
-        .unwrap_or_else(|_| RegValue::SZ(r"C:\ProgramData".into()));
-    value
-        .try_into()
-        .unwrap_or_else(|_| r"C:\ProgramData".into())
+fn program_data(reg: &dyn Registry) -> String {
+    reg.value(
+        r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+        "Common AppData",
+    )
+    .ok()
+    .and_then(|v| String::try_from(v).ok())
+    .unwrap_or_else(|| r"C:\ProgramData".into())
 }
 
-fn program_files(reg_reader: &dyn RegistryReader) -> ProgramFiles {
-    let key = match reg_reader.open_key(HKLM, r"SOFTWARE\Microsoft\Windows\CurrentVersion") {
-        Ok(v) => v,
-        Err(_) => {
-            return ProgramFiles {
-                program_files: r"C:\Program Files".into(),
-                program_files_86: r"C:\Program Files (x86)".into(),
-                program_files_w6432: r"C:\Program Files".into(),
-            }
-        }
-    };
-    let program_files: String = reg_value(reg_reader, &key, "ProgrammFilesDir", || {
+fn program_files(reg: &dyn Registry) -> ProgramFiles {
+    let program_files = reg_value(reg, CURRENT_VERSION, "ProgrammFilesDir", || {
         r"C:\Program Files".into()
     });
-    let program_files_86: String = reg_value(reg_reader, &key, "ProgramFilesDir (x86)", || {
+    let program_files_86 = reg_value(reg, CURRENT_VERSION, "ProgramFilesDir (x86)", || {
         r"C:\Program Files (x86)".into()
     });
-    let program_files_w6432: String = reg_value(reg_reader, &key, "ProgramW6432Dir", || {
+    let program_files_w6432 = reg_value(reg, CURRENT_VERSION, "ProgramW6432Dir", || {
         r"C:\Program Files".into()
     });
     ProgramFiles {
@@ -158,26 +127,29 @@ fn program_files(reg_reader: &dyn RegistryReader) -> ProgramFiles {
 }
 
 fn user_specific_env_vars(
-    reg_reader: &dyn RegistryReader,
+    reg: &dyn Registry,
     user: &str,
     user_profile: &str,
 ) -> Vec<(String, String)> {
-    let user_key = match reg_reader.open_key(HKU, user) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    let shell_folders = match reg_reader.open_subkey(
-        &user_key,
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
-    ) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    // Mirrors the original's two early-return gates exactly: if the user's
+    // hive isn't loaded (`HKU\{sid}` absent) or it has no
+    // `User Shell Folders` subkey, no per-user env vars are produced at all
+    // (not even the pure-string-derived HOMEPATH/HOMEDRIVE/USERNAME).
+    let user_root_path = format!(r"HKU\{user}");
+    if reg.key(&user_root_path).is_err() {
+        return Vec::new();
+    }
+    let shell_folders_path =
+        format!(r"{user_root_path}\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders");
+    if reg.key(&shell_folders_path).is_err() {
+        return Vec::new();
+    }
+
     let mut to_ret = Vec::with_capacity(12);
-    let app_data: String = reg_value(reg_reader, &shell_folders, "AppData", || {
+    let app_data = reg_value(reg, &shell_folders_path, "AppData", || {
         format!("{}\\AppData\\Roaming", user_profile)
     });
-    let local_app_data: String = reg_value(reg_reader, &shell_folders, "Local AppData", || {
+    let local_app_data = reg_value(reg, &shell_folders_path, "Local AppData", || {
         format!("{}\\AppData\\Local", user_profile)
     });
     to_ret.push((
@@ -189,11 +161,12 @@ fn user_specific_env_vars(
         replace_user_profile(app_data, user_profile),
     ));
 
-    if let Ok(env_key) = reg_reader.open_subkey(&user_key, r"Environment") {
-        let tmp: String = reg_value(reg_reader, &env_key, "TMP", || {
+    let env_path = format!(r"HKU\{user}\Environment");
+    if reg.key(&env_path).is_ok() {
+        let tmp = reg_value(reg, &env_path, "TMP", || {
             format!("{}\\AppData\\Local\\Temp", user_profile)
         });
-        let temp: String = reg_value(reg_reader, &env_key, "TEMP", || {
+        let temp = reg_value(reg, &env_path, "TEMP", || {
             format!("{}\\AppData\\Local\\Temp", user_profile)
         });
         to_ret.push(("TMP".into(), replace_user_profile(tmp, user_profile)));
@@ -207,13 +180,12 @@ fn user_specific_env_vars(
             "TEMP".into(),
             format!("{}\\AppData\\Local\\Temp", user_profile),
         ));
-    };
+    }
     if user_profile.len() > 3 {
         let (home_drive, home_path) = (
             user_profile[0..2].to_string(),
             user_profile[2..].to_string(),
         );
-
         let mut splited = user_profile.split('\\').rev();
         let username = splited
             .next()
@@ -233,17 +205,12 @@ fn user_specific_env_vars(
     to_ret
 }
 
-fn reg_value<F, T>(
-    reg_reader: &dyn RegistryReader,
-    key: &crate::traits::registry::RegKeyHandle,
-    value: &str,
-    default: F,
-) -> T
+fn reg_value<F, T>(reg: &dyn Registry, path: &str, value: &str, default: F) -> T
 where
-    T: TryFrom<RegValue>,
+    T: TryFrom<crate::traits::registry::RegValue>,
     F: FnOnce() -> T,
 {
-    match reg_reader.read_value(key, value) {
+    match reg.value(path, value) {
         Ok(v) => v.try_into().unwrap_or_else(|_| default()),
         Err(_) => default(),
     }

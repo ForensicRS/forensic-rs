@@ -1,0 +1,12 @@
+FRTRIAGE1
+---ENTRY---
+README.txt
+This file lives inside a mounted mini-archive, not on the real filesystem.
+It demonstrates lazy, on-demand FileSystemFactory-based mounting: the outer
+VfsProvider only ever sees this whole .frtriage file as opaque bytes. Crossing
+into its contents happens on first access, via resources/read's [mount]
+convention, and is cached afterward.
+---ENTRY---
+logs/note.txt
+A second file, under a subdirectory, to show directory listing inside the
+mounted filesystem too.

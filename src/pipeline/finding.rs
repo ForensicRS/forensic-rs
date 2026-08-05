@@ -1,6 +1,14 @@
 use std::collections::BTreeMap;
 
-use crate::{artifact::Artifact, data::ForensicData, field::Text, utils::time::ForensicTimestamp};
+use crate::{
+    artifact::Artifact,
+    data::ForensicData,
+    err::ForensicError,
+    field::Text,
+    provenance::{AnomalyFlags, Anomalies},
+    scow::SCow,
+    utils::time::ForensicTimestamp,
+};
 
 /// Severity level for a forensic finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -49,6 +57,8 @@ pub enum FindingCategory {
     InvalidChecksum,
     /// Timestamp that is logically impossible or inconsistent
     AnomalousTimestamp,
+    /// A parser/enricher/analyzer stage failed, so evidence went unexamined
+    ProcessingError,
     /// Custom category
     Other(String),
 }
@@ -62,6 +72,7 @@ impl std::fmt::Display for FindingCategory {
             FindingCategory::SuspiciousActivity => write!(f, "SuspiciousActivity"),
             FindingCategory::InvalidChecksum => write!(f, "InvalidChecksum"),
             FindingCategory::AnomalousTimestamp => write!(f, "AnomalousTimestamp"),
+            FindingCategory::ProcessingError => write!(f, "ProcessingError"),
             FindingCategory::Other(s) => write!(f, "Other({})", s),
         }
     }
@@ -135,6 +146,159 @@ impl Finding {
     pub fn with_metadata(mut self, key: Text, value: Text) -> Self {
         self.metadata.insert(key, value);
         self
+    }
+
+    /// Builds a `ProcessingError` finding from a stage failure. A crashed
+    /// parser/enricher/analyzer means evidence went unexamined — that is
+    /// itself something an analyst should see in the report, not just
+    /// something an engineer sees in a log line.
+    pub fn from_error(stage: impl Into<String>, err: &ForensicError) -> Self {
+        Self::new(
+            FindingSeverity::High,
+            FindingCategory::ProcessingError,
+            format!("{} failed: {err}", stage.into()),
+        )
+    }
+
+    /// Promotes one tallied anomaly flag, seen `count` times across a run,
+    /// into a single aggregate finding. Used by [`AnomalyTally`] instead of
+    /// emitting one finding per anomalous record, which would flood the
+    /// report at scale.
+    pub fn from_anomaly(flag: AnomalyFlags, count: u64, sample: Option<SCow>) -> Self {
+        let (category, severity) = anomaly_category_severity(flag);
+        let mut finding = Self::new(
+            severity,
+            category,
+            format!("{count} record(s) flagged: {}", describe_anomaly(flag)),
+        );
+        if let Some(sample) = sample {
+            finding = finding.with_description(sample.to_string());
+        }
+        finding
+    }
+}
+
+fn describe_anomaly(flag: AnomalyFlags) -> &'static str {
+    if flag == AnomalyFlags::CHECKSUM_MISMATCH {
+        "checksum/fixup mismatch"
+    } else if flag == AnomalyFlags::STALE_REFERENCE {
+        "stale reference"
+    } else if flag == AnomalyFlags::REFERENCE_CYCLE {
+        "reference cycle"
+    } else if flag == AnomalyFlags::ALLOCATION_CONFLICT {
+        "allocation conflict"
+    } else if flag == AnomalyFlags::TIMESTAMP_DIVERGENCE {
+        "timestamp divergence"
+    } else if flag == AnomalyFlags::TRUNCATED {
+        "truncated structure"
+    } else if flag == AnomalyFlags::SOURCE_DIVERGENCE {
+        "source divergence"
+    } else {
+        "unrecognized anomaly"
+    }
+}
+
+fn anomaly_category_severity(flag: AnomalyFlags) -> (FindingCategory, FindingSeverity) {
+    if flag == AnomalyFlags::CHECKSUM_MISMATCH {
+        (FindingCategory::InvalidChecksum, FindingSeverity::Medium)
+    } else if flag == AnomalyFlags::TRUNCATED {
+        (FindingCategory::IntegrityIssue, FindingSeverity::Medium)
+    } else if flag == AnomalyFlags::TIMESTAMP_DIVERGENCE {
+        (FindingCategory::AnomalousTimestamp, FindingSeverity::High)
+    } else if flag == AnomalyFlags::ALLOCATION_CONFLICT
+        || flag == AnomalyFlags::REFERENCE_CYCLE
+        || flag == AnomalyFlags::SOURCE_DIVERGENCE
+    {
+        (FindingCategory::IntegrityIssue, FindingSeverity::High)
+    } else if flag == AnomalyFlags::STALE_REFERENCE {
+        (FindingCategory::IntegrityIssue, FindingSeverity::Low)
+    } else {
+        (
+            FindingCategory::Other("unknown-anomaly".to_string()),
+            FindingSeverity::Info,
+        )
+    }
+}
+
+const KNOWN_ANOMALY_FLAGS: [AnomalyFlags; 7] = [
+    AnomalyFlags::CHECKSUM_MISMATCH,
+    AnomalyFlags::STALE_REFERENCE,
+    AnomalyFlags::REFERENCE_CYCLE,
+    AnomalyFlags::ALLOCATION_CONFLICT,
+    AnomalyFlags::TIMESTAMP_DIVERGENCE,
+    AnomalyFlags::TRUNCATED,
+    AnomalyFlags::SOURCE_DIVERGENCE,
+];
+
+fn known_anomaly_mask() -> u32 {
+    KNOWN_ANOMALY_FLAGS.iter().fold(0u32, |acc, f| acc | f.bits())
+}
+
+/// Accumulates per-flag anomaly counts across a parser run, so cheap,
+/// always-present [`Anomalies`] become a handful of aggregate [`Finding`]s
+/// instead of one finding per anomalous record.
+#[derive(Debug, Default)]
+pub struct AnomalyTally {
+    counts: BTreeMap<u32, u64>,
+    samples: BTreeMap<u32, SCow>,
+    unknown_count: u64,
+}
+
+impl AnomalyTally {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records one record's anomalies into the tally.
+    pub fn record(&mut self, anomalies: &Anomalies) {
+        let flags = anomalies.flags();
+        if flags.is_empty() {
+            return;
+        }
+        for &flag in &KNOWN_ANOMALY_FLAGS {
+            if !flags.contains(flag) {
+                continue;
+            }
+            *self.counts.entry(flag.bits()).or_insert(0) += 1;
+            self.samples.entry(flag.bits()).or_insert_with(|| {
+                anomalies
+                    .details()
+                    .iter()
+                    .find(|d| d.kind == flag)
+                    .map(|d| d.message.clone())
+                    .unwrap_or(SCow::Borrowed(""))
+            });
+        }
+        if flags.bits() & !known_anomaly_mask() != 0 {
+            self.unknown_count += 1;
+        }
+    }
+
+    /// Drains the tally into one aggregate [`Finding`] per flag observed.
+    pub fn into_findings(self) -> Vec<Finding> {
+        let AnomalyTally {
+            counts,
+            samples,
+            unknown_count,
+        } = self;
+        let mut findings: Vec<Finding> = counts
+            .into_iter()
+            .map(|(bits, count)| {
+                let flag = AnomalyFlags::from_bits_retain(bits);
+                let sample = samples.get(&bits).cloned().filter(|s| !s.is_empty());
+                Finding::from_anomaly(flag, count, sample)
+            })
+            .collect();
+        if unknown_count > 0 {
+            findings.push(Finding::new(
+                FindingSeverity::Info,
+                FindingCategory::Other("unknown-anomaly".to_string()),
+                format!(
+                    "{unknown_count} record(s) flagged with an anomaly this version doesn't recognize"
+                ),
+            ));
+        }
+        findings
     }
 }
 

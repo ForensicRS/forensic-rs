@@ -5,9 +5,15 @@
 **forensic-rs** is a Rust framework for building reusable forensic artifact analysis tools. The core design principle is **decoupling analysis logic from data access**: an analyzer that reads registry keys should work identically whether it talks to a live Windows registry, a parsed hive file, or a mock in a unit test — without any code changes.
 
 The framework achieves this through **trait-based polymorphism** across three artifact domains:
-- **Windows Registry** — `RegistryReader` trait
+- **Windows Registry** — `Registry` (core) / `RegistryExt` (ergonomic path-based layer) traits
 - **SQL Databases** — `SqlStatement` / `SqlDb` / `ForensicDb` traits
-- **Virtual Filesystems** — `VirtualFileSystem` / `VirtualFile` traits
+- **Virtual Filesystems** — `FileSystem` (core) / `FileSystemExt` (ergonomic layer) / `VirtualFile` traits
+
+Both the Registry and Filesystem domains follow the same four-layer pattern:
+1. **Core** — a minimal, mechanical, `&self`-based, `Send + Sync` trait implemented by backends (`Registry`, `FileSystem`). Object-safe so `Arc<dyn Registry>`/`Arc<dyn FileSystem>` can be shared across worker threads.
+2. **Ext** — a blanket-impl'd trait with the ergonomic convenience API callers actually use (`RegistryExt::key()`/`value()`, `FileSystemExt::read_all()`/`exists()`/`walk()`/`glob()`). A backend author never implements these directly.
+3. **Capability** — an authorization-checking wrapper around a core trait object (`AuthorizedRegistryReader`, `AuthorizedVirtualFileSystem`) used by the MCP capability layer to enforce per-caller path/source grants.
+4. **Factory** — opens a derived reader from evidence discovered through the filesystem (`RegistryReaderFactory`, `ForensicDbFactory`, `EventLogReaderFactory`), taking `(filesystem: Arc<dyn FileSystem>, path: &FPath)`.
 
 **Current version**: 0.14.0  
 **Repository**: https://github.com/ForensicRS/forensic-rs  
@@ -21,12 +27,13 @@ The framework achieves this through **trait-based polymorphism** across three ar
 src/
   lib.rs              — Module declarations + `prelude` with all public re-exports
   traits/             — Core abstraction traits (the "interfaces" of the framework)
-    vfs.rs            — VirtualFileSystem, VirtualFile, VMetadata, VDirEntry, VFileType
+    vfs.rs            — FileSystem, FileSystemExt, VirtualFile, VMetadata, DirEntry, VFileType, SourceKind, CaseSensitivity, FileSystemFactory
     forensic.rs       — ArtifactParser, IntoTimeline, IntoActivity, RegistryParser
     sql.rs            — SqlStatement, SqlDb, ColumnValue
     db.rs             — ForensicDb, ForensicRows, ForensicValue, ForensicRow, RowIterator
     events.rs         — EventLogReader, EventLogIterator, EventLogQuery, EventRecord, EventLevel
-    registry/         — RegistryReader, RegValue, RegHiveKey, hive key constants
+    factories.rs      — ForensicDbFactory, EventLogReaderFactory, RegistryReaderFactory (open a derived reader from an Arc<dyn FileSystem> + path)
+    registry/         — mod.rs: RegValue (13 variants), RegValueRef, RegistryBuffer; raw.rs: Registry, RegistryExt, RegKey, RawKey, PredefinedHive; windows.rs: system_root(), users(), build() free functions
       extra/          — Registry helpers (e.g., get_env_vars_of_users())
   bridge/             — Multi-provider UI bridge (channel-based, thread-safe)
     mod.rs            — CancellationToken, BridgeValue, DataOrigin, NodeType, NodeEntry, BridgeResponse, ForensicProvider trait
@@ -36,9 +43,13 @@ src/
     providers.rs      — RegistryProvider, VfsProvider, EventLogProvider, DatabaseProvider
     hooks.rs          — ProviderHook trait, virtual_segment(), inject_hook_children(), path helpers
   core/
+    path.rs           — FPath, FPathBuf: `/`-normalized, drive-aware, case-preserving evidence paths (replace std::path::Path/PathBuf in FileSystem/Registry APIs)
     fs/
-      stdfs.rs        — StdVirtualFS: VFS over std::fs
-      chroot.rs       — ChRootFileSystem: path-remapping VFS wrapper
+      stdfs.rs        — StdVirtualFS: FileSystem over std::fs
+      chroot.rs       — ChRootFileSystem: path-remapping FileSystem wrapper (wraps an Arc<dyn FileSystem>)
+      mount.rs        — MountTable, OverlayFs: layered filesystem composition
+      walk.rs         — Walk, WalkOptions: lazy streaming directory-tree traversal (FileSystemExt::walk)
+      glob.rs         — Glob: pattern matching over FileSystem paths (FileSystemExt::glob/glob_iter)
   field/
     mod.rs            — Field enum, Text, FieldAccess, From/TryInto impls
     ip.rs             — Ip enum (V4/V6), IP parsing and utilities
@@ -46,7 +57,7 @@ src/
   utils/
     time.rs           — Filetime, ForensicTimestamp, WinFiletime, UnixTimestamp, filetime_to_unix_timestamp
     unpack.rs         — Binary unpacking helpers (u16/u32/u64_at_pos, safe variants)
-    testing.rs        — TestingRegistry mock, TestingEventLogReader, basic_event_log(), testing_logger_dummy, testing_notifier_dummy
+    testing/          — Test doubles implementing the crate's traits: TestingRegistry (Registry), InMemoryVirtualFileSystem (FileSystem), TestingEventLogReader, InMemoryForensicDb, TestParserBuilder, TestingProviderHook, testing factory wrappers, basic_event_log(), testing_logger_dummy()
     win/
       sid.rs          — to_string_sid(), SID constants (LOCAL_SYSTEM, BUILTIN_ADMINS, etc.)
       csidl.rs        — FOLDERID_* constants for 60+ Windows shell folders
@@ -59,9 +70,8 @@ src/
   artifact.rs         — Artifact enum, OS-specific artifact type enums
   scow.rs             — SCow: Static Copy-On-Write string type
   context.rs          — ForensicContext: thread-local artifact/host/tenant metadata
-  logging/            — Logger, Level, channel-based log macros (error!, warn!, info!, debug!, trace!)
-  notifications/      — Notifier, Priority, NotificationType, notify_* macros
-  channel.rs          — Underlying channel for logging and notifications
+  logging/            — Logger, Level, channel-based log macros (error!, warn!, info!, debug!, trace!) — engineer-facing diagnostics only, not forensic alerts (see Findings vs. logs vs. errors below)
+  channel.rs          — Underlying channel for logging
   dictionary.rs       — Elastic Common Schema (ECS) field name constants (~80+)
   activity.rs         — ForensicActivity: user activity event type
 ```
@@ -79,9 +89,12 @@ use forensic_rs::prelude::*;
 Key prelude exports:
 - `ForensicResult<T>`, `ForensicError` — error types
 - `ForensicData`, `Field`, `Text`, `FieldAccess`, `Ip` — data/field types
-- `VirtualFileSystem`, `VirtualFile`, `VDirEntry`, `VFileType` — VFS traits
-- `StdVirtualFS`, `ChRootFileSystem`, `StdVirtualFile` — VFS implementations
-- `RegistryReader`, `RegValue`, `RegHiveKey`, `HKLM`, `HKCU`, `HKCR`, `HKU` — registry
+- `FileSystem`, `FileSystemExt`, `VirtualFile`, `DirEntry`, `VFileType`, `SourceKind`, `CaseSensitivity` — filesystem traits/types
+- `StdVirtualFS`, `ChRootFileSystem`, `MountTable`, `OverlayFs`, `StdVirtualFile` — filesystem implementations
+- `FPath`, `FPathBuf` — evidence path types (replace `std::path::Path`/`PathBuf` in filesystem/registry APIs)
+- `Registry`, `RegistryExt`, `RegKey`, `RawKey`, `RegValue`, `PredefinedHive` — registry (path-based `key()`/`value()`, RAII `RegKey`)
+- `windows` — free functions (`system_root()`, `users()`, `build()`) for Windows-specific registry semantics
+- `ForensicDbFactory`, `EventLogReaderFactory`, `RegistryReaderFactory` — factories that open a derived reader from evidence discovered through a filesystem
 - `ForensicDb`, `ForensicTable`, `ForensicRows`, `ForensicValue`, `ForensicRow`, `RowIterator` — database
 - `EventLogReader`, `EventLogIterator`, `EventLogQuery`, `EventRecord`, `EventLevel` — event logs
 - `BridgeClient`, `ForensicBridge`, `ForensicBridgeBuilder` — bridge server/client
@@ -91,8 +104,11 @@ Key prelude exports:
 - `Artifact` — artifact type categorization
 - `SCow` — static copy-on-write string
 - `Filetime`, `ForensicTimestamp`, `WinFiletime`, `UnixTimestamp`, `filetime_to_unix_timestamp` — time types
-- Logging macros: `error!`, `warn!`, `info!`, `debug!`, `trace!`, `log!`
-- Notification macros: `notify!`, `notify_low!`, `notify_info!`, `notify_informational!`, `notify_medium!`, `notify_high!`, `notify_critical!`
+- Logging macros: `error!`, `warn!`, `info!`, `debug!`, `trace!`, `log!` — engineer-facing diagnostics, not forensic alerts
+- `Finding`, `FindingSeverity`, `FindingCategory` — structured, severity-ranked forensic alerts, produced by an `Analyzer` and routed to every `TriageSink`
+- `Anomalies`, `AnomalyFlags`, `AnomalyDetail`, `Parsed<T>` — cheap, value-carried divergence tracking for parsers ("divergence is evidence, not error")
+
+**Findings vs. logs vs. errors**: if an analyst would want it in the case report, it's a `Finding` (or an `Anomaly` on the value it describes, folded in via `ForensicData::set_parsed`). If only an engineer debugging the tool wants it, it's a log. If the tool can't proceed, it's a `ForensicError`. There is no fourth option — do not add a new notification/alert side-channel; extend `Finding`/`Anomalies` instead.
 
 ---
 
@@ -194,13 +210,13 @@ let f: Field = my_forensic_ts.into();       // Field::Date(...) via Filetime con
 
 | Kind | Pattern | Examples |
 |------|---------|---------|
-| Traits | Concept noun + role suffix | `VirtualFileSystem`, `RegistryReader`, `ArtifactParser` |
+| Traits | Concept noun, `Ext` suffix for the ergonomic layer | `FileSystem` / `FileSystemExt`, `Registry` / `RegistryExt`, `ArtifactParser` |
 | Structs | PascalCase | `ForensicData`, `ChRootFileSystem`, `StdVirtualFS` |
 | Enums | PascalCase | `Field`, `RegValue`, `Artifact`, `CompressionAlgorithm` |
 | Enum variants | PascalCase | `CompressionFormatLznt1`, `RegValue::DWord` |
-| Constants | SCREAMING_SNAKE_CASE | `HKLM`, `FOLDER_ID_DESKTOP`, `LOCAL_SYSTEM` |
+| Constants | SCREAMING_SNAKE_CASE | `FOLDER_ID_DESKTOP`, `LOCAL_SYSTEM` |
 | Functions | snake_case | `filetime_to_unix_timestamp`, `to_string_sid` |
-| Macros | snake_case! | `ensure_buffer_size!`, `compression_error!`, `notify_high!` |
+| Macros | snake_case! | `ensure_buffer_size!`, `compression_error!`, `warn!` |
 
 ### Module Organization
 
@@ -219,37 +235,43 @@ let f: Field = my_forensic_ts.into();       // Field::Date(...) via Filetime con
 The framework heavily relies on trait objects (`Box<dyn Trait>`) for runtime polymorphism:
 
 ```rust
-// Traits are object-safe by design — avoid generics in trait methods
-fn analyze(vfs: &mut dyn VirtualFileSystem, registry: &mut dyn RegistryReader) { ... }
+// Core traits are object-safe by design — avoid generics in trait methods.
+// Both are `&self`-based (not `&mut self`), so `Arc<dyn FileSystem>` /
+// `Arc<dyn Registry>` can be shared across worker threads.
+fn analyze(vfs: &dyn FileSystem, registry: &dyn Registry) { ... }
 ```
 
-### Ergonomic Wrappers on `impl dyn Trait`
+### Ergonomic Convenience via Blanket-Impl'd `Ext` Traits
 
-When a trait method takes `&Path` but callers often have `PathBuf` or `&str`, add ergonomic wrappers in an `impl dyn Trait` block (not in the trait definition). This keeps the trait object-safe while providing a better API:
+Rather than inherent methods on `impl dyn Trait` blocks, ergonomic convenience methods live on a separate `Ext` trait that is blanket-impl'd for every implementor of the core trait. This keeps the core trait minimal and object-safe while giving every caller a rich API for free:
 
 ```rust
 // In src/traits/vfs.rs:
-impl dyn VirtualFileSystem {
-    pub fn read_all_path<P: AsRef<Path>>(&mut self, path: P) -> ForensicResult<Vec<u8>> {
-        self.read_all(path.as_ref())
-    }
-    // ... other _path suffix variants
+pub trait FileSystemExt: FileSystem {
+    fn read_all(&self, path: &FPath) -> ForensicResult<Vec<u8>> { ... }
+    fn exists(&self, path: &FPath) -> bool { ... }
+    fn walk(&self, root: &FPath, opts: &WalkOptions) -> Walk<'_, Self> { ... }
+    fn glob(&self, pattern: &str) -> ForensicResult<Vec<FPathBuf>> { ... }
 }
+impl<T: FileSystem + ?Sized> FileSystemExt for T {}
 ```
 
-Callers working with `Box<dyn VirtualFileSystem>` or `&mut dyn VirtualFileSystem` get these methods automatically.
+A backend author implements only the minimal core trait (`FileSystem`, `Registry`); every consumer automatically gets the `Ext` methods on `&dyn FileSystem`, `Arc<dyn FileSystem>`, a concrete backend, etc. — no manual wiring required. `RegistryExt` follows the same pattern over `Registry`.
 
 ### Stacking File Systems
 
-`VirtualFileSystem` supports nesting — a ZIP filesystem can wrap a standard filesystem, which can itself be chroot'd. Enable this via `from_file()` and `from_fs()` on the trait.
+`FileSystem` supports nesting without any special core-trait methods, since `Arc<dyn FileSystem>` is the common currency type: a `FileSystemFactory` sniffs and mounts a nested filesystem (ZIP, E01, ...) out of an opened `VirtualFile`; `MountTable`/`OverlayFs` (`src/core/fs/mount.rs`) compose several filesystems into one layered view; `ChRootFileSystem` wraps an `Arc<dyn FileSystem>` and remaps paths under a different root.
 
 ### Default Implementations
 
-Use default method bodies in trait definitions for opt-in behavior that may not apply to all implementations:
+Use default method bodies in trait definitions for opt-in behavior that may not apply to all implementations — e.g. `FileSystem`'s capability probes default to "not supported":
 
 ```rust
-fn exists(&self, path: &Path) -> bool {
-    false  // Default: conservative — assume no existence checking
+fn case_sensitivity(&self) -> CaseSensitivity {
+    CaseSensitivity::Insensitive  // Default: conservative — most backends are case-insensitive (NTFS, FAT)
+}
+fn as_streams(&self) -> Option<&dyn AlternateStreams> {
+    None  // Default: no Alternate Data Streams support unless a backend overrides this
 }
 ```
 
@@ -265,17 +287,20 @@ Implement traits directly on test-local structs rather than using mocking librar
 struct MockRegistry {
     data: BTreeMap<String, RegValue>,
 }
-impl RegistryReader for MockRegistry { ... }
+impl Registry for MockRegistry { ... }
 ```
 
-`src/utils/testing.rs` provides `TestingRegistry` — a pre-built mock registry with a sample user profile hierarchy. Use it in tests for registry-dependent code:
+`src/utils/testing/registry.rs` provides `TestingRegistry` — a pre-built mock implementing `Registry`, seeded with a sample user profile hierarchy. Use it in tests for registry-dependent code:
 
 ```rust
-use forensic_rs::utils::testing::{basic_registry, TestingRegistry};
-let registry = basic_registry();
+use forensic_rs::utils::testing::TestingRegistry;
+let registry = TestingRegistry::new();
+let key = registry.key(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion")?;
 ```
 
-Also available: `TestingEventLogReader` with `basic_event_log()` for event log tests, and `testing_logger_dummy()` / `testing_notifier_dummy()` for capturing logging/notification messages in tests.
+`src/utils/testing/vfs.rs` similarly provides `InMemoryVirtualFileSystem`, implementing `FileSystem`, for filesystem-dependent code that shouldn't touch the real disk.
+
+Also available: `TestingEventLogReader` with `basic_event_log()` for event log tests, and `testing_logger_dummy()` for capturing logging messages in tests.
 
 ```rust
 use forensic_rs::utils::testing::basic_event_log;
@@ -372,8 +397,8 @@ use forensic_rs::utils::win::csidl::FOLDER_ID_APPDATA;
 ```rust
 use forensic_rs::traits::registry::extra::get_env_vars_of_users;
 
-let user_envs = get_env_vars_of_users(&mut registry_reader)?;
-// Returns BTreeMap<SID string, BTreeMap<var_name, expanded_value>>
+let user_envs = get_env_vars_of_users(&registry)?; // registry: &dyn Registry
+// Returns UsersEnvVars, keyed by user SID
 ```
 
 ---
@@ -482,41 +507,43 @@ let ts2: ForensicTimestamp = ft.into();
 
 ---
 
-## RegistryKeyGuard
+## RegKey
 
-`RegistryKeyGuard` is an RAII wrapper that automatically calls `close_key()` when it goes out of scope:
+`RegKey` is a lifetime-tied RAII guard returned by `RegistryExt::key()`/`RegKey::open()`. It closes the underlying key automatically when it goes out of scope, and the borrow checker enforces that it cannot outlive the `Registry` it was opened from or be mixed up with a key opened from a different reader:
 
 ```rust
 use forensic_rs::prelude::*;
 
-let key = reader.open_key(HKU, user_sid)?;
-let guard = RegistryKeyGuard::new(&reader, key);
-let value = reader.read_value(*guard, "ProfileImagePath")?;
-// key is closed when `guard` drops
+let key = reader.key(&format!(r"HKU\{}\Volatile Environment", user_sid))?;
+let value: String = key.value("ProfileImagePath")?.try_into()?;
+// key is closed when it drops; call `key.close()` for an explicit early close
 ```
 
-Derefs to `RegHiveKey` so it can be used directly in `RegistryReader` methods.
+Unlike the core `Registry` trait (`Send + Sync`), `RegKey` itself is `!Send`/`!Sync` — it mirrors a thread-confined live handle even though the reader it borrows from is shareable.
 
 ---
 
 ## Recursive Traversal Helpers
 
-### walk_dir (VirtualFileSystem)
+### FileSystemExt::walk (FileSystem)
 
 ```rust
-let mut vfs = StdVirtualFS::new();
-vfs.walk_dir(Path::new("/var/log"), &mut |path, entry| {
-    println!("{}: {:?}", path.display(), entry);
-})?;
+let vfs = StdVirtualFS::new();
+for entry in vfs.walk(FPath::new("/var/log"), &WalkOptions::default()) {
+    let entry = entry?;
+    println!("{}: {:?}", entry.path, entry.file_type);
+}
 ```
 
-### walk_keys (RegistryReader)
+### Iterating registry keys (Registry)
+
+There is no recursive registry walk built into the core API; `RegKey::keys()` lists one level of child key names, and `RegistryExt::for_each_user_hive()` expands a callback over every user SID under `HKEY_USERS`:
 
 ```rust
-let root = reader.open_key(HKLM, r"SOFTWARE\Microsoft")?;
-reader.walk_keys(root, "SOFTWARE\\Microsoft", &mut |full_path, key| {
-    println!("Key: {}", full_path);
-})?;
+let key = reader.key(r"HKLM\SOFTWARE\Microsoft")?;
+for entry in key.keys()? {
+    println!("Key: {}", entry.name);
+}
 ```
 
 ---

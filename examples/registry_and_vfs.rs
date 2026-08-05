@@ -1,24 +1,24 @@
 //! Core types and direct API usage (no pipeline).
 //!
 //! Demonstrates:
-//! - `RegistryReader` with `TestingRegistry` and RAII key handles
-//! - `VirtualFileSystem` with `StdVirtualFS` and `ChRootFileSystem`
+//! - `Registry`/`RegistryExt` with `TestingRegistry` and RAII `RegKey` handles
+//! - `FileSystem`/`FileSystemExt` with `StdVirtualFS` and `ChRootFileSystem`
 //! - `ForensicData` container: inserting fields, typed accessors, ECS dictionary
 //! - `Field` enum and `Into` conversions
 //! - `ForensicTimestamp` multi-format constructors
-//! - Logging macros (`info!`, `warn!`, `error!`) and notification macros
+//! - Logging macros (`info!`, `warn!`, `error!`) and forensic `Finding`s
 //! - `ForensicContext` initialization
 //!
 //! Run with: `cargo run --example registry_and_vfs`
 
-use std::path::Path;
+use std::sync::Arc;
 
 use forensic_rs::prelude::*;
 use forensic_rs::utils::testing::TestingRegistry;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
-    // 1. Registry: TestingRegistry and RAII key handles
+    // 1. Registry: TestingRegistry and RAII RegKey handles
     // -----------------------------------------------------------------------
     println!("=== Registry Operations ===\n");
 
@@ -36,47 +36,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.add_value(
         r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
         "CurrentBuild",
-        RegValue::DWord(22631),
+        RegValue::new_sz("22631"),
     );
 
-    let key = registry.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid))?;
-    let profile: String = registry.read_value(&key, "USERPROFILE")?.try_into()?;
-    let username: String = registry.read_value(&key, "USERNAME")?.try_into()?;
+    let env_path = format!(r"HKU\{}\Volatile Environment", user_sid);
+    let key = registry.key(&env_path)?;
+    let profile: String = key.value("USERPROFILE")?.try_into()?;
+    let username: String = key.value("USERNAME")?.try_into()?;
     println!("User profile: {}", profile);
     println!("Username: {}", username);
 
     // A key closes automatically at the end of its scope.
     let app_data = {
-        let key = registry.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid))?;
-        let val: String = registry.read_value(&key, "APPDATA")?.try_into()?;
+        let key = registry.key(&env_path)?;
+        let val: String = key.value("APPDATA")?.try_into()?;
         val
     };
     println!("AppData: {}", app_data);
 
     // One handle can be used for multiple reads.
     {
-        let key = registry.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid))?;
-        let domain: String = registry.read_value(&key, "USERDOMAIN")?.try_into()?;
+        let key = registry.key(&env_path)?;
+        let domain: String = key.value("USERDOMAIN")?.try_into()?;
         println!("Domain: {}", domain);
     }
 
-    // List users and get system info
-    let users = registry.list_users()?;
-    println!("Users: {:?}", users);
+    // List users and get system info via the `windows::` free functions
+    // (RFC 0001 P1: Windows semantics live outside the core `Registry` trait).
+    let users = windows::users(&registry)?;
+    println!("Users: {:?}", users.iter().map(|u| &u.sid).collect::<Vec<_>>());
 
-    let sys_root = registry.get_system_root()?;
+    let sys_root = windows::system_root(&registry)?;
     println!("SystemRoot: {}", sys_root);
 
     // -----------------------------------------------------------------------
-    // 2. VirtualFileSystem: StdVirtualFS and ChRootFileSystem
+    // 2. FileSystem: StdVirtualFS and ChRootFileSystem
     // -----------------------------------------------------------------------
-    println!("\n=== VirtualFileSystem Operations ===\n");
+    println!("\n=== FileSystem Operations ===\n");
 
-    let mut vfs = StdVirtualFS::new();
+    let vfs = StdVirtualFS::new();
 
-    // Read a file using VFS trait (works on the real filesystem)
-    let cargo_path = Path::new("Cargo.toml");
-    if vfs.exists(cargo_path) {
+    // Read a file using the FileSystem trait (works on the real filesystem)
+    let cargo_path = FPath::new("Cargo.toml");
+    // `VirtualFileSystem::exists` (old, &self) and `FileSystemExt::exists`
+    // (new, also &self) both apply to `StdVirtualFS` and are both in the
+    // prelude — qualify explicitly to use the new trait.
+    if FileSystemExt::exists(&vfs, cargo_path) {
         let metadata = vfs.metadata(cargo_path)?;
         println!("Cargo.toml size: {} bytes", metadata.len());
         println!("Cargo.toml is file: {}", metadata.is_file());
@@ -84,19 +89,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ChRootFileSystem: remaps paths to a different root
     // This is useful for analyzing forensic images mounted at a different path
-    let chroot = ChRootFileSystem::new(Path::new("."), Box::new(StdVirtualFS::new()));
+    let chroot = ChRootFileSystem::new(".", Arc::new(StdVirtualFS::new()));
     println!("ChRootFileSystem created (root: current directory)");
 
     // List directory contents
-    let entries = vfs.read_dir(Path::new("."))?;
+    let entries: Vec<DirEntry> = vfs
+        .read_dir(FPath::new("."))?
+        .collect::<ForensicResult<Vec<_>>>()?;
     println!("Files in current directory:");
     for entry in entries.iter().take(5) {
-        let kind = match entry {
-            VDirEntry::Directory(_) => "dir",
-            VDirEntry::File(_) => "file",
-            VDirEntry::Symlink(_) => "symlink",
+        let kind = match entry.file_type {
+            VFileType::Directory => "dir",
+            VFileType::File => "file",
+            VFileType::Symlink => "symlink",
         };
-        println!("  {} ({})", entry, kind);
+        println!("  {} ({})", entry.path, kind);
     }
     if entries.len() > 5 {
         println!("  ... and {} more", entries.len() - 5);
@@ -110,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     println!("\n=== ForensicData Container ===\n");
 
-    // Initialize context so ForensicData::default() picks up host/tenant
+    // Initialize context for logging macros to pick up host/tenant.
     initialize_context(forensic_rs::context::ForensicContext {
         host: "WORKSTATION01".into(),
         tenant: "ACME".into(),
@@ -118,9 +125,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         metadata: Default::default(),
     });
 
+    // Every ForensicData requires a real ProvenanceId. Outside a pipeline
+    // (no TriageContext here), mint one from a standalone ProvenanceStore.
+    let provenance_store = ProvenanceStore::new();
+    let event_log_source = provenance_store.register_source(SourceKey::Live {
+        host: "WORKSTATION01".to_string(),
+        api: "EventLogReader".to_string(),
+    });
+    let provenance = event_log_source.mint(Acquisition::LiveApi, Recovery::Allocated);
+
     // Create with explicit host
     let mut data = ForensicData::new("WORKSTATION01",
-        Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Security)));
+        Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Security)), provenance);
 
     // Insert fields using ECS dictionary constants
     data.add_field(EVENT_CODE, Field::U64(4624));
@@ -208,23 +224,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Filetime -> ForensicTimestamp: {}", ts_from_ft);
 
     // -----------------------------------------------------------------------
-    // 6. Logging and Notification macros
+    // 6. Logging and Findings
     // -----------------------------------------------------------------------
-    println!("\n=== Logging & Notifications ===\n");
+    println!("\n=== Logging & Findings ===\n");
 
-    // In production, you'd set up a logger receiver. Here we just fire the macros
-    // (messages go to the thread-local channel; without a receiver they are dropped).
+    // Logging: for the engineer debugging the tool. In production you'd set
+    // up a receiver; here the messages just go to the thread-local channel.
     info!("Processing artifact: {}", "Security.evtx");
     warn!("Found {} duplicate records", 3);
     error!("Failed to parse record at offset {:#x}", 0xDEAD);
 
-    // Notifications for forensic alerts
-    notify_high!(NotificationType::SuspiciousArtifact,
-        "Suspicious logon from {} to {}", "192.168.1.100", "WORKSTATION01");
-    notify_info!(NotificationType::Informational,
-        "Processing complete: {} records", 1024);
+    // Findings: for the analyst reading the case report. Unlike a log line,
+    // a `Finding` is a structured, severity-ranked value routed to every
+    // `TriageSink` when produced inside a pipeline — see the
+    // `triage_pipeline` example for an `Analyzer` pushing these into the
+    // pipeline's finding stream.
+    let finding = Finding::new(
+        FindingSeverity::High,
+        FindingCategory::SuspiciousActivity,
+        "Suspicious logon",
+    )
+    .with_description(format!(
+        "Suspicious logon from {} to {}",
+        "192.168.1.100", "WORKSTATION01"
+    ));
+    println!("{finding}");
 
-    println!("Logging and notification macros fired (no receiver configured).");
     println!("\nDone!");
 
     Ok(())

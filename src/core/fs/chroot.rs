@@ -1,137 +1,95 @@
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::{prelude::ForensicResult, traits::vfs::VirtualFileSystem};
+use crate::{
+    core::path::{Component, FPath, FPathBuf},
+    prelude::ForensicResult,
+    traits::vfs::{CaseSensitivity, DirEntry, FileSystem, SourceKind, VMetadata, VirtualFile},
+};
 
-/// Changes the apparent root directory of the underlaying virtual filesystem like chroot on unix.
+/// Changes the apparent root directory of the underlying filesystem, like
+/// `chroot` on Unix.
+///
+/// Only implements the new [`FileSystem`] trait — this struct was migrated
+/// as part of the RFC 0001 consumer ripple (workstream E), since as a
+/// compositional wrapper it could not cleanly hold both an old
+/// `Box<dyn VirtualFileSystem>` and a new `Arc<dyn FileSystem>` inner value
+/// at once.
 pub struct ChRootFileSystem {
-    path: PathBuf,
-    fs: Box<dyn VirtualFileSystem>,
+    path: FPathBuf,
+    fs: Arc<dyn FileSystem>,
 }
 impl ChRootFileSystem {
     /// Creates a new ChRoot file system
     ///
     /// ```
     /// use forensic_rs::prelude::*;
-    /// use std::path::Path;
-    /// let chrfs = ChRootFileSystem::new(Path::new("C:\\"), Box::new(StdVirtualFS::new()));
-    /// let exists_c_windows = chrfs.exists(Path::new("Windows"));
+    /// use std::sync::Arc;
+    /// let chrfs = ChRootFileSystem::new("C:\\", Arc::new(StdVirtualFS::new()));
+    /// let exists_c_windows = chrfs.exists(FPath::new("Windows"));
     /// ```
-    pub fn new<P>(path: P, fs: Box<dyn VirtualFileSystem>) -> Self
+    pub fn new<P>(path: P, fs: Arc<dyn FileSystem>) -> Self
     where
-        P: Into<std::path::PathBuf>,
+        P: Into<FPathBuf>,
     {
         Self {
             path: path.into(),
             fs,
         }
     }
-}
-fn normalize_prefix(path: &Path) -> PathBuf {
-    let striped = strip_prefix(path);
-    let path_comps = striped.components();
-    let mut final_path = PathBuf::new();
-    for next in path_comps {
-        if let std::path::Component::RootDir = &next {
-            continue;
-        }
-        for splt in next.as_os_str().to_string_lossy().split(split_path) {
-            if splt.trim().is_empty() {
-                continue;
+
+    /// Resolves `path` (evidence-relative, possibly absolute-looking)
+    /// against the chroot's root. Every component that would escape or
+    /// bypass the root (`RootDir`, a drive designator, `.`, `..`) is
+    /// dropped rather than honored — a lookup can never resolve outside
+    /// `self.path`. `':'` inside a segment is also stripped, so a
+    /// Windows-style drive marker embedded mid-path (e.g. a mistakenly
+    /// doubled `Windows:\System32`) doesn't produce a stray colon.
+    fn resolve(&self, path: &FPath) -> FPathBuf {
+        let mut child = FPathBuf::new();
+        for comp in path.components() {
+            if let Component::Normal(s) = comp {
+                let cleaned = s.replace(':', "");
+                if !cleaned.trim().is_empty() {
+                    child.push(cleaned);
+                }
             }
-            if splt.contains(":") {
-                final_path.push(splt.replace(":", ""));
-            } else {
-                final_path.push(splt);
-            }
         }
-    }
-    final_path
-}
-fn split_path(chr: char) -> bool {
-    chr == '\\' || chr == '/'
-}
-fn strip_prefix(path: &Path) -> PathBuf {
-    if path.starts_with("/") {
-        match path.strip_prefix("/") {
-            Ok(v) => v.to_path_buf(),
-            Err(_) => path.to_path_buf(),
-        }
-    } else if path.starts_with("\\") {
-        match path.strip_prefix("\\") {
-            Ok(v) => v.to_path_buf(),
-            Err(_) => path.to_path_buf(),
-        }
-    } else {
-        path.to_path_buf()
+        self.path.join(child.as_str())
     }
 }
-impl VirtualFileSystem for ChRootFileSystem {
-    fn read_to_string(&mut self, path: &Path) -> ForensicResult<String> {
-        self.fs
-            .read_to_string(self.path.join(normalize_prefix(path)).as_path())
+
+impl FileSystem for ChRootFileSystem {
+    fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>> {
+        self.fs.open(self.resolve(path).as_path())
     }
 
-    fn is_live(&self) -> bool {
-        false
+    fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
+        self.fs.metadata(self.resolve(path).as_path())
     }
 
-    fn read_all(&mut self, path: &Path) -> ForensicResult<Vec<u8>> {
-        self.fs
-            .read_all(self.path.join(normalize_prefix(path)).as_path())
-    }
-
-    fn read(&mut self, path: &Path, pos: u64, buf: &mut [u8]) -> ForensicResult<usize> {
-        self.fs
-            .read(self.path.join(normalize_prefix(path)).as_path(), pos, buf)
-    }
-
-    fn metadata(&mut self, path: &Path) -> ForensicResult<crate::traits::vfs::VMetadata> {
-        self.fs
-            .metadata(self.path.join(normalize_prefix(path)).as_path())
-    }
-
-    fn read_dir(&mut self, path: &Path) -> ForensicResult<Vec<crate::traits::vfs::VDirEntry>> {
-        self.fs
-            .read_dir(self.path.join(normalize_prefix(path)).as_path())
-    }
-
-    fn from_file(
+    fn read_dir(
         &self,
-        _file: Box<dyn crate::traits::vfs::VirtualFile>,
-    ) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        Err(crate::prelude::ForensicError::io_error(
-            std::io::ErrorKind::NotFound,
-            "File not found",
-        ))
+        path: &FPath,
+    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+        self.fs.read_dir(self.resolve(path).as_path())
     }
 
-    fn from_fs(
-        &self,
-        fs: Box<dyn VirtualFileSystem>,
-    ) -> ForensicResult<Box<dyn VirtualFileSystem>> {
-        Ok(Box::new(Self::new("/", fs)))
+    fn source(&self) -> SourceKind {
+        self.fs.source()
     }
 
-    fn open(&mut self, path: &Path) -> ForensicResult<Box<dyn crate::traits::vfs::VirtualFile>> {
-        self.fs
-            .open(self.path.join(normalize_prefix(path)).as_path())
-    }
-
-    fn duplicate(&self) -> Box<dyn VirtualFileSystem> {
-        Box::new(Self {
-            fs: self.fs.duplicate(),
-            path: self.path.clone(),
-        })
-    }
-    fn exists(&self, path: &Path) -> bool {
-        self.path.join(normalize_prefix(path)).exists()
+    fn case_sensitivity(&self) -> CaseSensitivity {
+        self.fs.case_sensitivity()
     }
 }
 
 #[cfg(test)]
 mod tst {
     use crate::core::fs::StdVirtualFS;
+    use crate::core::path::FPath;
+    use crate::traits::vfs::FileSystemExt;
     use std::io::Write;
+    use std::sync::Arc;
 
     use super::*;
 
@@ -142,38 +100,51 @@ mod tst {
     fn test_temp_file() {
         let tmp = std::env::temp_dir();
         let tmp_file = tmp.join(FILE_NAME);
-        let file_path_in_chroot = std::path::PathBuf::from(&FILE_NAME);
         let mut file = std::fs::File::create(&tmp_file).unwrap();
         file.write_all(CONTENT.as_bytes()).unwrap();
         drop(file);
 
         let std_vfs = StdVirtualFS::new();
         // CHRoot over tmp folder
-        let mut chrfs = ChRootFileSystem::new(&tmp, Box::new(std_vfs));
-        test_file_content(&mut chrfs, &file_path_in_chroot);
-    }
-
-    fn test_file_content(std_vfs: &mut impl VirtualFileSystem, tmp_file: &Path) {
-        let content = std_vfs.read_to_string(tmp_file).unwrap();
-        assert_eq!(CONTENT, content);
-    }
-
-    #[test]
-    fn should_allow_boxing() {
-        struct Test {
-            _fs: Box<dyn VirtualFileSystem>,
-        }
-        let boxed = Box::new(StdVirtualFS::new());
-        let _test = Test { _fs: boxed };
+        let tmp_str = tmp.to_string_lossy().into_owned();
+        let chrfs = ChRootFileSystem::new(tmp_str, Arc::new(std_vfs));
+        assert_eq!(
+            chrfs.read_all(FPath::new(FILE_NAME)).unwrap(),
+            CONTENT.as_bytes()
+        );
     }
 
     #[test]
     #[cfg(target_os = "windows")]
     fn should_exists_c_windows() {
-        let chrfs = ChRootFileSystem::new(Path::new("C:\\"), Box::new(StdVirtualFS::new()));
-        assert!(chrfs.exists(Path::new("Windows")));
-        let chrfs = ChRootFileSystem::new(Path::new("C:\\"), Box::new(StdVirtualFS::new()));
-        assert!(chrfs.exists(Path::new("Windows:\\System32")));
+        let chrfs = ChRootFileSystem::new("C:\\", Arc::new(StdVirtualFS::new()));
+        assert!(chrfs.exists(FPath::new("Windows")));
+        let chrfs = ChRootFileSystem::new("C:\\", Arc::new(StdVirtualFS::new()));
+        assert!(chrfs.exists(FPath::new("Windows:\\System32")));
         // This will be normalized into C:\Windows\System32
+    }
+
+    #[test]
+    fn dotdot_escape_attempts_stay_confined_to_root() {
+        const ESCAPE_TEST_FILE_NAME: &str = "test_chrfs_escape_file.txt";
+        let tmp = std::env::temp_dir();
+        let tmp_file = tmp.join(ESCAPE_TEST_FILE_NAME);
+        let mut file = std::fs::File::create(&tmp_file).unwrap();
+        file.write_all(CONTENT.as_bytes()).unwrap();
+        drop(file);
+
+        let tmp_str = tmp.to_string_lossy().into_owned();
+        let chrfs = ChRootFileSystem::new(tmp_str, Arc::new(StdVirtualFS::new()));
+        // `..` components are dropped entirely, not resolved against the
+        // host filesystem, so this can never escape the chroot root.
+        assert!(!chrfs.exists(FPath::new("../../../../etc/passwd")));
+        // An absolute-looking lookup is still confined to the root: its
+        // root/drive component is dropped, leaving a plain relative lookup.
+        assert_eq!(
+            chrfs
+                .read_all(FPath::new(&format!("/{ESCAPE_TEST_FILE_NAME}")))
+                .unwrap(),
+            CONTENT.as_bytes()
+        );
     }
 }

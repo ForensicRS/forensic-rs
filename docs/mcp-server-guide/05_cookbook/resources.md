@@ -4,20 +4,20 @@ This cookbook provides reusable code patterns for implementing `ResourceProvider
 
 ## Recipe 1: Exposing File System Resources
 
-Wrap `VirtualFileSystem` as an MCP resource provider.
+Wrap `FileSystem` as an MCP resource provider.
 
 ```rust
-use std::path::Path;
+use std::sync::Arc;
 use forensic_rs::prelude::*;
 use forensic_rs::bridge::providers::VfsProvider;
 
 pub struct FileSystemResourceProvider {
-    vfs: Box<dyn VirtualFileSystem>,
+    vfs: Arc<dyn FileSystem>,
     root_path: String,
 }
 
 impl FileSystemResourceProvider {
-    pub fn new(vfs: Box<dyn VirtualFileSystem>, root_path: &str) -> Self {
+    pub fn new(vfs: Arc<dyn FileSystem>, root_path: &str) -> Self {
         Self {
             vfs,
             root_path: root_path.to_string(),
@@ -35,13 +35,18 @@ impl ResourceProvider for FileSystemResourceProvider {
     }
 
     fn children(&self, path: &str, cancellation: &CancellationToken) -> CapabilityResult<Vec<ResourceEntry>> {
-        let full_path = Path::new(&self.root_path).join(path);
+        let full_path = FPath::new(&self.root_path).join(path);
+        // `read_dir` now returns a lazy iterator of `ForensicResult<DirEntry>`
+        // (not an already-collected `Vec<VDirEntry>`), so each item is
+        // fallible and `DirEntry` carries a full `path`/`file_type` rather
+        // than the old `name()`/`is_directory()` accessors.
         let entries = self.vfs.read_dir(&full_path)?;
 
-        entries.into_iter().map(|entry| {
-            let name = entry.name().to_string();
+        entries.map(|entry| {
+            let entry = entry?;
+            let name = entry.file_name().unwrap_or_default().to_string();
             let child_path = format!("{}/{}", path.trim_end_matches('/'), name);
-            let is_dir = entry.is_directory();
+            let is_dir = entry.file_type == VFileType::Directory;
 
             Ok(ResourceEntry {
                 name: name.clone(),
@@ -52,7 +57,7 @@ impl ResourceProvider for FileSystemResourceProvider {
     }
 
     fn read(&self, path: &str, cancellation: &CancellationToken) -> CapabilityResult<ResourceContent> {
-        let full_path = Path::new(&self.root_path).join(path);
+        let full_path = FPath::new(&self.root_path).join(path);
 
         if self.vfs.exists(&full_path) {
             let metadata = self.vfs.metadata(&full_path)?;
@@ -71,7 +76,7 @@ impl ResourceProvider for FileSystemResourceProvider {
     }
 
     fn metadata(&self, path: &str, cancellation: &CancellationToken) -> CapabilityResult<ResourceMetadata> {
-        let full_path = Path::new(&self.root_path).join(path);
+        let full_path = FPath::new(&self.root_path).join(path);
         let metadata = self.vfs.metadata(&full_path)?;
 
         Ok(ResourceMetadata {
@@ -94,19 +99,19 @@ fn guess_mime_type(path: &str) -> String {
 
 ## Recipe 2: Exposing Registry Resources
 
-Wrap `RegistryReader` as a resource provider.
+Wrap `Registry` as a resource provider.
 
 ```rust
-use std::path::Path;
+use std::sync::Arc;
 use forensic_rs::prelude::*;
 use forensic_rs::bridge::providers::RegistryProvider;
 
 pub struct RegistryResourceProvider {
-    registry: Box<dyn RegistryReader>,
+    registry: Arc<dyn Registry>,
 }
 
 impl RegistryResourceProvider {
-    pub fn new(registry: Box<dyn RegistryReader>) -> Self {
+    pub fn new(registry: Arc<dyn Registry>) -> Self {
         Self { registry }
     }
 }
@@ -121,50 +126,47 @@ impl ResourceProvider for RegistryResourceProvider {
     }
 
     fn children(&self, path: &str, _cancellation: &CancellationToken) -> CapabilityResult<Vec<ResourceEntry>> {
-        // Parse path: "HKLM\SOFTWARE\Microsoft"
-        let (hive, key_path) = parse_registry_path(path);
-
-        let handle = self.registry.open_key(hive, &key_path)?;
+        // `path` is a single hive-prefixed string, e.g. "HKLM\SOFTWARE\Microsoft".
+        // `RegistryExt::key` parses the hive designator (short `HKLM` or long
+        // `HKEY_LOCAL_MACHINE` form, case-insensitively) itself, so there's no
+        // separate hive argument — or manual hive-name matching — to build here.
+        let key = self.registry.key(path)?;
         let mut entries = Vec::new();
 
         // Enumerate subkeys
-        self.registry.enumerate_keys(&handle, &mut |name| {
+        for entry in key.keys()? {
             entries.push(ResourceEntry {
-                name: name.to_string(),
-                path: format!("{}\\{}", path, name),
+                name: entry.name.clone(),
+                path: format!("{}\\{}", path, entry.name),
                 kind: ResourceKind::RegistryKey,
             });
-            Ok(RegistryVisit::Continue)
-        })?;
+        }
 
         // Enumerate values
-        self.registry.enumerate_values(&handle, &mut |name| {
+        for (name, _value) in key.values()? {
             entries.push(ResourceEntry {
-                name: name.to_string(),
+                name: name.clone(),
                 path: format!("{}\\{}", path, name),
                 kind: ResourceKind::RegistryValue,
             });
-            Ok(RegistryVisit::Continue)
-        })?;
+        }
 
         Ok(entries)
     }
 
     fn read(&self, path: &str, _cancellation: &CancellationToken) -> CapabilityResult<ResourceContent> {
-        let (hive, key_path) = parse_registry_path(path);
-
-        // If path ends with \, it's a key, otherwise it's a value
-        let (key, value_name) = if path.ends_with('\\') {
-            (&key_path[..key_path.len()-1], None)
+        // If path ends with \, it's a key, otherwise the final segment is a value name
+        let (key_path, value_name) = if path.ends_with('\\') {
+            (path.trim_end_matches('\\'), None)
         } else {
-            let last_slash = key_path.rfind('\\').map(|i| i + 1).unwrap_or(0);
-            (&key_path[..last_slash], Some(&key_path[last_slash..]))
+            match path.rfind('\\') {
+                Some(pos) => (&path[..pos], Some(&path[pos + 1..])),
+                None => (path, None),
+            }
         };
 
-        let handle = self.registry.open_key(hive, key)?;
-
         if let Some(name) = value_name {
-            let reg_value = self.registry.read_value(&handle, name)?;
+            let reg_value = self.registry.value(key_path, name)?;
             let (content, mime_type) = convert_registry_value(&reg_value);
             Ok(ResourceContent { mime_type, content })
         } else {
@@ -176,29 +178,16 @@ impl ResourceProvider for RegistryResourceProvider {
     }
 
     fn metadata(&self, path: &str, _cancellation: &CancellationToken) -> CapabilityResult<ResourceMetadata> {
-        let (hive, key_path) = parse_registry_path(path);
-        let handle = self.registry.open_key(hive, &key_path)?;
+        let key = self.registry.key(path)?;
+        let info = key.info()?;
 
         Ok(ResourceMetadata {
             size: 0,
             created: None,
-            modified: None,
+            modified: info.last_write_time,
             accessed: None,
         })
     }
-}
-
-fn parse_registry_path(path: &str) -> (RegHiveKey, &str) {
-    let parts: Vec<&str> = path.splitn(2, '\\').collect();
-    let hive = match parts[0].to_uppercase().as_str() {
-        "HKLM" | "HKEY_LOCAL_MACHINE" => RegHiveKey::HKEY_LOCAL_MACHINE,
-        "HKCU" | "HKEY_CURRENT_USER" => RegHiveKey::HKEY_CURRENT_USER,
-        "HKCR" | "HKEY_CLASSES_ROOT" => RegHiveKey::HKEY_CLASSES_ROOT,
-        "HKU" | "HKEY_USERS" => RegHiveKey::HKEY_USERS,
-        "HKCC" | "HKEY_CURRENT_CONFIG" => RegHiveKey::HKEY_CURRENT_CONFIG,
-        _ => RegHiveKey::HKEY_LOCAL_MACHINE,
-    };
-    (hive, parts.get(1).unwrap_or(&""))
 }
 ```
 

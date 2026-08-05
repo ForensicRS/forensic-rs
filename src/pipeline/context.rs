@@ -4,6 +4,7 @@ use crate::{
     artifact::Artifact,
     context::{initialize_context, ForensicContext},
     field::{Field, Ip, Text},
+    provenance::ProvenanceStore,
     utils::time::ForensicTimestamp,
 };
 
@@ -11,10 +12,14 @@ use crate::{
 ///
 /// Wraps the thread-local `ForensicContext` (host, tenant, artifact metadata)
 /// and adds an extensible key-value store that enrichers can read/write and
-/// analyzers can read during pipeline execution.
+/// analyzers can read during pipeline execution, plus the [`ProvenanceStore`]
+/// for this run — the non-global owner every [`crate::data::ForensicData`]'s
+/// provenance resolves against.
+#[derive(Default)]
 pub struct TriageContext {
     forensic: ForensicContext,
     shared: BTreeMap<Text, Field>,
+    provenance_store: ProvenanceStore,
 }
 
 impl TriageContext {
@@ -27,6 +32,7 @@ impl TriageContext {
                 metadata: BTreeMap::new(),
             },
             shared: BTreeMap::new(),
+            provenance_store: ProvenanceStore::new(),
         }
     }
 
@@ -34,12 +40,22 @@ impl TriageContext {
         Self {
             forensic: ctx,
             shared: BTreeMap::new(),
+            provenance_store: ProvenanceStore::new(),
         }
     }
 
     /// Access the underlying `ForensicContext`.
     pub fn forensic_context(&self) -> &ForensicContext {
         &self.forensic
+    }
+
+    /// The [`ProvenanceStore`] for this pipeline run. Cheap to clone (an
+    /// `Arc` handle) — register sources and mint/derive/merge against the
+    /// clone before or during the run; analyzers read it back via
+    /// [`Analyzer::analyze`](crate::pipeline::traits::Analyzer::analyze)'s
+    /// `context` parameter.
+    pub fn provenance_store(&self) -> ProvenanceStore {
+        self.provenance_store.clone()
     }
 
     /// Read a value from the shared pipeline state.
@@ -130,18 +146,9 @@ impl TriageContext {
     }
 
     /// Install this context into the thread-local `ForensicContext`,
-    /// so that `ForensicData::default()` and logging macros pick it up.
+    /// so that logging macros pick it up.
     pub(crate) fn install(&self) {
         initialize_context(self.forensic.clone());
-    }
-}
-
-impl Default for TriageContext {
-    fn default() -> Self {
-        Self {
-            forensic: ForensicContext::default(),
-            shared: BTreeMap::new(),
-        }
     }
 }
 

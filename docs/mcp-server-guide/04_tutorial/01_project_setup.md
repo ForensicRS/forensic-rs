@@ -168,5 +168,5 @@ See [Your First Tool](./02_first_tool.md) for a detailed walkthrough of implemen
 ## Next Steps
 
 - [Registry Tools](./03_registry_tools.md) - Query Run keys for persistence mechanisms
-- [VFS Tools](./04_vfs_tools.md) - Analyze Prefetch files via VirtualFileSystem
+- [VFS Tools](./04_vfs_tools.md) - Analyze Prefetch files via FileSystem
 - [Event Log Tools](./05_eventlog_tools.md) - Query Security event logs

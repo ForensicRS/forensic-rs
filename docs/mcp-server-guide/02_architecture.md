@@ -26,8 +26,8 @@ flowchart TB
     end
 
     subgraph "Evidence Sources"
-        RegistryReader[RegistryReader]
-        VFS[VirtualFileSystem]
+        RegistrySource[Registry]
+        FileSystemSource[FileSystem]
         EventLog[EventLogReader]
         Database[ForensicDb]
     end
@@ -282,4 +282,3 @@ The following never leak to unauthorized callers:
 
 - Continue to [Quickstart](./03_quickstart.md) to build a working server
 - See [Tutorial: Your First Tool](../04_tutorial/02_first_tool.md) for implementation
-- Review [MCP Integration Design](../../MCP_INTEGRATION.md) for complete specification

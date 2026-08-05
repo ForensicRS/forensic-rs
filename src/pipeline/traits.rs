@@ -29,6 +29,16 @@ pub trait Enricher {
 /// track data across records for aggregate analysis — e.g. detecting gaps in
 /// EventRecordIDs, missing MFT entries, or timestamp anomalies.
 ///
+/// Both methods take the pipeline's `&TriageContext` (read-only — analyzers
+/// have no legitimate need to mutate shared state, that stays `Enricher`'s
+/// job), so an analyzer can resolve a record's confidence via
+/// `data.confidence(&context.provenance_store())`.
+///
+/// Both methods take an `out: &mut Vec<Finding>` accumulator instead of
+/// returning `Vec<Finding>`: findings pushed to `out` before a `?` bails out
+/// with `Err` are still delivered to the sinks, whereas a `Vec<Finding>`
+/// return value would be discarded along with the error.
+///
 /// Two analysis phases:
 /// - `analyze()`: called per record — fast per-item checks
 /// - `finalize()`: called after a parser is exhausted — aggregate/cross-record analysis
@@ -40,12 +50,18 @@ pub trait Analyzer {
     fn supported_artifacts(&self) -> Vec<Artifact> {
         Vec::new()
     }
-    /// Analyze a single record and return any findings.
-    fn analyze(&mut self, data: &ForensicData) -> ForensicResult<Vec<Finding>>;
-    /// Produce aggregate findings after all records from a parser have been processed.
-    /// Default implementation returns no findings.
-    fn finalize(&mut self) -> ForensicResult<Vec<Finding>> {
-        Ok(Vec::new())
+    /// Analyze a single record, pushing any findings to `out`.
+    fn analyze(
+        &mut self,
+        data: &ForensicData,
+        context: &TriageContext,
+        out: &mut Vec<Finding>,
+    ) -> ForensicResult<()>;
+    /// Produce aggregate findings after all records from a parser have been processed,
+    /// pushing them to `out`. Default implementation produces none.
+    fn finalize(&mut self, context: &TriageContext, out: &mut Vec<Finding>) -> ForensicResult<()> {
+        let _ = (context, out);
+        Ok(())
     }
 }
 

@@ -1,18 +1,18 @@
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::capabilities::{
     CapabilityError, CapabilityErrorKind, CapabilityResult, CapabilityValue, ResourceContent,
     ResourceEntry, ResourceId, ResourceKind, ResourceMetadata, ResourceProvider,
     ResourceProviderDescriptor,
 };
+use crate::core::path::FPath;
 use crate::err::{ForensicError, ForensicResult};
 use crate::field::Text;
 use crate::traits::db::ForensicDb;
 use crate::traits::events::{EventLogQuery, EventLogReader};
-use crate::traits::registry::{RegHiveKey, RegistryReader, HKC, HKCR, HKCU, HKLM, HKU};
-use crate::traits::vfs::{VDirEntry, VirtualFileSystem};
+use crate::traits::registry::{Registry, RegistryExt};
+use crate::traits::vfs::{FileSystem, FileSystemExt, VFileType};
 
 use super::hooks::{inject_hook_children, split_virtual_path, ProviderHook};
 use super::{BridgeValue, CancellationToken, ForensicProvider, NodeEntry, NodeType};
@@ -21,26 +21,26 @@ use super::{BridgeValue, CancellationToken, ForensicProvider, NodeEntry, NodeTyp
 // RegistryProvider
 // ============================================================================
 
-const HIVE_ROOTS: &[(&str, RegHiveKey)] = &[
-    ("HKEY_LOCAL_MACHINE", HKLM),
-    ("HKEY_CURRENT_USER", HKCU),
-    ("HKEY_USERS", HKU),
-    ("HKEY_CLASSES_ROOT", HKCR),
-    ("HKEY_CURRENT_CONFIG", HKC),
+const HIVE_ROOT_NAMES: &[&str] = &[
+    "HKEY_LOCAL_MACHINE",
+    "HKEY_CURRENT_USER",
+    "HKEY_USERS",
+    "HKEY_CLASSES_ROOT",
+    "HKEY_CURRENT_CONFIG",
 ];
 
-/// Forensic bridge provider wrapping a `RegistryReader`.
+/// Forensic bridge provider wrapping a `Registry`.
 pub struct RegistryProvider {
-    inner: Mutex<Box<dyn RegistryReader + Send>>,
+    inner: Arc<dyn Registry>,
     name: String,
     resource_descriptor: ResourceProviderDescriptor,
     hooks: Vec<Box<dyn ProviderHook>>,
 }
 
 impl RegistryProvider {
-    pub fn new(registry: Box<dyn RegistryReader + Send>) -> Self {
+    pub fn new(registry: Arc<dyn Registry>) -> Self {
         Self {
-            inner: Mutex::new(registry),
+            inner: registry,
             name: "Registry".to_string(),
             resource_descriptor: ResourceProviderDescriptor {
                 id: "registry".to_string(),
@@ -68,54 +68,18 @@ impl RegistryProvider {
     }
 
     fn root_children(&self, offset: u64, limit: u64) -> ForensicResult<(Vec<NodeEntry>, u64)> {
-        let total = HIVE_ROOTS.len() as u64;
-        let entries: Vec<NodeEntry> = HIVE_ROOTS
+        let total = HIVE_ROOT_NAMES.len() as u64;
+        let entries: Vec<NodeEntry> = HIVE_ROOT_NAMES
             .iter()
             .skip(offset as usize)
             .take(limit as usize)
-            .map(|(name, _)| NodeEntry {
+            .map(|name| NodeEntry {
                 name: Text::Owned(name.to_string()),
                 node_type: NodeType::Container,
                 description: None,
             })
             .collect();
         Ok((entries, total))
-    }
-
-    /// Resolve a root name like "HKEY_LOCAL_MACHINE" to a `RegHiveKey`.
-    fn resolve_hive(root: &str) -> Option<RegHiveKey> {
-        // Accept both the long form and short aliases
-        let normalized = root.to_uppercase();
-        match normalized.as_str() {
-            "HKEY_LOCAL_MACHINE" | "HKLM" => Some(HKLM),
-            "HKEY_CURRENT_USER" | "HKCU" => Some(HKCU),
-            "HKEY_USERS" | "HKU" => Some(HKU),
-            "HKEY_CLASSES_ROOT" | "HKCR" => Some(HKCR),
-            "HKEY_CURRENT_CONFIG" | "HKC" => Some(HKC),
-            _ => None,
-        }
-    }
-
-    /// Parse a registry path like `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft` into
-    /// `(hive_key, sub_path)`.
-    fn parse_path(path: &str) -> ForensicResult<(RegHiveKey, &str)> {
-        if path.is_empty() {
-            return Err(ForensicError::other(
-                "RegistryProvider",
-                "empty path".to_string(),
-            ));
-        }
-        let sep_pos = path.find('\\').unwrap_or(path.len());
-        let root = &path[..sep_pos];
-        let sub = if sep_pos < path.len() {
-            &path[sep_pos + 1..]
-        } else {
-            ""
-        };
-        let hive = Self::resolve_hive(root).ok_or_else(|| {
-            ForensicError::other("RegistryProvider", format!("unknown hive: {}", root))
-        })?;
-        Ok((hive, sub))
     }
 }
 
@@ -238,54 +202,35 @@ impl ForensicProvider for RegistryProvider {
             ));
         }
 
-        let (hive, sub) = Self::parse_path(path)?;
-        let reg = self.inner.lock().map_err(|_| {
-            ForensicError::other("RegistryProvider", "registry lock poisoned".to_string())
-        })?;
-
-        // Open the key. Hive-root enumeration remains backend-specific.
-        let hkey = if sub.is_empty() {
-            // For hive root, we can't open a key; instead we need to handle this specially
-            // For now, we'll return an error since enumerate on root is not supported
+        // A bare hive name (no `\`) has no key/value component to enumerate
+        // — mirrors the old backend's "cannot enumerate hive root directly"
+        // restriction.
+        if !path.contains('\\') {
             return Err(ForensicError::other(
                 "RegistryProvider",
                 "Cannot enumerate hive root directly".to_string(),
             ));
-        } else {
-            reg.open_key(hive, sub)?
-        };
-
-        // Collect sub-keys + values using callback visitor pattern
-        let mut all_keys: Vec<String> = Vec::new();
-        reg.enumerate_keys(&hkey, &mut |key_name| {
-            all_keys.push(key_name.to_string());
-            Ok(crate::traits::registry::RegistryVisit::Continue)
-        })?;
-
-        let mut value_names: Vec<String> = Vec::new();
-        reg.enumerate_values(&hkey, &mut |value_name| {
-            value_names.push(value_name.to_string());
-            Ok(crate::traits::registry::RegistryVisit::Continue)
-        })?;
+        }
+        let hkey = self.inner.key(path)?;
+        let all_keys = hkey.keys()?;
+        let all_values = hkey.values()?;
 
         // Build unified child list: keys first (Container), then values (Leaf)
         let mut entries: Vec<NodeEntry> = Vec::new();
         let total_keys = all_keys.len() as u64;
-        let total_values = value_names.len() as u64;
+        let total_values = all_values.len() as u64;
 
         // Inject hook virtual children (one Container entry per matching hook)
         // We check each value against hooks to see which hooks apply
         let mut hook_entries: Vec<NodeEntry> = Vec::new();
-        for vname in &value_names {
+        for (vname, rv) in &all_values {
             if cancel.is_cancelled() {
                 break;
             }
-            if let Ok(rv) = reg.read_value(&hkey, vname) {
-                let bv: BridgeValue = rv.into();
-                // Build the full path of this value
-                let value_path = format!("{}\\{}", path, vname);
-                inject_hook_children(&mut hook_entries, &self.hooks, &value_path, &bv);
-            }
+            let bv: BridgeValue = rv.clone().into();
+            // Build the full path of this value
+            let value_path = format!("{}\\{}", path, vname);
+            inject_hook_children(&mut hook_entries, &self.hooks, &value_path, &bv);
         }
         let total_hooks = hook_entries.len() as u64;
         let total = total_keys + total_values + total_hooks;
@@ -295,7 +240,7 @@ impl ForensicProvider for RegistryProvider {
         let count = limit as usize;
 
         let keys_page = all_keys.iter().skip(start).take(count).map(|k| NodeEntry {
-            name: Text::Owned(k.clone()),
+            name: Text::Owned(k.name.clone()),
             node_type: NodeType::Container,
             description: None,
         });
@@ -304,12 +249,12 @@ impl ForensicProvider for RegistryProvider {
         if entries.len() < count {
             let val_skip = start.saturating_sub(all_keys.len());
             let val_take = count - entries.len();
-            let values_page = value_names
+            let values_page = all_values
                 .iter()
                 .skip(val_skip)
                 .take(val_take)
-                .map(|v| NodeEntry {
-                    name: Text::Owned(v.clone()),
+                .map(|(name, _)| NodeEntry {
+                    name: Text::Owned(name.clone()),
                     node_type: NodeType::Leaf,
                     description: None,
                 });
@@ -317,7 +262,7 @@ impl ForensicProvider for RegistryProvider {
         }
 
         if entries.len() < count {
-            let hook_skip = start.saturating_sub(all_keys.len() + value_names.len());
+            let hook_skip = start.saturating_sub(all_keys.len() + all_values.len());
             let hook_take = count - entries.len();
             entries.extend(hook_entries.into_iter().skip(hook_skip).take(hook_take));
         }
@@ -339,27 +284,23 @@ impl ForensicProvider for RegistryProvider {
             ));
         }
 
-        let (hive, sub) = Self::parse_path(path)?;
-        let sep = sub.rfind('\\');
-        let (key_path, value_name) = match sep {
-            Some(pos) => (&sub[..pos], &sub[pos + 1..]),
-            None => ("", sub),
-        };
-
-        let reg = self.inner.lock().map_err(|_| {
-            ForensicError::other("RegistryProvider", "registry lock poisoned".to_string())
+        let sep = path.rfind('\\').ok_or_else(|| {
+            ForensicError::other(
+                "RegistryProvider",
+                "Cannot read values from hive root".to_string(),
+            )
         })?;
-
-        if key_path.is_empty() {
-            // Reading from hive root values - not supported
+        let (key_path, value_name) = (&path[..sep], &path[sep + 1..]);
+        if !key_path.contains('\\') {
+            // `key_path` is itself a bare hive name — mirrors the old
+            // backend's "cannot read values from hive root" restriction.
             return Err(ForensicError::other(
                 "RegistryProvider",
                 "Cannot read values from hive root".to_string(),
             ));
         }
 
-        let hkey = reg.open_key(hive, key_path)?;
-        let rv = reg.read_value(&hkey, value_name)?;
+        let rv = self.inner.value(key_path, value_name)?;
         Ok(rv.into())
     }
 
@@ -368,25 +309,20 @@ impl ForensicProvider for RegistryProvider {
         path: &str,
         _cancel: &CancellationToken,
     ) -> ForensicResult<BTreeMap<Text, BridgeValue>> {
-        let (hive, sub) = Self::parse_path(path)?;
-        let reg = self.inner.lock().map_err(|_| {
-            ForensicError::other("RegistryProvider", "registry lock poisoned".to_string())
-        })?;
-
-        if sub.is_empty() {
-            // Cannot get metadata of hive root directly
+        if !path.contains('\\') {
             return Err(ForensicError::other(
                 "RegistryProvider",
                 "Cannot get metadata of hive root".to_string(),
             ));
         }
-
-        let hkey = reg.open_key(hive, sub)?;
+        let hkey = self.inner.key(path)?;
         let mut meta = BTreeMap::new();
-        if let Ok(info) = reg.key_info(&hkey) {
+        if let Ok(info) = hkey.info() {
             meta.insert(
                 Text::Borrowed("last_written"),
-                BridgeValue::Timestamp(info.last_write_time.into()),
+                info.last_write_time
+                    .map(BridgeValue::Timestamp)
+                    .unwrap_or(BridgeValue::Null),
             );
             meta.insert(
                 Text::Borrowed("subkeys"),
@@ -405,18 +341,18 @@ impl ForensicProvider for RegistryProvider {
 // VfsProvider
 // ============================================================================
 
-/// Forensic bridge provider wrapping a `VirtualFileSystem`.
+/// Forensic bridge provider wrapping a `FileSystem`.
 pub struct VfsProvider {
-    inner: Mutex<Box<dyn VirtualFileSystem + Send>>,
+    inner: Arc<dyn FileSystem>,
     name: String,
     resource_descriptor: ResourceProviderDescriptor,
     hooks: Vec<Box<dyn ProviderHook>>,
 }
 
 impl VfsProvider {
-    pub fn new(vfs: Box<dyn VirtualFileSystem + Send>) -> Self {
+    pub fn new(vfs: Arc<dyn FileSystem>) -> Self {
         Self {
-            inner: Mutex::new(vfs),
+            inner: vfs,
             name: "Filesystem".to_string(),
             resource_descriptor: ResourceProviderDescriptor {
                 id: "filesystem".to_string(),
@@ -461,11 +397,11 @@ impl ResourceProvider for VfsProvider {
             ));
         }
         let directory = if path.is_empty() { "/" } else { path };
-        let mut vfs = self.inner.lock().map_err(|_| vfs_capability_error())?;
-        let entries = vfs
-            .read_dir(Path::new(directory))
+        let entries = self
+            .inner
+            .read_dir(FPath::new(directory))
             .map_err(|_| vfs_capability_error())?;
-        let mut resources = Vec::with_capacity(entries.len());
+        let mut resources = Vec::new();
         for entry in entries {
             if cancellation.is_cancelled() {
                 return Err(CapabilityError::new(
@@ -473,14 +409,13 @@ impl ResourceProvider for VfsProvider {
                     "operation cancelled",
                 ));
             }
-            let (name, kind) = match entry {
-                VDirEntry::Directory(name) => (name, ResourceKind::Container),
-                VDirEntry::File(name) | VDirEntry::Symlink(name) => (name, ResourceKind::Leaf),
+            let entry = entry.map_err(|_| vfs_capability_error())?;
+            let kind = match entry.file_type {
+                VFileType::Directory => ResourceKind::Container,
+                _ => ResourceKind::Leaf,
             };
-            let child_path = Path::new(directory)
-                .join(&name)
-                .to_string_lossy()
-                .into_owned();
+            let name = entry.file_name().unwrap_or_default().to_string();
+            let child_path = entry.path.to_string();
             resources.push(ResourceEntry {
                 id: ResourceId::new(self.resource_descriptor.id.clone(), child_path),
                 name,
@@ -502,9 +437,9 @@ impl ResourceProvider for VfsProvider {
                 "operation cancelled",
             ));
         }
-        let mut vfs = self.inner.lock().map_err(|_| vfs_capability_error())?;
-        let data = vfs
-            .read_all(Path::new(path))
+        let data = self
+            .inner
+            .read_all(FPath::new(path))
             .map_err(|_| vfs_capability_error())?;
         match String::from_utf8(data) {
             Ok(text) => Ok(ResourceContent::Text {
@@ -529,9 +464,9 @@ impl ResourceProvider for VfsProvider {
                 "operation cancelled",
             ));
         }
-        let mut vfs = self.inner.lock().map_err(|_| vfs_capability_error())?;
-        let metadata = vfs
-            .metadata(Path::new(path))
+        let metadata = self
+            .inner
+            .metadata(FPath::new(path))
             .map_err(|_| vfs_capability_error())?;
         let mut values = BTreeMap::new();
         values.insert(
@@ -586,11 +521,10 @@ impl ForensicProvider for VfsProvider {
         cancel: &CancellationToken,
     ) -> ForensicResult<(Vec<NodeEntry>, u64)> {
         let dir_path = if path.is_empty() { "/" } else { path };
-        let mut vfs = self
+        let entries_raw: Vec<_> = self
             .inner
-            .lock()
-            .map_err(|_| ForensicError::other("VfsProvider", "vfs lock poisoned".to_string()))?;
-        let entries_raw = vfs.read_dir(Path::new(dir_path))?;
+            .read_dir(FPath::new(dir_path))?
+            .collect::<ForensicResult<Vec<_>>>()?;
         let total = entries_raw.len() as u64;
         let entries: Vec<NodeEntry> = entries_raw
             .into_iter()
@@ -600,10 +534,11 @@ impl ForensicProvider for VfsProvider {
                 if cancel.is_cancelled() {
                     return None;
                 }
-                let (name, node_type) = match &e {
-                    VDirEntry::Directory(n) => (n.clone(), NodeType::Container),
-                    VDirEntry::File(n) | VDirEntry::Symlink(n) => (n.clone(), NodeType::Leaf),
+                let node_type = match e.file_type {
+                    VFileType::Directory => NodeType::Container,
+                    _ => NodeType::Leaf,
                 };
+                let name = e.file_name().unwrap_or_default().to_string();
                 Some(NodeEntry {
                     name: Text::Owned(name),
                     node_type,
@@ -615,11 +550,7 @@ impl ForensicProvider for VfsProvider {
     }
 
     fn read(&self, path: &str, _cancel: &CancellationToken) -> ForensicResult<BridgeValue> {
-        let mut vfs = self
-            .inner
-            .lock()
-            .map_err(|_| ForensicError::other("VfsProvider", "vfs lock poisoned".to_string()))?;
-        let data = vfs.read_all(Path::new(path))?;
+        let data = self.inner.read_all(FPath::new(path))?;
         // Try to decode as UTF-8; fall back to binary
         match String::from_utf8(data) {
             Ok(s) => Ok(BridgeValue::Text(Text::Owned(s))),
@@ -632,11 +563,7 @@ impl ForensicProvider for VfsProvider {
         path: &str,
         _cancel: &CancellationToken,
     ) -> ForensicResult<BTreeMap<Text, BridgeValue>> {
-        let mut vfs = self
-            .inner
-            .lock()
-            .map_err(|_| ForensicError::other("VfsProvider", "vfs lock poisoned".to_string()))?;
-        let meta = vfs.metadata(Path::new(path))?;
+        let meta = self.inner.metadata(FPath::new(path))?;
         let mut map = BTreeMap::new();
         map.insert(Text::Borrowed("size"), BridgeValue::U64(meta.len()));
         map.insert(
@@ -1043,10 +970,6 @@ impl ForensicProvider for DatabaseProvider {
         // path = table name; list rows
         let table = database.table(path)?;
         let mut rows_cursor = table.iter_rows()?;
-        let col_count = rows_cursor.column_count();
-        let col_names: Vec<String> = (0..col_count)
-            .filter_map(|i| rows_cursor.column_name(i).map(|s| s.to_string()))
-            .collect();
 
         let mut all_rows: Vec<NodeEntry> = Vec::new();
         let mut row_idx: u64 = 0;
@@ -1211,7 +1134,7 @@ fn forensic_value_to_bridge(val: crate::traits::db::ForensicValue) -> BridgeValu
         FV::I64(v) => BridgeValue::I64(v),
         FV::U64(v) => BridgeValue::U64(v),
         FV::F64(v) => BridgeValue::F64(v),
-        FV::DateTime(ft) => BridgeValue::Timestamp(ft.into()),
+        FV::DateTime(ft) => BridgeValue::Timestamp(ft),
         FV::Guid(v) => {
             let s = format!(
                 "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
@@ -1252,7 +1175,7 @@ mod registry_tests {
     fn registry_provider_releases_handles_after_success_and_error() {
         let registry = TestingRegistry::new();
         let cached = Arc::clone(&registry.cached);
-        let provider = RegistryProvider::new(Box::new(registry));
+        let provider = RegistryProvider::new(Arc::new(registry));
         let cancel = CancellationToken::new();
 
         let value = ForensicProvider::read(
@@ -1278,7 +1201,7 @@ mod registry_tests {
     fn registry_provider_releases_handles_after_child_enumeration() {
         let registry = TestingRegistry::new();
         let cached = Arc::clone(&registry.cached);
-        let provider = RegistryProvider::new(Box::new(registry));
+        let provider = RegistryProvider::new(Arc::new(registry));
         let cancel = CancellationToken::new();
 
         let (entries, _) = ForensicProvider::children(&provider, ENVIRONMENT_PATH, 0, 100, &cancel)
@@ -1290,7 +1213,7 @@ mod registry_tests {
 
     #[test]
     fn registry_provider_exposes_native_resource_values_and_metadata() {
-        let provider = RegistryProvider::new(Box::new(TestingRegistry::new()))
+        let provider = RegistryProvider::new(Arc::new(TestingRegistry::new()))
             .with_resource_id("case-registry");
         let cancellation = CancellationToken::new();
 
@@ -1489,7 +1412,7 @@ mod registry_tests {
         drop(file);
 
         let provider =
-            VfsProvider::new(Box::new(StdVirtualFS::new())).with_resource_id("evidence-files");
+            VfsProvider::new(Arc::new(StdVirtualFS::new())).with_resource_id("evidence-files");
         let cancellation = CancellationToken::new();
         let directory_path = directory.to_string_lossy();
         let entries =

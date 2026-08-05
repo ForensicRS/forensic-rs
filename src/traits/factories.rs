@@ -1,17 +1,18 @@
 //! Factories for opening derived forensic readers from virtual evidence.
 //!
-//! [`VirtualFileSystem`](crate::traits::vfs::VirtualFileSystem) identifies where
-//! evidence lives. These factories interpret files within that evidence as a
-//! database, event log, or registry hive without making an already-open reader
-//! a top-level pipeline source.
+//! [`FileSystem`](crate::traits::vfs::FileSystem) identifies where evidence
+//! lives. These factories interpret files within that evidence as a
+//! database, event log, or registry hive without making an already-open
+//! reader a top-level pipeline source.
 
-use std::path::Path;
+use std::sync::Arc;
 
+use crate::core::path::FPath;
 use crate::err::ForensicResult;
 use crate::traits::db::ForensicDb;
 use crate::traits::events::EventLogReader;
-use crate::traits::registry::RegistryReader;
-use crate::traits::vfs::VirtualFileSystem;
+use crate::traits::registry::Registry;
+use crate::traits::vfs::FileSystem;
 
 /// Opens database files from virtual evidence.
 ///
@@ -20,8 +21,8 @@ use crate::traits::vfs::VirtualFileSystem;
 pub trait ForensicDbFactory: Send + Sync {
     fn open(
         &self,
-        filesystem: Box<dyn VirtualFileSystem>,
-        path: &Path,
+        filesystem: Arc<dyn FileSystem>,
+        path: &FPath,
     ) -> ForensicResult<Box<dyn ForensicDb>>;
 }
 
@@ -29,8 +30,8 @@ pub trait ForensicDbFactory: Send + Sync {
 pub trait EventLogReaderFactory: Send + Sync {
     fn open(
         &self,
-        filesystem: Box<dyn VirtualFileSystem>,
-        path: &Path,
+        filesystem: Arc<dyn FileSystem>,
+        path: &FPath,
     ) -> ForensicResult<Box<dyn EventLogReader>>;
 }
 
@@ -38,9 +39,9 @@ pub trait EventLogReaderFactory: Send + Sync {
 pub trait RegistryReaderFactory: Send + Sync {
     fn open(
         &self,
-        filesystem: Box<dyn VirtualFileSystem>,
-        path: &Path,
-    ) -> ForensicResult<Box<dyn RegistryReader>>;
+        filesystem: Arc<dyn FileSystem>,
+        path: &FPath,
+    ) -> ForensicResult<Box<dyn Registry>>;
 }
 
 #[cfg(test)]

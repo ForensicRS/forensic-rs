@@ -1,0 +1,5 @@
+error[E0616]: field `raw` of struct `RegKey` is private
+  --> tests/compile_fail/regkey_wrong_reader.rs:12:20
+   |
+12 |     let _raw = key.raw;
+   |                    ^^^ private field

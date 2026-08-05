@@ -5,6 +5,7 @@ use crate::{
     data::ForensicData,
     err::{ForensicError, ForensicResult},
     field::{Field, Text},
+    provenance::ProvenanceId,
     utils::time::ForensicTimestamp,
 };
 
@@ -78,8 +79,14 @@ pub struct EventRecord {
     pub data: BTreeMap<Text, Field>,
 }
 
-impl From<EventRecord> for ForensicData {
-    fn from(event: EventRecord) -> Self {
+impl EventRecord {
+    /// Converts this record into a [`ForensicData`], under the given
+    /// provenance (obtained from the [`crate::provenance::SourceHandle`] the
+    /// caller minted this record's id from — e.g. `Acquisition::LiveApi` for a
+    /// live event log reader, `Acquisition::ImageRead` for one replayed from
+    /// an exported `.evtx` file).
+    pub fn into_forensic_data(self, provenance: ProvenanceId) -> ForensicData {
+        let event = self;
         let artifact = Artifact::Windows(WindowsArtifacts::WinEvt(match event.channel.as_str() {
             "Security" => WindowsEvents::Security,
             "System" => WindowsEvents::System,
@@ -87,7 +94,7 @@ impl From<EventRecord> for ForensicData {
             "Setup" => WindowsEvents::Setup,
             _ => WindowsEvents::Other(event.channel.clone()),
         }));
-        let mut fd = ForensicData::new("", artifact);
+        let mut fd = ForensicData::new("", artifact, provenance);
         fd.insert(
             Text::Borrowed("event.record_id"),
             Field::U64(event.record_id),
@@ -281,6 +288,7 @@ impl dyn EventLogReader {
 mod tests {
     use super::*;
     use crate::field::FieldAccess;
+    use crate::utils::testing::test_provenance_id;
 
     #[test]
     fn event_level_round_trip() {
@@ -369,7 +377,7 @@ mod tests {
             data: BTreeMap::new(),
         };
 
-        let mut fd: ForensicData = record.into();
+        let mut fd: ForensicData = record.into_forensic_data(test_provenance_id());
         assert_eq!(fd.get_u64("event.record_id"), FieldAccess::Some(42));
         assert_eq!(fd.get_u64("event.code"), FieldAccess::Some(4624));
     }

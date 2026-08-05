@@ -1,0 +1,5 @@
+error[E0614]: type `Tracked<u32>` cannot be dereferenced
+ --> tests/compile_fail/tracked_no_deref.rs:8:23
+  |
+8 |     let _value: u32 = *tracked;
+  |                       ^^^^^^^^ can't be dereferenced

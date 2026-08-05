@@ -124,7 +124,7 @@ pub fn split_virtual_path(path: &str) -> Option<(&str, &str, &str)> {
     // Try both separators
     for sep in ['\\', '/'] {
         let parts: Vec<&str> = path.split(sep).collect();
-        for (_i, component) in parts.iter().enumerate() {
+        for component in parts.iter() {
             if let Some(hook_name) = is_virtual_segment(component) {
                 let real_parent = &path[..path.find(*component).unwrap_or(0).saturating_sub(1)];
                 let tail_start = path.find(*component).unwrap_or(0) + component.len();

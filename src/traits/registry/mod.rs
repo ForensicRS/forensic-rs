@@ -1,141 +1,96 @@
 //! Windows Registry abstraction layer.
 //!
-//! This module provides the core types and the [`RegistryReader`] trait for
-//! decoupled, backend-agnostic registry access. An analyzer written against
-//! this API works identically whether it talks to a live Windows registry,
-//! a parsed hive file, or a [`crate::utils::testing::TestingRegistry`] mock
-//! in a unit test — without any code changes.
+//! This module provides the core types and the [`Registry`]/[`RegistryExt`]
+//! traits for decoupled, backend-agnostic registry access. An analyzer
+//! written against this API works identically whether it talks to a live
+//! Windows registry, a parsed hive file, or a
+//! [`crate::utils::testing::TestingRegistry`] mock in a unit test — without
+//! any code changes.
 //!
 //! # Core Types
 //!
 //! | Type | Role |
 //! |------|------|
-//! | [`RegHiveKey`] | Root hive discriminant (`HKLM`, `HKU`, …) |
-//! | [`RegKeyHandle`] | Move-only RAII handle for an opened key |
+//! | [`PredefinedHive`] | Root hive discriminant (`HKLM`, `HKU`, …) |
+//! | [`Registry`] | Low-level trait implemented by all registry backends |
+//! | [`RegistryExt`] | Ergonomic, path-based API layered over [`Registry`] |
+//! | [`RegKey`] | Borrowed handle to an opened key ([`RegistryExt::key`]) |
 //! | [`RegValue`] | Owned registry value (allocating) |
 //! | [`RegValueRef`] | Borrowed, zero-copy view into a byte buffer |
 //! | [`RegistryBuffer`] | Reusable heap buffer for low-allocation reads |
-//! | [`RegistryReader`] | Trait implemented by all registry backends |
 //!
 //! # Reading Values
 //!
-//! Three strategies, ordered by allocation cost:
-//!
 //! ```rust
 //! use forensic_rs::prelude::*;
 //! use forensic_rs::utils::testing::TestingRegistry;
 //!
-//! let reader = TestingRegistry::new();
-//! let user_sid = "S-1-5-21-1366093794-4292800403-1155380978-513";
-//! let key = reader.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid)).unwrap();
+//! let reg = TestingRegistry::new();
+//! let sid = "S-1-5-21-1366093794-4292800403-1155380978-513";
+//! let key = reg.key(&format!(r"HKU\{}\Volatile Environment", sid)).unwrap();
 //!
-//! // 1. Owned value — simplest; allocates.
-//! let val: String = reader.read_value(&key, "USERNAME").unwrap().try_into().unwrap();
+//! // 1. Owned value via the opened key — simplest; allocates.
+//! let val: String = key.value("USERNAME").unwrap().try_into().unwrap();
 //!
-//! // 2. Typed helper — same allocation, ergonomic.
-//! let dyn_reader: &dyn RegistryReader = &reader;
-//! let val2: String = dyn_reader.read_value_as::<String>(&key, "USERNAME").unwrap();
+//! // 2. One-shot path + value name, no intermediate `RegKey`.
+//! let val2: String = reg
+//!     .value(&format!(r"HKU\{}\Volatile Environment", sid), "USERNAME")
+//!     .unwrap()
+//!     .try_into()
+//!     .unwrap();
 //!
-//! // 3. Reusable buffer — amortises allocation across repeated reads.
-//! let mut buf = RegistryBuffer::with_capacity(256);
-//! let view: RegValueRef = reader.read_value_buffered(&key, "USERNAME", &mut buf).unwrap();
-//! let s: &str = view.as_str().unwrap();
-//! ```
-//!
-//! # Handle Lifecycle
-//!
-//! Opened keys close automatically when they leave scope:
-//!
-//! ```rust
-//! use forensic_rs::prelude::*;
-//! use forensic_rs::utils::testing::TestingRegistry;
-//!
-//! let reader = TestingRegistry::new();
-//! let user_sid = "S-1-5-21-1366093794-4292800403-1155380978-513";
-//! let key = reader.open_key(HKU, &format!(r"{}\Volatile Environment", user_sid)).unwrap();
-//! let _ = reader.read_value(&key, "USERNAME");
-//! // key is closed when it drops at the end of this scope
+//! assert_eq!(val, val2);
 //! ```
 //!
 //! # Path Convention
 //!
-//! The `key_path` argument to [`RegistryReader::open_key`] should be the
-//! sub-path **below** the hive root, **without** a hive-name prefix:
+//! Every path is a single string, hive-prefixed, exactly as it would be
+//! typed into `regedit`'s address bar — there's no separate "hive" argument:
 //!
 //! ```text
 //! // Correct
-//! reader.open_key(HKLM, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
-//! reader.open_key(HKU,  r"S-1-5-21-...\Volatile Environment")
+//! reg.key(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+//! reg.key(r"HKU\S-1-5-21-...\Volatile Environment")
 //!
-//! // Wrong — the hive is already supplied as the first argument
-//! reader.open_key(HKLM, r"HKLM\SOFTWARE\...")
+//! // Wrong — HKLM/HKU are part of the path string, not a separate parameter
+//! reg.root(PredefinedHive::LocalMachine)?.open(r"SOFTWARE\...")
 //! ```
 
-use crate::{
-    err::{BufferError, ForensicError, ForensicResult, RegistryError},
-    utils::time::ForensicTimestamp,
-};
-
-use super::vfs::{VirtualFile, VirtualFileSystem};
-use std::{any::Any, marker::PhantomData};
-
-type CloseResource = dyn FnOnce(Box<dyn Any>) -> ForensicResult<()>;
-
-/// Alias for [`RegHiveKey::HkeyClassesRoot`] (`HKEY_CLASSES_ROOT`).
-pub const HKCR: RegHiveKey = RegHiveKey::HkeyClassesRoot;
-/// Alias for [`RegHiveKey::HkeyCurrentConfig`] (`HKEY_CURRENT_CONFIG`).
-pub const HKC: RegHiveKey = RegHiveKey::HkeyCurrentConfig;
-/// Alias for [`RegHiveKey::HkeyCurrentUser`] (`HKEY_CURRENT_USER`).
-pub const HKCU: RegHiveKey = RegHiveKey::HkeyCurrentUser;
-/// Alias for [`RegHiveKey::HkeyLocalMachine`] (`HKEY_LOCAL_MACHINE`).
-pub const HKLM: RegHiveKey = RegHiveKey::HkeyLocalMachine;
-/// Alias for [`RegHiveKey::HkeyUsers`] (`HKEY_USERS`).
-pub const HKU: RegHiveKey = RegHiveKey::HkeyUsers;
+use crate::err::{ForensicError, ForensicResult};
 
 pub mod extra;
-
-/// Root hive discriminant for registry operations.
-///
-/// Pass one of the predefined constants ([`HKLM`], [`HKU`], [`HKCU`],
-/// [`HKCR`], [`HKC`]) or this enum's variants to [`RegistryReader::open_key`].
-/// `Hkey(isize)` is reserved for backends that need raw handle values.
-#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug)]
-pub enum RegHiveKey {
-    /// `HKEY_CLASSES_ROOT` — file-extension and COM class associations.
-    HkeyClassesRoot,
-    /// `HKEY_CURRENT_CONFIG` — hardware profile active at boot.
-    HkeyCurrentConfig,
-    /// `HKEY_CURRENT_USER` — settings for the currently logged-in user.
-    HkeyCurrentUser,
-    /// `HKEY_DYN_DATA` — legacy Windows 9x dynamic data hive.
-    HkeyDynData,
-    /// `HKEY_LOCAL_MACHINE` — system-wide configuration.
-    HkeyLocalMachine,
-    /// `HKEY_PERFORMANCE_DATA` — performance counter data (live only).
-    HkeyPerformanceData,
-    /// `HKEY_PERFORMANCE_NLSTEXT` — localised performance counter names.
-    HkeyPerformanceNlstext,
-    /// `HKEY_PERFORMANCE_TEXT` — English performance counter names.
-    HkeyPerformanceText,
-    /// `HKEY_USERS` — per-user profile hives (one sub-key per SID).
-    HkeyUsers,
-    /// Raw handle value used internally by live Windows backends.
-    Hkey(isize),
-}
+pub mod raw;
+pub mod windows;
+pub use raw::{
+    KeyEntry, KeyInfo, PredefinedHive, RawKey, RecoverDeleted, RecoveredKey, RecoveredValue,
+    RegKey, Registry, RegistryExt,
+};
 
 /// Owned registry value. Allocates heap memory for variable-length data.
 ///
 /// Use [`RegValueRef`] for a borrowed, zero-copy alternative when working
 /// with a [`RegistryBuffer`].
 ///
+/// `#[non_exhaustive]` (RFC 0001 §4.5): a corrupt or unrecognized value is
+/// evidence, not something to drop — [`RegValue::Unknown`] preserves the raw
+/// type id and bytes rather than discarding them, and future variants can be
+/// added without a breaking change for downstream matches (which must
+/// already include a wildcard arm).
+///
 /// # Conversions
 ///
 /// `TryFrom<RegValue>` is implemented for `String`, `u32`, `u64`, and
-/// `Vec<u8>`. `From<&str>`, `From<String>`, `From<u32>`, `From<u64>`,
-/// `From<Vec<u8>>`, `From<Vec<String>>`, and slice variants are also
-/// available to construct `RegValue` ergonomically.
+/// `Vec<u8>` (each also accepting closely-related variants, e.g. `String`
+/// accepts `Link`, `u32`/`u64` accept `DWordBigEndian`). `From<&str>`,
+/// `From<String>`, `From<u32>`, `From<u64>`, `From<Vec<u8>>`,
+/// `From<Vec<String>>`, and slice variants are also available to construct
+/// `RegValue` ergonomically. [`RegValue::raw_bytes`] gives the on-disk byte
+/// representation for every variant uniformly.
+#[non_exhaustive]
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug)]
 pub enum RegValue {
+    /// No data (`REG_NONE`).
+    None,
     /// Raw binary data (`REG_BINARY`).
     Binary(Vec<u8>),
     /// List of null-terminated strings (`REG_MULTI_SZ`).
@@ -146,17 +101,31 @@ pub enum RegValue {
     SZ(String),
     /// 32-bit unsigned integer, stored little-endian (`REG_DWORD`).
     DWord(u32),
+    /// 32-bit unsigned integer, stored big-endian (`REG_DWORD_BIG_ENDIAN`).
+    DWordBigEndian(u32),
     /// 64-bit unsigned integer, stored little-endian (`REG_QWORD`).
     QWord(u64),
+    /// Symbolic link target (`REG_LINK`).
+    Link(String),
+    /// Device driver resource list (`REG_RESOURCE_LIST`).
+    ResourceList(Vec<u8>),
+    /// Device driver resource descriptor (`REG_FULL_RESOURCE_DESCRIPTOR`).
+    FullResourceDescriptor(Vec<u8>),
+    /// Device driver resource requirements (`REG_RESOURCE_REQUIREMENTS_LIST`).
+    ResourceRequirementsList(Vec<u8>),
+    /// Unrecognized or corrupt value type: preserves the raw on-disk type id
+    /// and bytes rather than dropping them. A corrupt value is evidence.
+    Unknown { ty: u32, data: Vec<u8> },
 }
 
 /// Discriminant-only counterpart of [`RegValue`], used for typed buffer reads.
 ///
-/// Returned by [`RegistryReader::read_raw_value_into`] to describe the type
-/// of data written into a caller-supplied byte slice, without requiring an
-/// allocation.
+/// Describes the shape of a value written into a [`RegistryBuffer`] (see
+/// [`RegistryBuffer::commit_write`]) without requiring an allocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegValueType {
+    /// No data (`REG_NONE`).
+    None,
     /// Raw binary data (`REG_BINARY`).
     Binary,
     /// Multi-string value (`REG_MULTI_SZ`).
@@ -165,6 +134,18 @@ pub enum RegValueType {
     ExpandSZ,
     /// Plain string (`REG_SZ`).
     SZ,
+    /// 32-bit big-endian integer (`REG_DWORD_BIG_ENDIAN`).
+    DWordBigEndian,
+    /// Symbolic link target (`REG_LINK`).
+    Link,
+    /// Device driver resource list (`REG_RESOURCE_LIST`).
+    ResourceList,
+    /// Device driver resource descriptor (`REG_FULL_RESOURCE_DESCRIPTOR`).
+    FullResourceDescriptor,
+    /// Device driver resource requirements (`REG_RESOURCE_REQUIREMENTS_LIST`).
+    ResourceRequirementsList,
+    /// Unrecognized or corrupt value type, carrying the raw on-disk type id.
+    Unknown(u32),
     /// 32-bit little-endian integer (`REG_DWORD`).
     DWord,
     /// 64-bit little-endian integer (`REG_QWORD`).
@@ -173,27 +154,25 @@ pub enum RegValueType {
 
 /// Reusable heap buffer for low-allocation registry reads.
 ///
-/// Grow-on-demand buffer that can be passed to [`RegistryReader::read_value_buffered`]
-/// repeatedly across multiple key/value reads to amortise allocation cost.
-/// The buffer retains both the raw bytes and the [`RegValueType`] of the last
-/// successful read, so it can be re-interpreted as a [`RegValueRef`] at any
-/// time via [`RegistryBuffer::as_value_ref`].
+/// Grow-on-demand buffer that can be written to repeatedly (via
+/// [`RegistryBuffer::write_reg_value`]) across multiple values to amortise
+/// allocation cost. The buffer retains both the raw bytes and the
+/// [`RegValueType`] of the last successful write, so it can be
+/// re-interpreted as a [`RegValueRef`] at any time via
+/// [`RegistryBuffer::as_value_ref`].
 ///
 /// # Example
 ///
 /// ```rust
 /// use forensic_rs::prelude::*;
-/// use forensic_rs::utils::testing::TestingRegistry;
-///
-/// let reader = TestingRegistry::new();
-/// let sid = "S-1-5-21-1366093794-4292800403-1155380978-513";
-/// let key = reader.open_key(HKU, &format!(r"{}\Volatile Environment", sid)).unwrap();
 ///
 /// let mut buf = RegistryBuffer::with_capacity(256);
-/// let v1 = reader.read_value_buffered(&key, "USERNAME", &mut buf).unwrap();
+/// let v1 = buf.write_reg_value(&RegValue::SZ("Tester".to_string())).unwrap();
 /// println!("{}", v1.as_str().unwrap());
-/// // Reuse `buf` for the next read — no new allocation if it fits.
-/// let v2 = reader.read_value_buffered(&key, "USERPROFILE", &mut buf).unwrap();
+/// // Reuse `buf` for the next value — no new allocation if it fits.
+/// let v2 = buf
+///     .write_reg_value(&RegValue::SZ(r"C:\Users\Tester".to_string()))
+///     .unwrap();
 /// println!("{}", v2.as_str().unwrap());
 /// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -272,7 +251,8 @@ impl RegistryBuffer {
     }
 
     /// Returns the full allocated slice, including unwritten bytes.
-    /// Used by [`RegistryReader`] implementations to write directly into the buffer.
+    /// Used to write raw bytes directly into the buffer before recording the
+    /// write with [`Self::commit_write`].
     pub fn writable_bytes(&mut self) -> &mut [u8] {
         &mut self.buf[..]
     }
@@ -300,7 +280,7 @@ impl RegistryBuffer {
     }
 
     /// Records a successful write: sets the valid-byte count and the value type tag.
-    /// Called by [`RegistryReader`] implementations after writing to [`writable_bytes`](Self::writable_bytes).
+    /// Call after writing to [`writable_bytes`](Self::writable_bytes).
     pub fn commit_write(&mut self, len: usize, value_type: RegValueType) {
         self.set_len(len);
         self.value_type = Some(value_type);
@@ -365,16 +345,18 @@ impl<'a> RegMultiSzRef<'a> {
 
 /// Borrowed, zero-copy view of a registry value inside a byte buffer.
 ///
-/// Returned by low-allocation read paths such as
-/// [`RegistryReader::read_value_buffered`] and
-/// [`RegistryReader::read_value_ref_into`]. Variable-length variants
-/// (`Binary`, `MultiSZ`, `ExpandSZ`, `SZ`) borrow from the buffer that was
-/// passed to the read call, so the view cannot outlive that buffer.
+/// Returned by [`RegistryBuffer::write_reg_value`] and
+/// [`RegistryBuffer::as_value_ref`]. Variable-length variants (`Binary`,
+/// `MultiSZ`, `ExpandSZ`, `SZ`) borrow from the buffer they were written
+/// into, so the view cannot outlive that buffer.
 ///
 /// Convert to an owned [`RegValue`] via [`RegValueRef::to_owned`] when
 /// you need to store or move the value.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegValueRef<'a> {
+    /// No data (`REG_NONE`).
+    None,
     /// Raw binary data (`REG_BINARY`).
     Binary(&'a [u8]),
     /// Multi-string value (`REG_MULTI_SZ`).
@@ -385,32 +367,58 @@ pub enum RegValueRef<'a> {
     SZ(&'a str),
     /// 32-bit little-endian integer (`REG_DWORD`).
     DWord(u32),
+    /// 32-bit big-endian integer (`REG_DWORD_BIG_ENDIAN`).
+    DWordBigEndian(u32),
     /// 64-bit little-endian integer (`REG_QWORD`).
     QWord(u64),
+    /// Symbolic link target (`REG_LINK`).
+    Link(&'a str),
+    /// Device driver resource list (`REG_RESOURCE_LIST`).
+    ResourceList(&'a [u8]),
+    /// Device driver resource descriptor (`REG_FULL_RESOURCE_DESCRIPTOR`).
+    FullResourceDescriptor(&'a [u8]),
+    /// Device driver resource requirements (`REG_RESOURCE_REQUIREMENTS_LIST`).
+    ResourceRequirementsList(&'a [u8]),
+    /// Unrecognized or corrupt value type.
+    Unknown { ty: u32, data: &'a [u8] },
 }
 
 impl<'a> RegValueRef<'a> {
     pub fn value_type(&self) -> RegValueType {
         match self {
+            RegValueRef::None => RegValueType::None,
             RegValueRef::Binary(_) => RegValueType::Binary,
             RegValueRef::MultiSZ(_) => RegValueType::MultiSZ,
             RegValueRef::ExpandSZ(_) => RegValueType::ExpandSZ,
             RegValueRef::SZ(_) => RegValueType::SZ,
             RegValueRef::DWord(_) => RegValueType::DWord,
+            RegValueRef::DWordBigEndian(_) => RegValueType::DWordBigEndian,
             RegValueRef::QWord(_) => RegValueType::QWord,
+            RegValueRef::Link(_) => RegValueType::Link,
+            RegValueRef::ResourceList(_) => RegValueType::ResourceList,
+            RegValueRef::FullResourceDescriptor(_) => RegValueType::FullResourceDescriptor,
+            RegValueRef::ResourceRequirementsList(_) => RegValueType::ResourceRequirementsList,
+            RegValueRef::Unknown { ty, .. } => RegValueType::Unknown(*ty),
         }
     }
 
     pub fn as_str(&self) -> Option<&'a str> {
         match self {
-            RegValueRef::SZ(s) | RegValueRef::ExpandSZ(s) => Some(s),
+            RegValueRef::SZ(s) | RegValueRef::ExpandSZ(s) | RegValueRef::Link(s) => Some(s),
             _ => None,
         }
     }
 
+    /// Raw bytes, for `Binary` and every other opaque-bytes-shaped variant
+    /// (`ResourceList`, `FullResourceDescriptor`,
+    /// `ResourceRequirementsList`, `Unknown`).
     pub fn as_binary(&self) -> Option<&'a [u8]> {
         match self {
-            RegValueRef::Binary(v) => Some(v),
+            RegValueRef::Binary(v)
+            | RegValueRef::ResourceList(v)
+            | RegValueRef::FullResourceDescriptor(v)
+            | RegValueRef::ResourceRequirementsList(v) => Some(v),
+            RegValueRef::Unknown { data, .. } => Some(data),
             _ => None,
         }
     }
@@ -438,12 +446,22 @@ impl<'a> RegValueRef<'a> {
 
     pub fn to_owned(&self) -> RegValue {
         match self {
+            RegValueRef::None => RegValue::None,
             RegValueRef::Binary(v) => RegValue::Binary(v.to_vec()),
             RegValueRef::MultiSZ(v) => RegValue::MultiSZ(v.iter().map(str::to_string).collect()),
             RegValueRef::ExpandSZ(v) => RegValue::ExpandSZ((*v).to_string()),
             RegValueRef::SZ(v) => RegValue::SZ((*v).to_string()),
             RegValueRef::DWord(v) => RegValue::DWord(*v),
+            RegValueRef::DWordBigEndian(v) => RegValue::DWordBigEndian(*v),
             RegValueRef::QWord(v) => RegValue::QWord(*v),
+            RegValueRef::Link(v) => RegValue::Link((*v).to_string()),
+            RegValueRef::ResourceList(v) => RegValue::ResourceList(v.to_vec()),
+            RegValueRef::FullResourceDescriptor(v) => RegValue::FullResourceDescriptor(v.to_vec()),
+            RegValueRef::ResourceRequirementsList(v) => RegValue::ResourceRequirementsList(v.to_vec()),
+            RegValueRef::Unknown { ty, data } => RegValue::Unknown {
+                ty: *ty,
+                data: data.to_vec(),
+            },
         }
     }
 }
@@ -469,19 +487,27 @@ impl RegValue {
     /// Returns the [`RegValueType`] discriminant for this value.
     pub fn value_type(&self) -> RegValueType {
         match self {
+            RegValue::None => RegValueType::None,
             RegValue::Binary(_) => RegValueType::Binary,
             RegValue::MultiSZ(_) => RegValueType::MultiSZ,
             RegValue::ExpandSZ(_) => RegValueType::ExpandSZ,
             RegValue::SZ(_) => RegValueType::SZ,
             RegValue::DWord(_) => RegValueType::DWord,
+            RegValue::DWordBigEndian(_) => RegValueType::DWordBigEndian,
             RegValue::QWord(_) => RegValueType::QWord,
+            RegValue::Link(_) => RegValueType::Link,
+            RegValue::ResourceList(_) => RegValueType::ResourceList,
+            RegValue::FullResourceDescriptor(_) => RegValueType::FullResourceDescriptor,
+            RegValue::ResourceRequirementsList(_) => RegValueType::ResourceRequirementsList,
+            RegValue::Unknown { ty, .. } => RegValueType::Unknown(*ty),
         }
     }
 
-    /// Returns the string value if this is an `SZ` or `ExpandSZ` variant.
+    /// Returns the string value if this is an `SZ`, `ExpandSZ`, or `Link`
+    /// variant.
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            RegValue::SZ(s) | RegValue::ExpandSZ(s) => Some(s),
+            RegValue::SZ(s) | RegValue::ExpandSZ(s) | RegValue::Link(s) => Some(s),
             _ => None,
         }
     }
@@ -502,10 +528,16 @@ impl RegValue {
         }
     }
 
-    /// Returns the binary data if this is a `Binary` variant.
+    /// Returns the raw bytes for `Binary` and every other opaque-bytes-shaped
+    /// variant (`ResourceList`, `FullResourceDescriptor`,
+    /// `ResourceRequirementsList`, `Unknown`).
     pub fn as_binary(&self) -> Option<&[u8]> {
         match self {
-            RegValue::Binary(v) => Some(v),
+            RegValue::Binary(v)
+            | RegValue::ResourceList(v)
+            | RegValue::FullResourceDescriptor(v)
+            | RegValue::ResourceRequirementsList(v) => Some(v),
+            RegValue::Unknown { data, .. } => Some(data),
             _ => None,
         }
     }
@@ -519,15 +551,22 @@ impl RegValue {
     }
 
     /// Returns the serialized size of this value (as if written to buffer).
-    /// - `SZ`/`ExpandSZ`: UTF-8 byte length
-    /// - `Binary`: byte length
+    /// - `None`: 0 bytes
+    /// - `SZ`/`ExpandSZ`/`Link`: UTF-8 byte length
+    /// - `Binary`/`ResourceList`/`FullResourceDescriptor`/
+    ///   `ResourceRequirementsList`/`Unknown`: byte length
     /// - `MultiSZ`: newline-separated UTF-8 strings (no trailing newline)
-    /// - `DWord`: 4 bytes (as little-endian u32)
-    /// - `QWord`: 8 bytes (as little-endian u64)
+    /// - `DWord`/`DWordBigEndian`: 4 bytes
+    /// - `QWord`: 8 bytes
     pub fn serialized_size(&self) -> usize {
         match self {
-            RegValue::SZ(s) | RegValue::ExpandSZ(s) => s.len(),
-            RegValue::Binary(b) => b.len(),
+            RegValue::None => 0,
+            RegValue::SZ(s) | RegValue::ExpandSZ(s) | RegValue::Link(s) => s.len(),
+            RegValue::Binary(b)
+            | RegValue::ResourceList(b)
+            | RegValue::FullResourceDescriptor(b)
+            | RegValue::ResourceRequirementsList(b) => b.len(),
+            RegValue::Unknown { data, .. } => data.len(),
             RegValue::MultiSZ(v) => {
                 if v.is_empty() {
                     0
@@ -536,7 +575,7 @@ impl RegValue {
                     v.iter().map(|s| s.len()).sum::<usize>() + (v.len() - 1) // v.len()-1 newlines
                 }
             }
-            RegValue::DWord(_) => 4,
+            RegValue::DWord(_) | RegValue::DWordBigEndian(_) => 4,
             RegValue::QWord(_) => 8,
         }
     }
@@ -544,10 +583,13 @@ impl RegValue {
     /// Writes this registry value to a buffer, returning bytes written.
     ///
     /// **Serialization Format:**
-    /// - `SZ`/`ExpandSZ`: UTF-8 string (no null terminator)
-    /// - `Binary`: raw bytes
+    /// - `None`: nothing written
+    /// - `SZ`/`ExpandSZ`/`Link`: UTF-8 string (no null terminator)
+    /// - `Binary`/`ResourceList`/`FullResourceDescriptor`/
+    ///   `ResourceRequirementsList`/`Unknown`: raw bytes
     /// - `MultiSZ`: newline-separated UTF-8 strings (no trailing newline, no null terminators)
     /// - `DWord`: 4 bytes (little-endian)
+    /// - `DWordBigEndian`: 4 bytes (big-endian)
     /// - `QWord`: 8 bytes (little-endian)
     ///
     /// Returns `Err` if buffer too small (error message includes required size).
@@ -562,14 +604,22 @@ impl RegValue {
         }
 
         match self {
-            RegValue::SZ(s) | RegValue::ExpandSZ(s) => {
+            RegValue::None => Ok(0),
+            RegValue::SZ(s) | RegValue::ExpandSZ(s) | RegValue::Link(s) => {
                 let bytes = s.as_bytes();
                 buf[..bytes.len()].copy_from_slice(bytes);
                 Ok(bytes.len())
             }
-            RegValue::Binary(b) => {
+            RegValue::Binary(b)
+            | RegValue::ResourceList(b)
+            | RegValue::FullResourceDescriptor(b)
+            | RegValue::ResourceRequirementsList(b) => {
                 buf[..b.len()].copy_from_slice(b);
                 Ok(b.len())
+            }
+            RegValue::Unknown { data, .. } => {
+                buf[..data.len()].copy_from_slice(data);
+                Ok(data.len())
             }
             RegValue::MultiSZ(v) => {
                 let mut pos = 0;
@@ -588,6 +638,10 @@ impl RegValue {
                 buf[..4].copy_from_slice(&v.to_le_bytes());
                 Ok(4)
             }
+            RegValue::DWordBigEndian(v) => {
+                buf[..4].copy_from_slice(&v.to_be_bytes());
+                Ok(4)
+            }
             RegValue::QWord(v) => {
                 buf[..8].copy_from_slice(&v.to_le_bytes());
                 Ok(8)
@@ -604,6 +658,7 @@ impl RegValue {
         let raw = &buf[..written];
 
         match self {
+            RegValue::None => Ok(RegValueRef::None),
             RegValue::SZ(_) => {
                 let s = std::str::from_utf8(raw).map_err(|e| {
                     ForensicError::cast_error(
@@ -624,7 +679,21 @@ impl RegValue {
                 })?;
                 Ok(RegValueRef::ExpandSZ(s))
             }
+            RegValue::Link(_) => {
+                let s = std::str::from_utf8(raw).map_err(|e| {
+                    ForensicError::cast_error(
+                        "RegValue",
+                        "RegValueRef::Link",
+                        format!("Invalid UTF-8 in serialized link target: {}", e).into(),
+                    )
+                })?;
+                Ok(RegValueRef::Link(s))
+            }
             RegValue::Binary(_) => Ok(RegValueRef::Binary(raw)),
+            RegValue::ResourceList(_) => Ok(RegValueRef::ResourceList(raw)),
+            RegValue::FullResourceDescriptor(_) => Ok(RegValueRef::FullResourceDescriptor(raw)),
+            RegValue::ResourceRequirementsList(_) => Ok(RegValueRef::ResourceRequirementsList(raw)),
+            RegValue::Unknown { ty, .. } => Ok(RegValueRef::Unknown { ty: *ty, data: raw }),
             RegValue::MultiSZ(_) => {
                 let s = std::str::from_utf8(raw).map_err(|e| {
                     ForensicError::cast_error(
@@ -640,10 +709,42 @@ impl RegValue {
                 le.copy_from_slice(raw);
                 Ok(RegValueRef::DWord(u32::from_le_bytes(le)))
             }
+            RegValue::DWordBigEndian(_) => {
+                let mut be = [0u8; 4];
+                be.copy_from_slice(raw);
+                Ok(RegValueRef::DWordBigEndian(u32::from_be_bytes(be)))
+            }
             RegValue::QWord(_) => {
                 let mut le = [0u8; 8];
                 le.copy_from_slice(raw);
                 Ok(RegValueRef::QWord(u64::from_le_bytes(le)))
+            }
+        }
+    }
+
+    /// The on-disk byte representation of this value, for every variant
+    /// uniformly. Borrows already-`Vec<u8>`-backed variants; serializes
+    /// allocating variants into an owned buffer.
+    ///
+    /// String variants (`SZ`/`ExpandSZ`/`Link`/`MultiSZ`) serialize as UTF-8
+    /// here, matching [`Self::write_into`] — real on-disk Windows hives use
+    /// UTF-16LE, which this crate does not yet model (a known
+    /// simplification, consistent throughout this module).
+    pub fn raw_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        match self {
+            RegValue::None => std::borrow::Cow::Borrowed(&[]),
+            RegValue::Binary(v)
+            | RegValue::ResourceList(v)
+            | RegValue::FullResourceDescriptor(v)
+            | RegValue::ResourceRequirementsList(v) => std::borrow::Cow::Borrowed(v),
+            RegValue::Unknown { data, .. } => std::borrow::Cow::Borrowed(data),
+            RegValue::DWord(v) => std::borrow::Cow::Owned(v.to_le_bytes().to_vec()),
+            RegValue::DWordBigEndian(v) => std::borrow::Cow::Owned(v.to_be_bytes().to_vec()),
+            RegValue::QWord(v) => std::borrow::Cow::Owned(v.to_le_bytes().to_vec()),
+            RegValue::SZ(_) | RegValue::ExpandSZ(_) | RegValue::Link(_) | RegValue::MultiSZ(_) => {
+                let mut buf = vec![0u8; self.serialized_size()];
+                let _ = self.write_into(&mut buf);
+                std::borrow::Cow::Owned(buf)
             }
         }
     }
@@ -672,7 +773,22 @@ impl RegValueType {
                 })?;
                 Ok(RegValueRef::ExpandSZ(s))
             }
+            RegValueType::None => Ok(RegValueRef::None),
             RegValueType::Binary => Ok(RegValueRef::Binary(raw)),
+            RegValueType::ResourceList => Ok(RegValueRef::ResourceList(raw)),
+            RegValueType::FullResourceDescriptor => Ok(RegValueRef::FullResourceDescriptor(raw)),
+            RegValueType::ResourceRequirementsList => Ok(RegValueRef::ResourceRequirementsList(raw)),
+            RegValueType::Unknown(ty) => Ok(RegValueRef::Unknown { ty: *ty, data: raw }),
+            RegValueType::Link => {
+                let s = std::str::from_utf8(raw).map_err(|e| {
+                    ForensicError::cast_error(
+                        "RegistryBuffer",
+                        "RegValueRef::Link",
+                        format!("Invalid UTF-8 in buffered link target: {}", e).into(),
+                    )
+                })?;
+                Ok(RegValueRef::Link(s))
+            }
             RegValueType::MultiSZ => {
                 let s = std::str::from_utf8(raw).map_err(|e| {
                     ForensicError::cast_error(
@@ -695,6 +811,18 @@ impl RegValueType {
                 le.copy_from_slice(raw);
                 Ok(RegValueRef::DWord(u32::from_le_bytes(le)))
             }
+            RegValueType::DWordBigEndian => {
+                if raw.len() != 4 {
+                    return Err(ForensicError::cast_error(
+                        "RegistryBuffer",
+                        "RegValueRef::DWordBigEndian",
+                        format!("Expected 4 bytes for DWordBigEndian, got {}", raw.len()).into(),
+                    ));
+                }
+                let mut be = [0u8; 4];
+                be.copy_from_slice(raw);
+                Ok(RegValueRef::DWordBigEndian(u32::from_be_bytes(be)))
+            }
             RegValueType::QWord => {
                 if raw.len() != 8 {
                     return Err(ForensicError::cast_error(
@@ -714,11 +842,24 @@ impl RegValueType {
 impl std::fmt::Display for RegValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RegValue::SZ(s) | RegValue::ExpandSZ(s) => write!(f, "{}", s),
-            RegValue::DWord(v) => write!(f, "{}", v),
+            RegValue::None => Ok(()),
+            RegValue::SZ(s) | RegValue::ExpandSZ(s) | RegValue::Link(s) => write!(f, "{}", s),
+            RegValue::DWord(v) | RegValue::DWordBigEndian(v) => write!(f, "{}", v),
             RegValue::QWord(v) => write!(f, "{}", v),
-            RegValue::Binary(v) => {
+            RegValue::Binary(v)
+            | RegValue::ResourceList(v)
+            | RegValue::FullResourceDescriptor(v)
+            | RegValue::ResourceRequirementsList(v) => {
                 for (i, b) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{:02x}", b)?;
+                }
+                Ok(())
+            }
+            RegValue::Unknown { data, .. } => {
+                for (i, b) in data.iter().enumerate() {
                     if i > 0 {
                         write!(f, " ")?;
                     }
@@ -845,6 +986,7 @@ impl TryFrom<RegValue> for String {
             RegValue::MultiSZ(v) => Ok(v.join("\n")),
             RegValue::ExpandSZ(v) => Ok(v),
             RegValue::SZ(v) => Ok(v),
+            RegValue::Link(v) => Ok(v),
             _ => Err(ForensicError::cast_error(
                 "RegValue",
                 "String",
@@ -857,7 +999,7 @@ impl TryFrom<RegValue> for u32 {
     type Error = ForensicError;
     fn try_from(value: RegValue) -> Result<Self, Self::Error> {
         match value {
-            RegValue::DWord(v) => Ok(v),
+            RegValue::DWord(v) | RegValue::DWordBigEndian(v) => Ok(v),
             RegValue::QWord(v) => Ok(v as u32),
             _ => Err(ForensicError::cast_error(
                 "RegValue",
@@ -871,7 +1013,7 @@ impl TryFrom<RegValue> for u64 {
     type Error = ForensicError;
     fn try_from(value: RegValue) -> Result<Self, Self::Error> {
         match value {
-            RegValue::DWord(v) => Ok(v as u64),
+            RegValue::DWord(v) | RegValue::DWordBigEndian(v) => Ok(v as u64),
             RegValue::QWord(v) => Ok(v),
             _ => Err(ForensicError::cast_error(
                 "RegValue",
@@ -885,7 +1027,11 @@ impl TryFrom<RegValue> for Vec<u8> {
     type Error = ForensicError;
     fn try_from(value: RegValue) -> Result<Self, Self::Error> {
         match value {
-            RegValue::Binary(v) => Ok(v),
+            RegValue::Binary(v)
+            | RegValue::ResourceList(v)
+            | RegValue::FullResourceDescriptor(v)
+            | RegValue::ResourceRequirementsList(v) => Ok(v),
+            RegValue::Unknown { data, .. } => Ok(data),
             _ => Err(ForensicError::cast_error(
                 "RegValue",
                 "Vec<u8>",
@@ -895,606 +1041,9 @@ impl TryFrom<RegValue> for Vec<u8> {
     }
 }
 
-impl std::fmt::Display for RegHiveKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RegHiveKey::HkeyClassesRoot => write!(f, "HKEY_CLASSES_ROOT"),
-            RegHiveKey::HkeyCurrentConfig => write!(f, "HKEY_CURRENT_CONFIG"),
-            RegHiveKey::HkeyCurrentUser => write!(f, "HKEY_CURRENT_USER"),
-            RegHiveKey::HkeyDynData => write!(f, "HKEY_CURRENT_USER_LOCAL_SETTINGS"),
-            RegHiveKey::HkeyLocalMachine => write!(f, "HKEY_LOCAL_MACHINE"),
-            RegHiveKey::HkeyPerformanceData => write!(f, "HKEY_PERFORMANCE_DATA"),
-            RegHiveKey::HkeyPerformanceNlstext => write!(f, "HKEY_PERFORMANCE_NLSTEXT"),
-            RegHiveKey::HkeyPerformanceText => write!(f, "HKEY_PERFORMANCE_TEXT"),
-            RegHiveKey::HkeyUsers => write!(f, "HKEY_USERS"),
-            RegHiveKey::Hkey(v) => write!(f, "Hkey({})", v),
-        }
-    }
-}
-
-// ============================================================================
-// NEW TYPES FOR REDESIGNED API
-// ============================================================================
-
-/// Options for opening registry keys (live Windows backend).
-/// For hive/offline backends, these options are best-effort or ignored.
-#[derive(Clone, Debug)]
-pub struct RegistryOpenOptions {
-    pub access: RegistryAccess,
-    pub wow64_view: Option<Wow64View>,
-}
-
-/// Registry access rights (live Windows only).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RegistryAccess {
-    Read,
-    ReadWrite,
-    All,
-}
-
-/// WOW64 registry view selection (live Windows only).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Wow64View {
-    Bits32,
-    Bits64,
-}
-
-impl Default for RegistryOpenOptions {
-    fn default() -> Self {
-        Self {
-            access: RegistryAccess::Read,
-            wow64_view: None,
-        }
-    }
-}
-
-/// Controls whether a registry enumeration visitor continues or stops.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RegistryVisit {
-    /// Continue enumerating additional names.
-    Continue,
-    /// Stop successfully without treating the early exit as an error.
-    Break,
-}
-
-/// Opened registry key handle. Move-only, closes on drop.
-/// For live Windows backend: not Send + not Sync to enforce thread-confinement.
-///
-/// Handles are opaque to the user:
-/// - Live Windows: wraps HKEY
-/// - Hive/offline: wraps backend-specific identifier
-///
-/// Calling `close()` explicitly or allowing it to drop both close the handle.
-/// Closing twice is safe (idempotent).
-pub struct RegKeyHandle {
-    resource: Option<Box<dyn Any>>,
-    close: Option<Box<CloseResource>>,
-    access_path: Option<String>,
-    _phantom: PhantomData<*mut ()>, // Non-Send + Non-Sync
-}
-
-impl RegKeyHandle {
-    /// Creates a new opened key handle (internal use by implementations).
-    #[doc(hidden)]
-    pub fn new<T, F>(resource: T, close: F) -> Self
-    where
-        T: Any,
-        F: FnOnce(T) -> ForensicResult<()> + 'static,
-    {
-        let close = move |resource: Box<dyn Any>| match resource.downcast::<T>() {
-            Ok(resource) => close(*resource),
-            Err(_) => Err(ForensicError::registry_invalid_handle(0)),
-        };
-        Self {
-            resource: Some(Box::new(resource)),
-            close: Some(Box::new(close)),
-            access_path: None,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Attach an internal authorization path to this handle.
-    #[doc(hidden)]
-    pub fn with_access_path(mut self, path: impl Into<String>) -> Self {
-        self.access_path = Some(path.into());
-        self
-    }
-
-    /// Return the internal authorization path attached by a guarded reader.
-    #[doc(hidden)]
-    pub fn access_path(&self) -> Option<&str> {
-        self.access_path.as_deref()
-    }
-
-    /// Returns this handle's backend-specific resource.
-    ///
-    /// Backends must request the same resource type used to construct the
-    /// handle. A mismatch indicates a handle from another backend.
-    #[doc(hidden)]
-    pub fn resource<T: Any>(&self) -> ForensicResult<&T> {
-        self.resource
-            .as_deref()
-            .and_then(|resource| resource.downcast_ref::<T>())
-            .ok_or_else(|| ForensicError::registry_invalid_handle(0))
-    }
-
-    /// Closes this key handle early.
-    ///
-    /// This consumes the handle, so its drop implementation cannot close the
-    /// underlying backend resource a second time.
-    #[doc(hidden)]
-    pub fn close(mut self) -> ForensicResult<()> {
-        match (self.resource.take(), self.close.take()) {
-            (Some(resource), Some(close)) => close(resource),
-            (None, None) => Ok(()),
-            _ => Err(ForensicError::registry_invalid_handle(0)),
-        }
-    }
-}
-
-impl std::fmt::Debug for RegKeyHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegKeyHandle")
-            .field(
-                "resource_type",
-                &self
-                    .resource
-                    .as_ref()
-                    .map(|resource| std::any::type_name_of_val(&**resource)),
-            )
-            .field("closed", &self.close.is_none())
-            .finish()
-    }
-}
-
-impl Drop for RegKeyHandle {
-    fn drop(&mut self) {
-        if let (Some(resource), Some(close)) = (self.resource.take(), self.close.take()) {
-            let _ = close(resource);
-        }
-    }
-}
-
-// Explicitly not impl Clone, Copy to enforce move-only semantics
-
-/// Converts a [`RegValue`] into a typed Rust value.
-///
-/// Implemented for `String`, `u32`, `u64`, `bool`, and `Vec<u8>`/`Vec<String>`.
-/// Used by [`RegistryReader::read_value_as`] to provide a type-safe,
-/// single-call read-and-convert API.
-///
-/// Implement this trait on your own types to extend the typed read API.
-pub trait FromRegistryValue: Sized {
-    /// Performs the conversion, returning `Err` if `value` has an incompatible type.
-    fn from_reg_value(value: RegValue) -> ForensicResult<Self>;
-}
-
-impl FromRegistryValue for String {
-    fn from_reg_value(value: RegValue) -> ForensicResult<Self> {
-        value.try_into()
-    }
-}
-
-impl FromRegistryValue for u32 {
-    fn from_reg_value(value: RegValue) -> ForensicResult<Self> {
-        value.try_into()
-    }
-}
-
-impl FromRegistryValue for u64 {
-    fn from_reg_value(value: RegValue) -> ForensicResult<Self> {
-        value.try_into()
-    }
-}
-
-impl FromRegistryValue for Vec<String> {
-    fn from_reg_value(value: RegValue) -> ForensicResult<Self> {
-        match value {
-            RegValue::MultiSZ(v) => Ok(v),
-            RegValue::SZ(s) => Ok(vec![s]),
-            RegValue::ExpandSZ(s) => Ok(vec![s]),
-            _ => Err(ForensicError::cast_error(
-                "RegValue",
-                "Vec<String>",
-                "Incompatible registry value type".into(),
-            )),
-        }
-    }
-}
-
-impl FromRegistryValue for bool {
-    fn from_reg_value(value: RegValue) -> ForensicResult<Self> {
-        match value {
-            RegValue::DWord(v) => Ok(v != 0),
-            RegValue::QWord(v) => Ok(v != 0),
-            _ => Err(ForensicError::cast_error(
-                "RegValue",
-                "bool",
-                "Incompatible registry value type".into(),
-            )),
-        }
-    }
-}
-
-impl FromRegistryValue for Vec<u8> {
-    fn from_reg_value(value: RegValue) -> ForensicResult<Self> {
-        value.try_into()
-    }
-}
-
-/// Metadata about an open registry key, analogous to `RegQueryInfoKey`.
-///
-/// Returned by [`RegistryReader::key_info`]. Use the counts to pre-allocate
-/// buffers before enumerating subkeys or values.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RegistryKeyInfo {
-    /// Number of direct subkeys.
-    pub subkeys: u32,
-    /// Length of the longest subkey name, in characters (excluding null terminator).
-    pub max_subkey_name_length: u32,
-    /// Number of values in this key.
-    pub values: u32,
-    /// Length of the longest value name, in characters (excluding null terminator).
-    pub max_value_name_length: u32,
-    /// Size of the largest value data, in bytes.
-    pub max_value_length: u32,
-    /// Timestamp of the last write to this key.
-    pub last_write_time: ForensicTimestamp,
-}
-
-/// Reader trait for Windows registry (live, hive-based, or mocked).
-///
-/// # Thread-Confinement Contract
-/// Implementations are thread-confined: a single reader instance should not be shared
-/// across threads. Opened key handles are move-only and close on drop.
-/// Cross-thread usage should be orchestrated at a higher level if needed.
-///
-/// # Interior Mutability
-/// All trait methods use `&self` (not `&mut self`). Implementations use interior mutability
-/// (Cell/RefCell) to manage mutable state like handle caches and counters. This enables
-/// use with trait objects (`dyn RegistryReader`) which don't support mutable methods.
-///
-/// # Handle Lifecycle
-/// - `open_key()` and variants return a `RegKeyHandle` that owns the handle.
-/// - Handles are closed when dropped, or earlier with [`RegKeyHandle::close`].
-/// - A handle closes its backend resource exactly once.
-/// - A handle owns the cleanup state needed for its backend resource.
-///
-/// # Reading Values
-/// - Use `read_value_buffered()` for low-allocation access into a reusable buffer.
-/// - Use `read_value()` when you explicitly need an owned `RegValue`.
-/// - Use `read_value_as::<T>()` for type-safe conversion.
-pub trait RegistryReader {
-    /// Opens a registry key from a root hive.
-    /// Returns a move-only handle that closes on drop.
-    fn open_key(&self, hive: RegHiveKey, key_path: &str) -> ForensicResult<RegKeyHandle>;
-
-    /// Opens a registry key with options (access rights, WOW64 view for live registry).
-    /// Options are best-effort for hive backends; they may be ignored.
-    fn open_key_with_options(
-        &self,
-        hive: RegHiveKey,
-        key_path: &str,
-        options: &RegistryOpenOptions,
-    ) -> ForensicResult<RegKeyHandle> {
-        // Default implementation ignores options and delegates to open_key
-        let _ = options;
-        self.open_key(hive, key_path)
-    }
-
-    /// Opens a subkey under an already-opened parent key.
-    fn open_subkey(&self, parent: &RegKeyHandle, subkey: &str) -> ForensicResult<RegKeyHandle>;
-
-    /// Reads a registry value by name into an owned representation.
-    ///
-    /// This allocates only when the caller explicitly asks for ownership.
-    fn read_value(&self, key: &RegKeyHandle, value_name: &str) -> ForensicResult<RegValue> {
-        let mut buffer = RegistryBuffer::new();
-        {
-            let _ = self.read_value_buffered(key, value_name, &mut buffer)?;
-        }
-        buffer.to_reg_value()
-    }
-
-    /// Reads the size of a registry value without reading its data (low-allocation).
-    /// Useful for pre-allocating buffers or querying data size.
-    fn read_value_size(&self, key: &RegKeyHandle, value_name: &str) -> ForensicResult<usize> {
-        let mut empty: [u8; 0] = [];
-        match self.read_raw_value_into(key, value_name, &mut empty) {
-            Ok((_, written)) => Ok(written),
-            Err(ForensicError::Buffer(BufferError::TooSmall { required, .. })) => Ok(required),
-            Err(err) => Err(err),
-        }
-    }
-
-    /// Reads a registry value directly into a caller-provided byte buffer.
-    ///
-    /// This is the primitive low-allocation registry read operation.
-    /// Implementations should write directly into `buf` and return the registry value
-    /// type along with the number of bytes written.
-    fn read_raw_value_into(
-        &self,
-        key: &RegKeyHandle,
-        value_name: &str,
-        buf: &mut [u8],
-    ) -> ForensicResult<(RegValueType, usize)>;
-
-    /// Reads a registry value directly into a buffer.
-    /// Returns the number of bytes written, or an error if the buffer is too small.
-    /// The error includes the required buffer size.
-    fn read_value_into(
-        &self,
-        key: &RegKeyHandle,
-        value_name: &str,
-        buf: &mut [u8],
-    ) -> ForensicResult<usize> {
-        let (_, written) = self.read_raw_value_into(key, value_name, buf)?;
-        Ok(written)
-    }
-
-    /// Reads a registry value into a buffer and returns a typed borrowed view.
-    ///
-    /// The returned `RegValueRef` may borrow from `buf`, so it cannot outlive the buffer.
-    fn read_value_ref_into<'a>(
-        &self,
-        key: &RegKeyHandle,
-        value_name: &str,
-        buf: &'a mut [u8],
-    ) -> ForensicResult<RegValueRef<'a>> {
-        let (value_type, written) = self.read_raw_value_into(key, value_name, buf)?;
-        value_type.parse_bytes(&buf[..written])
-    }
-
-    /// Reads a registry value into a reusable, resizeable buffer.
-    ///
-    /// The buffer stores the serialized bytes and the last registry value type.
-    /// The returned `RegValueRef` borrows from `buffer`, allowing repeated reads
-    /// without forcing the caller to manage raw slices manually.
-    fn read_value_buffered<'a>(
-        &self,
-        key: &RegKeyHandle,
-        value_name: &str,
-        buffer: &'a mut RegistryBuffer,
-    ) -> ForensicResult<RegValueRef<'a>> {
-        if buffer.capacity() == 0 {
-            buffer.resize(64);
-            buffer.set_len(0);
-            buffer.set_value_type(None);
-        }
-
-        loop {
-            match self.read_raw_value_into(key, value_name, buffer.writable_bytes()) {
-                Ok((value_type, written)) => {
-                    buffer.commit_write(written, value_type);
-                    return buffer.as_value_ref();
-                }
-                Err(ForensicError::Buffer(BufferError::TooSmall { required, .. })) => {
-                    let next_capacity = required.max(buffer.capacity().saturating_mul(2)).max(1);
-                    buffer.resize(next_capacity);
-                    buffer.set_len(0);
-                    buffer.set_value_type(None);
-                }
-                Err(err) => return Err(err),
-            }
-        }
-    }
-
-    /// Checks if a value exists without reading its data (low-allocation operation).
-    fn value_exists(&self, key: &RegKeyHandle, value_name: &str) -> ForensicResult<bool> {
-        match self.read_value_size(key, value_name) {
-            Ok(_) => Ok(true),
-            Err(ForensicError::Registry(RegistryError::ValueNotFound { .. })) => Ok(false),
-            Err(err) => Err(err),
-        }
-    }
-
-    /// Enumerates subkeys using a visitor callback (streaming, low-allocation).
-    /// The callback returns [`RegistryVisit::Continue`] to continue,
-    /// [`RegistryVisit::Break`] to stop successfully, or `Err(_)` to fail.
-    fn enumerate_keys(
-        &self,
-        key: &RegKeyHandle,
-        visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-    ) -> ForensicResult<()>;
-
-    /// Enumerates values using a visitor callback (streaming, low-allocation).
-    /// The callback returns [`RegistryVisit::Continue`] to continue,
-    /// [`RegistryVisit::Break`] to stop successfully, or `Err(_)` to fail.
-    fn enumerate_values(
-        &self,
-        key: &RegKeyHandle,
-        visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-    ) -> ForensicResult<()>;
-
-    /// Retrieves metadata about a key (emulates RegQueryInfoKey).
-    fn key_info(&self, key: &RegKeyHandle) -> ForensicResult<RegistryKeyInfo>;
-
-    /// Mounts a registry reader from a hive file.
-    fn mount_file(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Box<dyn RegistryReader>>;
-
-    /// Mounts a registry reader from a filesystem.
-    fn mount_fs(&self, fs: Box<dyn VirtualFileSystem>) -> ForensicResult<Box<dyn RegistryReader>>;
-
-    /// Get the same value as the env var "%SystemRoot%". Usually "C:\Windows".
-    fn get_system_root(&self) -> ForensicResult<String> {
-        let key = self.open_key(
-            RegHiveKey::HkeyLocalMachine,
-            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-        )?;
-        let value = self.read_value(&key, "SystemRoot")?;
-        value.try_into()
-    }
-
-    /// Get the current Windows build number.
-    fn windows_build(&self) -> ForensicResult<u32> {
-        let key = self.open_key(
-            RegHiveKey::HkeyLocalMachine,
-            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-        )?;
-        let value = self.read_value(&key, "CurrentBuild")?;
-        value.try_into()
-    }
-
-    /// Returns all user SIDs from `HKEY_USERS`, excluding `_Classes` keys.
-    fn list_users(&self) -> ForensicResult<Vec<String>> {
-        let key = self.open_key(RegHiveKey::HkeyUsers, "")?;
-        let mut users = Vec::new();
-        self.enumerate_keys(&key, &mut |name| {
-            if name.starts_with("S-") && !name.ends_with("_Classes") {
-                users.push(name.to_string());
-            }
-            Ok(RegistryVisit::Continue)
-        })?;
-        Ok(users)
-    }
-}
-
-impl dyn RegistryReader + '_ {
-    /// Typed read: automatically converts RegValue to target type.
-    pub fn read_value_as<T: FromRegistryValue>(
-        &self,
-        key: &RegKeyHandle,
-        value_name: &str,
-    ) -> ForensicResult<T> {
-        let raw = self.read_value(key, value_name)?;
-        T::from_reg_value(raw)
-    }
-
-    /// Reads a string value (SZ, ExpandSZ, or MultiSZ) directly into a buffer as UTF-8.
-    /// Returns bytes written or error if buffer too small.
-    pub fn read_value_str_into(
-        &self,
-        key: &RegKeyHandle,
-        value_name: &str,
-        buf: &mut [u8],
-    ) -> ForensicResult<usize> {
-        match self.read_value_ref_into(key, value_name, buf)? {
-            RegValueRef::SZ(s) | RegValueRef::ExpandSZ(s) => Ok(s.len()),
-            RegValueRef::MultiSZ(v) => Ok(v.as_str().len()),
-            _ => Err(ForensicError::cast_error(
-                "RegValue",
-                "&str",
-                "Registry value is not a string type".into(),
-            )),
-        }
-    }
-
-    /// Reads binary data directly into a buffer.
-    /// Only works for Binary registry values. Returns error for other types.
-    pub fn read_value_binary_into(
-        &self,
-        key: &RegKeyHandle,
-        value_name: &str,
-        buf: &mut [u8],
-    ) -> ForensicResult<usize> {
-        match self.read_value_ref_into(key, value_name, buf)? {
-            RegValueRef::Binary(b) => Ok(b.len()),
-            _ => Err(ForensicError::cast_error(
-                "RegValue",
-                "Binary",
-                "Registry value is not binary type".into(),
-            )),
-        }
-    }
-
-    /// Recursively walks registry keys, ignoring inaccessible descendants.
-    ///
-    /// This convenience method is best-effort. Use [`Self::walk_keys_strict`]
-    /// when every child-open and descendant-enumeration error matters.
-    pub fn walk_keys(
-        &self,
-        root: RegHiveKey,
-        visitor: &mut dyn FnMut(&str, &RegKeyHandle) -> ForensicResult<()>,
-    ) -> ForensicResult<()> {
-        self.walk_keys_best_effort(root, visitor)
-    }
-
-    /// Recursively walks registry keys, ignoring inaccessible descendants.
-    ///
-    /// The visitor receives each child path and handle. Errors enumerating the
-    /// root and errors returned by the visitor still propagate to the caller.
-    pub fn walk_keys_best_effort(
-        &self,
-        root: RegHiveKey,
-        visitor: &mut dyn FnMut(&str, &RegKeyHandle) -> ForensicResult<()>,
-    ) -> ForensicResult<()> {
-        let root_key = self.open_key(root, "")?;
-        self.walk_keys_recursive(&root_key, "", visitor, false)?;
-        Ok(())
-    }
-
-    /// Recursively walks registry keys, propagating every traversal error.
-    ///
-    /// Use this mode when an inaccessible key must remain distinguishable from
-    /// an empty key in forensic output.
-    pub fn walk_keys_strict(
-        &self,
-        root: RegHiveKey,
-        visitor: &mut dyn FnMut(&str, &RegKeyHandle) -> ForensicResult<()>,
-    ) -> ForensicResult<()> {
-        let root_key = self.open_key(root, "")?;
-        self.walk_keys_recursive(&root_key, "", visitor, true)
-    }
-
-    fn walk_keys_recursive(
-        &self,
-        parent: &RegKeyHandle,
-        path_prefix: &str,
-        visitor: &mut dyn FnMut(&str, &RegKeyHandle) -> ForensicResult<()>,
-        strict: bool,
-    ) -> ForensicResult<()> {
-        let mut subkeys = Vec::new();
-        self.enumerate_keys(parent, &mut |name| {
-            subkeys.push(name.to_string());
-            Ok(RegistryVisit::Continue)
-        })?;
-
-        for subkey_name in subkeys {
-            let full_path = if path_prefix.is_empty() {
-                subkey_name.clone()
-            } else {
-                format!("{}\\{}", path_prefix, subkey_name)
-            };
-
-            match self.open_subkey(parent, &subkey_name) {
-                Ok(child_key) => {
-                    visitor(&full_path, &child_key)?;
-                    if strict {
-                        self.walk_keys_recursive(&child_key, &full_path, visitor, true)?;
-                    } else {
-                        let _ = self.walk_keys_recursive(&child_key, &full_path, visitor, false);
-                    }
-                }
-                Err(err) if strict => return Err(err),
-                Err(_) => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// Recursively walks keys starting from an already-opened key handle.
-    ///
-    /// Useful when you want to walk from a subkey you've already opened,
-    /// rather than from a hive root. The visitor receives the relative path
-    /// from `root` and a reference to the opened child key.
-    pub fn walk_keys_from(
-        &self,
-        root: &RegKeyHandle,
-        visitor: &mut dyn FnMut(&str, &RegKeyHandle) -> ForensicResult<()>,
-    ) -> ForensicResult<()> {
-        self.walk_keys_recursive(root, "", visitor, false)
-    }
-}
-
 #[cfg(test)]
 mod reg_value {
-    use crate::{
-        err::{ForensicError, ForensicResult},
-        traits::registry::{RegistryKeyInfo, RegistryReader},
-        utils::testing::TestingRegistry,
-    };
-
-    use super::{RegValue, RegValueRef, RegValueType, RegistryBuffer, RegistryVisit};
+    use super::{RegValue, RegValueRef, RegValueType, RegistryBuffer};
 
     #[test]
     fn should_convert_using_try_into() {
@@ -1686,511 +1235,104 @@ mod reg_value {
         assert_eq!(buffer.len(), 4);
         assert!(buffer.capacity() >= 4);
     }
+}
+
+/// Tests for the RFC 0001 §4.5 `RegValue` expansion (6 -> 13 variants).
+#[cfg(test)]
+mod reg_value_expansion {
+    use super::{RegValue, RegValueRef, RegValueType};
 
     #[test]
-    fn should_read_value_into_registry_buffer() {
-        let reader = TestingRegistry::new();
-        let key = reader
-            .open_key(
-                crate::traits::registry::RegHiveKey::HkeyUsers,
-                r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment",
-            )
-            .expect("Must open test key");
-        let mut buffer = RegistryBuffer::with_capacity(4);
-
-        {
-            let view = reader
-                .read_value_buffered(&key, "USERPROFILE", &mut buffer)
-                .expect("Buffered read must succeed");
-
-            assert_eq!(view.as_str(), Some("C:\\Users\\Tester"));
-        }
-
-        assert_eq!(buffer.value_type(), Some(RegValueType::SZ));
-        assert_eq!(
-            buffer.to_reg_value().unwrap(),
-            RegValue::SZ("C:\\Users\\Tester".to_string())
-        );
-        assert_eq!(buffer.as_bytes(), b"C:\\Users\\Tester");
+    fn none_serializes_to_nothing() {
+        let v = RegValue::None;
+        assert_eq!(v.serialized_size(), 0);
+        let mut buf = [0u8; 0];
+        assert_eq!(v.write_into(&mut buf).unwrap(), 0);
+        assert_eq!(v.to_string(), "");
+        assert!(v.raw_bytes().is_empty());
     }
 
     #[test]
-    fn should_generate_dummy_registry_reader() {
-        struct RegReader {}
-        impl RegistryReader for RegReader {
-            fn open_key(
-                &self,
-                _hkey: crate::traits::registry::RegHiveKey,
-                _key_name: &str,
-            ) -> crate::err::ForensicResult<crate::traits::registry::RegKeyHandle> {
-                Ok(crate::traits::registry::RegKeyHandle::new(0isize, |_| {
-                    Ok(())
-                }))
-            }
+    fn dword_big_endian_serializes_big_endian() {
+        let v = RegValue::DWordBigEndian(0x0102_0304);
+        let mut buf = [0u8; 4];
+        assert_eq!(v.write_into(&mut buf).unwrap(), 4);
+        assert_eq!(buf, [0x01, 0x02, 0x03, 0x04]);
+        assert_ne!(buf, 0x0102_0304u32.to_le_bytes());
 
-            fn open_subkey(
-                &self,
-                _parent: &crate::traits::registry::RegKeyHandle,
-                _subkey: &str,
-            ) -> crate::err::ForensicResult<crate::traits::registry::RegKeyHandle> {
-                Ok(crate::traits::registry::RegKeyHandle::new(0isize, |_| {
-                    Ok(())
-                }))
-            }
-
-            fn read_value(
-                &self,
-                _hkey: &crate::traits::registry::RegKeyHandle,
-                _value_name: &str,
-            ) -> crate::err::ForensicResult<RegValue> {
-                Ok(RegValue::SZ("123".to_string()))
-            }
-
-            fn read_raw_value_into(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-                _value_name: &str,
-                buf: &mut [u8],
-            ) -> crate::err::ForensicResult<(RegValueType, usize)> {
-                let raw = b"123";
-                if buf.len() < raw.len() {
-                    return Err(ForensicError::buffer_too_small(
-                        raw.len(),
-                        buf.len(),
-                        "RegValue::SZ",
-                    ));
-                }
-                buf[..raw.len()].copy_from_slice(raw);
-                Ok((RegValueType::SZ, raw.len()))
-            }
-
-            fn enumerate_keys(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-                visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-            ) -> ForensicResult<()> {
-                if visitor("123")? == RegistryVisit::Break {
-                    return Ok(());
-                }
-                Ok(())
-            }
-
-            fn enumerate_values(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-                visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-            ) -> ForensicResult<()> {
-                if visitor("123")? == RegistryVisit::Break {
-                    return Ok(());
-                }
-                Ok(())
-            }
-
-            fn key_info(
-                &self,
-                _hkey: &crate::traits::registry::RegKeyHandle,
-            ) -> ForensicResult<crate::traits::registry::RegistryKeyInfo> {
-                Ok(RegistryKeyInfo::default())
-            }
-
-            fn mount_file(
-                &self,
-                _file: Box<dyn crate::traits::vfs::VirtualFile>,
-            ) -> crate::err::ForensicResult<Box<dyn RegistryReader>> {
-                Ok(Box::new(RegReader {}))
-            }
-
-            fn mount_fs(
-                &self,
-                _fs: Box<dyn crate::traits::vfs::VirtualFileSystem>,
-            ) -> crate::err::ForensicResult<Box<dyn RegistryReader>> {
-                Ok(Box::new(RegReader {}))
-            }
-        }
-
-        let reader = RegReader {};
-        let reader: Box<dyn RegistryReader> = Box::new(reader);
-        fn tst(reg: &dyn RegistryReader) -> ForensicResult<()> {
-            let key = reg.open_key(crate::traits::registry::RegHiveKey::HkeyClassesRoot, "")?;
-            assert_eq!("123", reg.read_value_as::<String>(&key, "test")?);
-
-            // Test buffer read
-            let mut buf = [0u8; 10];
-            let bytes = reg.read_value_into(&key, "test", &mut buf)?;
-            assert_eq!(bytes, 3);
-            assert_eq!(&buf[..3], b"123");
-
-            // Test ergonomic borrowed read
-            let mut borrowed_buf = [0u8; 10];
-            let view = reg.read_value_ref_into(&key, "test", &mut borrowed_buf)?;
-            assert_eq!(view.as_str(), Some("123"));
-
-            Ok(())
-        }
-        tst(&*reader).unwrap();
+        let mut buf2 = buf;
+        let parsed = v.write_into_ref(&mut buf2).unwrap();
+        assert_eq!(parsed, RegValueRef::DWordBigEndian(0x0102_0304));
     }
 
     #[test]
-    fn should_use_direct_raw_buffer_path_without_owned_value() {
-        struct DirectBufferReader;
-
-        impl RegistryReader for DirectBufferReader {
-            fn open_key(
-                &self,
-                _hkey: crate::traits::registry::RegHiveKey,
-                _key_name: &str,
-            ) -> crate::err::ForensicResult<crate::traits::registry::RegKeyHandle> {
-                Ok(crate::traits::registry::RegKeyHandle::new(7isize, |_| {
-                    Ok(())
-                }))
-            }
-
-            fn open_subkey(
-                &self,
-                _parent: &crate::traits::registry::RegKeyHandle,
-                _subkey: &str,
-            ) -> crate::err::ForensicResult<crate::traits::registry::RegKeyHandle> {
-                Ok(crate::traits::registry::RegKeyHandle::new(8isize, |_| {
-                    Ok(())
-                }))
-            }
-
-            fn read_value(
-                &self,
-                _hkey: &crate::traits::registry::RegKeyHandle,
-                _value_name: &str,
-            ) -> crate::err::ForensicResult<RegValue> {
-                panic!("read_value should not be used when read_raw_value_into is overridden")
-            }
-
-            fn read_raw_value_into(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-                _value_name: &str,
-                buf: &mut [u8],
-            ) -> crate::err::ForensicResult<(RegValueType, usize)> {
-                let raw = b"direct-path";
-                if buf.len() < raw.len() {
-                    return Err(ForensicError::buffer_too_small(
-                        raw.len(),
-                        buf.len(),
-                        "RegValue::SZ",
-                    ));
-                }
-                buf[..raw.len()].copy_from_slice(raw);
-                Ok((RegValueType::SZ, raw.len()))
-            }
-
-            fn enumerate_keys(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-                visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-            ) -> ForensicResult<()> {
-                if visitor("child")? == RegistryVisit::Break {
-                    return Ok(());
-                }
-                Ok(())
-            }
-
-            fn enumerate_values(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-                visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-            ) -> ForensicResult<()> {
-                if visitor("value")? == RegistryVisit::Break {
-                    return Ok(());
-                }
-                Ok(())
-            }
-
-            fn key_info(
-                &self,
-                _hkey: &crate::traits::registry::RegKeyHandle,
-            ) -> ForensicResult<crate::traits::registry::RegistryKeyInfo> {
-                Ok(RegistryKeyInfo::default())
-            }
-
-            fn mount_file(
-                &self,
-                _file: Box<dyn crate::traits::vfs::VirtualFile>,
-            ) -> crate::err::ForensicResult<Box<dyn RegistryReader>> {
-                Ok(Box::new(DirectBufferReader))
-            }
-
-            fn mount_fs(
-                &self,
-                _fs: Box<dyn crate::traits::vfs::VirtualFileSystem>,
-            ) -> crate::err::ForensicResult<Box<dyn RegistryReader>> {
-                Ok(Box::new(DirectBufferReader))
-            }
-        }
-
-        let reader = DirectBufferReader;
-        let key = reader
-            .open_key(crate::traits::registry::RegHiveKey::HkeyClassesRoot, "")
-            .unwrap();
-        let mut buffer = RegistryBuffer::with_capacity(2);
-
-        {
-            let value = reader
-                .read_value_buffered(&key, "demo", &mut buffer)
-                .unwrap();
-            assert_eq!(value.as_str(), Some("direct-path"));
-        }
-
-        assert_eq!(buffer.value_type(), Some(RegValueType::SZ));
-        assert_eq!(buffer.as_bytes(), b"direct-path");
-        assert!(buffer.capacity() >= b"direct-path".len());
+    fn dword_big_endian_converts_to_u32_and_u64() {
+        let v = RegValue::DWordBigEndian(42);
+        assert_eq!(TryInto::<u32>::try_into(v.clone()).unwrap(), 42);
+        assert_eq!(TryInto::<u64>::try_into(v).unwrap(), 42);
     }
 
     #[test]
-    fn should_remove_handle_mapping_on_explicit_close() {
-        let reader = TestingRegistry::new();
-        let key = reader
-            .open_key(
-                crate::traits::registry::RegHiveKey::HkeyUsers,
-                r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment",
-            )
-            .expect("Must open test key");
-
-        let handle_id = *key.resource::<isize>().unwrap();
-        assert!(reader.cached.lock().unwrap().contains_key(&handle_id));
-
-        key.close().expect("Must close key");
-        assert!(!reader.cached.lock().unwrap().contains_key(&handle_id));
+    fn link_behaves_like_a_string_value() {
+        let v = RegValue::Link("C:\\Target\\Path".to_string());
+        assert_eq!(v.as_str(), Some("C:\\Target\\Path"));
+        assert_eq!(v.to_string(), "C:\\Target\\Path");
+        let s: String = v.try_into().unwrap();
+        assert_eq!(s, "C:\\Target\\Path");
     }
 
     #[test]
-    fn should_close_key_when_handle_drops() {
-        let reader = TestingRegistry::new();
-        let handle_id;
-
-        {
-            let key = reader
-                .open_key(
-                    crate::traits::registry::RegHiveKey::HkeyUsers,
-                    r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment",
-                )
-                .expect("Must open test key");
-            handle_id = *key.resource::<isize>().unwrap();
-            assert!(reader.cached.lock().unwrap().contains_key(&handle_id));
+    fn resource_variants_behave_like_binary() {
+        for v in [
+            RegValue::ResourceList(vec![1, 2, 3]),
+            RegValue::FullResourceDescriptor(vec![1, 2, 3]),
+            RegValue::ResourceRequirementsList(vec![1, 2, 3]),
+        ] {
+            assert_eq!(v.as_binary(), Some(&[1u8, 2, 3][..]));
+            assert_eq!(v.serialized_size(), 3);
+            let bytes: Vec<u8> = v.clone().try_into().unwrap();
+            assert_eq!(bytes, vec![1, 2, 3]);
+            assert_eq!(v.raw_bytes().as_ref(), &[1u8, 2, 3][..]);
         }
-
-        assert!(!reader.cached.lock().unwrap().contains_key(&handle_id));
     }
 
     #[test]
-    fn testing_registry_should_reject_mounting_a_filesystem() {
-        let reader = TestingRegistry::new();
-        let err = match reader.mount_fs(Box::new(crate::core::fs::StdVirtualFS::new())) {
-            Ok(_) => panic!("TestingRegistry must not fabricate a mounted registry"),
-            Err(err) => err,
+    fn unknown_preserves_type_id_and_bytes() {
+        let v = RegValue::Unknown {
+            ty: 0xDEAD_BEEF,
+            data: vec![0xAA, 0xBB],
         };
-
-        assert!(format!("{}", err).contains("mount_fs is not supported"));
+        assert_eq!(v.value_type(), RegValueType::Unknown(0xDEAD_BEEF));
+        assert_eq!(v.as_binary(), Some(&[0xAA, 0xBB][..]));
+        let mut buf = [0u8; 2];
+        let reff = v.write_into_ref(&mut buf).unwrap();
+        assert_eq!(reff, RegValueRef::Unknown { ty: 0xDEAD_BEEF, data: &[0xAA, 0xBB] });
     }
 
     #[test]
-    fn should_enumerate_values_with_callback() {
-        let reader = TestingRegistry::new();
-        let key = reader
-            .open_key(
-                crate::traits::registry::RegHiveKey::HkeyUsers,
-                r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment",
-            )
-            .expect("Must open test key");
-
-        let mut names = Vec::new();
-        reader
-            .enumerate_values(&key, &mut |name| {
-                names.push(name.to_string());
-                Ok(RegistryVisit::Continue)
-            })
-            .expect("Callback enumeration must succeed");
-
-        assert!(names.iter().any(|v| v == "USERPROFILE"));
-        assert!(names.iter().any(|v| v == "APPDATA"));
-        assert!(names.iter().any(|v| v == "LOCALAPPDATA"));
-    }
-
-    #[test]
-    fn should_return_false_only_for_missing_value() {
-        let reader = TestingRegistry::new();
-        let key = reader
-            .open_key(
-                crate::traits::registry::RegHiveKey::HkeyUsers,
-                r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment",
-            )
-            .expect("Must open test key");
-
-        assert!(!reader.value_exists(&key, "MissingValue").unwrap());
-
-        let invalid_key =
-            crate::traits::registry::RegKeyHandle::new("other-backend".to_string(), |_| Ok(()));
-        assert!(reader.value_exists(&invalid_key, "USERPROFILE").is_err());
-    }
-
-    #[test]
-    fn should_stop_enumeration_with_successful_break() {
-        let reader = TestingRegistry::new();
-        let key = reader
-            .open_key(
-                crate::traits::registry::RegHiveKey::HkeyUsers,
-                r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment",
-            )
-            .expect("Must open test key");
-        let mut visited = 0usize;
-
-        reader
-            .enumerate_values(&key, &mut |_| {
-                visited += 1;
-                Ok(RegistryVisit::Break)
-            })
-            .expect("A successful break must not return an error");
-
-        assert_eq!(visited, 1);
-    }
-
-    #[test]
-    fn should_distinguish_strict_and_best_effort_walks() {
-        struct TraversalReader;
-
-        impl RegistryReader for TraversalReader {
-            fn open_key(
-                &self,
-                _hive: crate::traits::registry::RegHiveKey,
-                _key_path: &str,
-            ) -> ForensicResult<crate::traits::registry::RegKeyHandle> {
-                Ok(crate::traits::registry::RegKeyHandle::new(0isize, |_| {
-                    Ok(())
-                }))
-            }
-
-            fn open_subkey(
-                &self,
-                _parent: &crate::traits::registry::RegKeyHandle,
-                subkey: &str,
-            ) -> ForensicResult<crate::traits::registry::RegKeyHandle> {
-                if subkey == "inaccessible" {
-                    return Err(ForensicError::other("test", "inaccessible key".to_string()));
-                }
-                Ok(crate::traits::registry::RegKeyHandle::new(1isize, |_| {
-                    Ok(())
-                }))
-            }
-
-            fn read_raw_value_into(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-                _value_name: &str,
-                _buf: &mut [u8],
-            ) -> ForensicResult<(RegValueType, usize)> {
-                Err(ForensicError::other("test", "not used".to_string()))
-            }
-
-            fn enumerate_keys(
-                &self,
-                key: &crate::traits::registry::RegKeyHandle,
-                visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-            ) -> ForensicResult<()> {
-                if *key.resource::<isize>()? == 0 {
-                    if visitor("available")? == RegistryVisit::Break {
-                        return Ok(());
-                    }
-                    let _ = visitor("inaccessible")?;
-                }
-                Ok(())
-            }
-
-            fn enumerate_values(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-                _visitor: &mut dyn FnMut(&str) -> ForensicResult<RegistryVisit>,
-            ) -> ForensicResult<()> {
-                Ok(())
-            }
-
-            fn key_info(
-                &self,
-                _key: &crate::traits::registry::RegKeyHandle,
-            ) -> ForensicResult<RegistryKeyInfo> {
-                Ok(RegistryKeyInfo::default())
-            }
-
-            fn mount_file(
-                &self,
-                _file: Box<dyn crate::traits::vfs::VirtualFile>,
-            ) -> ForensicResult<Box<dyn RegistryReader>> {
-                Ok(Box::new(TraversalReader))
-            }
-
-            fn mount_fs(
-                &self,
-                _fs: Box<dyn crate::traits::vfs::VirtualFileSystem>,
-            ) -> ForensicResult<Box<dyn RegistryReader>> {
-                Ok(Box::new(TraversalReader))
-            }
-        }
-
-        let reader = TraversalReader;
-        let dyn_reader: &dyn RegistryReader = &reader;
-        let mut best_effort_paths = Vec::new();
-        dyn_reader
-            .walk_keys_best_effort(crate::traits::registry::HKU, &mut |path, _| {
-                best_effort_paths.push(path.to_string());
-                Ok(())
-            })
-            .expect("Best-effort traversal must ignore inaccessible descendants");
-        assert_eq!(best_effort_paths, vec!["available"]);
-
-        let err = dyn_reader
-            .walk_keys_strict(crate::traits::registry::HKU, &mut |_, _| Ok(()))
-            .expect_err("Strict traversal must report inaccessible descendants");
-        assert!(format!("{}", err).contains("inaccessible key"));
-    }
-
-    #[test]
-    fn should_stop_enumeration_when_callback_returns_error() {
-        let reader = TestingRegistry::new();
-        let key = reader
-            .open_key(
-                crate::traits::registry::RegHiveKey::HkeyUsers,
-                r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment",
-            )
-            .expect("Must open test key");
-
-        let mut visited = 0usize;
-        let err = reader
-            .enumerate_values(&key, &mut |_name| {
-                visited += 1;
-                Err(ForensicError::other(
-                    "test",
-                    "stop-on-first-callback-error".to_string(),
-                ))
-            })
-            .expect_err("Enumeration must propagate callback error");
-
-        assert_eq!(visited, 1);
-        let err_text = format!("{}", err);
-        assert!(err_text.contains("stop-on-first-callback-error"));
-    }
-
-    #[test]
-    fn should_list_users_from_hku() {
-        let reader = TestingRegistry::new();
-        let users = reader.list_users().expect("list_users must succeed");
-        assert!(
-            users.iter().any(|s| s.starts_with("S-1-5-")),
-            "Expected at least one SID; got: {:?}",
-            users
+    fn raw_bytes_round_trips_for_dword_and_qword() {
+        assert_eq!(RegValue::DWord(0x11223344).raw_bytes().as_ref(), &0x11223344u32.to_le_bytes());
+        assert_eq!(
+            RegValue::DWordBigEndian(0x11223344).raw_bytes().as_ref(),
+            &0x11223344u32.to_be_bytes()
         );
-        for user in &users {
-            assert!(user.starts_with("S-"), "Non-SID entry: {}", user);
-            assert!(
-                !user.ends_with("_Classes"),
-                "Classes suffix leaked: {}",
-                user
-            );
-        }
+        assert_eq!(RegValue::QWord(0x1122334455667788).raw_bytes().as_ref(), &0x1122334455667788u64.to_le_bytes());
+    }
+
+    #[test]
+    fn ref_value_type_round_trips_through_parse_bytes() {
+        let v = RegValueType::Link;
+        let bytes = b"C:\\Target";
+        let parsed = v.parse_bytes(bytes).unwrap();
+        assert_eq!(parsed, RegValueRef::Link("C:\\Target"));
+    }
+
+    #[test]
+    fn regvalueref_to_owned_covers_new_variants() {
+        assert_eq!(RegValueRef::None.to_owned(), RegValue::None);
+        assert_eq!(
+            RegValueRef::Unknown { ty: 7, data: &[1, 2] }.to_owned(),
+            RegValue::Unknown { ty: 7, data: vec![1, 2] }
+        );
     }
 }

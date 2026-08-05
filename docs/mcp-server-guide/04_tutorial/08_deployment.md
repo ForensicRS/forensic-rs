@@ -151,6 +151,29 @@ Add to VS Code settings (JSON):
 }
 ```
 
+### LM Studio
+
+Requires **LM Studio 0.3.17+** (0.4.x recommended for full MCP tool-calling
+support). Open **LM Studio** → **Program** tab (right sidebar) → **Install** →
+**Edit mcp.json**, then add:
+
+```json
+{
+  "mcpServers": {
+    "forensic-rs": {
+      "command": "/path/to/forensic-mcp-server",
+      "args": []
+    }
+  }
+}
+```
+
+> Backslashes in Windows paths must be escaped (`\\`) inside the JSON string.
+
+LM Studio starts the server automatically and shows a notification once it
+connects. For manually exercising the JSON-RPC protocol over stdin/stdout, see
+[Quickstart: Test with MCP Inspector](../03_quickstart.md#step-5-test-with-mcp-inspector).
+
 ### Custom Client
 
 ```rust
