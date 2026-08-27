@@ -1,6 +1,7 @@
 use crate::err::{ForensicError, ForensicResult};
 
 pub mod lz77;
+pub mod lznt1;
 pub mod xpress_huff;
 
 /// https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-xca/a8b7cb0a-92a6-4187-a23b-5e14273b96f8
@@ -33,7 +34,7 @@ pub fn decompress(
 ) -> ForensicResult<()> {
     match algorithm {
         CompressionAlgorithm::CompressionFormatNone => {
-            out_buf.copy_from_slice(in_buf);
+            out_buf.extend_from_slice(in_buf);
         }
         CompressionAlgorithm::CompressionFormatDefault => {
             return Err(ForensicError::Other {
@@ -41,8 +42,8 @@ pub fn decompress(
                 message: "Default compression algorithm not supported".into(),
             })
         }
-        CompressionAlgorithm::CompressionFormatLznt1 => lz77::decompress(in_buf, out_buf)?,
-        CompressionAlgorithm::CompressionFormatXpress => xpress_huff::decompress(in_buf, out_buf)?, // Can't happen
+        CompressionAlgorithm::CompressionFormatLznt1 => lznt1::decompress(in_buf, out_buf)?,
+        CompressionAlgorithm::CompressionFormatXpress => lz77::decompress(in_buf, out_buf)?,
         CompressionAlgorithm::CompressionFormatXpressHuff => {
             xpress_huff::decompress(in_buf, out_buf)?
         }
