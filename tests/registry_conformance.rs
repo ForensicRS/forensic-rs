@@ -76,6 +76,76 @@ fn key_info_counts_match_seeded_data(reg: &TestingRegistry) {
     assert_eq!(info.subkeys, 0);
 }
 
+fn values_into_and_keys_into_match_vec_returning_methods_and_append(reg: &TestingRegistry) {
+    let env_key = reg
+        .key(&format!(r"HKU\{SID}\Volatile Environment"))
+        .unwrap();
+
+    let mut expected_values = env_key.values().unwrap();
+    expected_values.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut expected_keys = env_key.keys().unwrap();
+    expected_keys.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Fresh buffer: `_into` must produce the same set as the `Vec`-returning
+    // method it's built on top of.
+    let mut values_out = Vec::new();
+    env_key.values_into(&mut values_out).unwrap();
+    values_out.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(values_out, expected_values);
+
+    let mut keys_out = Vec::new();
+    env_key.keys_into(&mut keys_out).unwrap();
+    keys_out.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(keys_out.len(), expected_keys.len());
+    for (actual, expected) in keys_out.iter().zip(expected_keys.iter()) {
+        assert_eq!(actual.name, expected.name);
+    }
+
+    // Reused buffer, cleared between calls: repeated enumeration of the same
+    // path must keep producing exactly one set's worth of entries, not
+    // accumulate across calls.
+    values_out.clear();
+    env_key.values_into(&mut values_out).unwrap();
+    assert_eq!(values_out.len(), expected_values.len());
+    values_out.clear();
+    env_key.values_into(&mut values_out).unwrap();
+    assert_eq!(values_out.len(), expected_values.len());
+
+    // Reused buffer, *not* cleared: append semantics mean entries
+    // accumulate — this is the caller's responsibility, not the backend's.
+    let before = values_out.len();
+    env_key.values_into(&mut values_out).unwrap();
+    assert_eq!(values_out.len(), before + expected_values.len());
+}
+
+fn values_iter_and_keys_iter_match_vec_returning_methods(reg: &TestingRegistry) {
+    let env_key = reg
+        .key(&format!(r"HKU\{SID}\Volatile Environment"))
+        .unwrap();
+
+    let mut expected_values = env_key.values().unwrap();
+    expected_values.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut expected_keys = env_key.keys().unwrap();
+    expected_keys.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut values_via_iter: Vec<_> = env_key.values_iter().unwrap().collect();
+    values_via_iter.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(values_via_iter, expected_values);
+
+    let mut keys_via_iter: Vec<_> = env_key.keys_iter().unwrap().collect();
+    keys_via_iter.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(keys_via_iter.len(), expected_keys.len());
+    for (actual, expected) in keys_via_iter.iter().zip(expected_keys.iter()) {
+        assert_eq!(actual.name, expected.name);
+    }
+
+    // A caller can consume just the first entry without materializing the
+    // rest — proves `values_iter`/`keys_iter` are real `Iterator`s, not a
+    // pre-collected `Vec` wearing an `Iterator` interface.
+    assert!(env_key.values_iter().unwrap().next().is_some());
+    assert!(env_key.keys_iter().unwrap().next().is_none()); // no subkeys seeded here
+}
+
 fn root_errors_cleanly_for_unsupported_hive(reg: &TestingRegistry) {
     // `PredefinedHive::DynData` isn't seeded/supported by this testing
     // double — must error, not panic.
@@ -146,6 +216,14 @@ macro_rules! registry_conformance_battery {
             #[test]
             fn key_info_counts_match_seeded_data_test() {
                 key_info_counts_match_seeded_data(&$make);
+            }
+            #[test]
+            fn values_into_and_keys_into_match_vec_returning_methods_and_append_test() {
+                values_into_and_keys_into_match_vec_returning_methods_and_append(&$make);
+            }
+            #[test]
+            fn values_iter_and_keys_iter_match_vec_returning_methods_test() {
+                values_iter_and_keys_iter_match_vec_returning_methods(&$make);
             }
             #[test]
             fn root_errors_cleanly_for_unsupported_hive_test() {

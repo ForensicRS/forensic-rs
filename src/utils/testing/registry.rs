@@ -231,6 +231,17 @@ impl MountedCell {
             None => Vec::new(),
         }
     }
+
+    fn cell_at(&self, path: &str) -> Option<&MountedCell> {
+        if path.is_empty() {
+            return Some(self);
+        }
+        let (first, rest) = match path.split_once(['/', '\\']) {
+            Some(v) => v,
+            None => return self.keys.get(path),
+        };
+        self.keys.get(first)?.cell_at(rest)
+    }
 }
 
 impl TestingRegistry {
@@ -241,6 +252,18 @@ impl TestingRegistry {
             .get(&(key.raw() as isize))
             .cloned()
             .ok_or_else(|| ForensicError::other("TestingRegistry", "unknown handle".to_string()))
+    }
+
+    /// Locates the [`MountedCell`] for `path` without collecting any
+    /// intermediate name list — the direct-reference counterpart to
+    /// [`get_values`](TestingRegistry::get_values)/[`get_keys`](TestingRegistry::get_keys),
+    /// used by the `_into` buffer-reuse overrides below.
+    fn cell_at(&self, path: &str) -> Option<&MountedCell> {
+        let (hkey, rest) = match path.split_once(['/', '\\']) {
+            Some(v) => v,
+            None => (path, ""),
+        };
+        self.cell.get(hkey)?.cell_at(rest)
     }
 }
 
@@ -348,6 +371,56 @@ impl Registry for TestingRegistry {
             // a testing double that has no real last-write time — an
             // explicit `None` is the honest answer.
             last_write_time: None,
+        })
+    }
+
+    fn values_raw_into(
+        &self,
+        key: &RawKey,
+        out: &mut Vec<(String, RegValue)>,
+    ) -> crate::err::ForensicResult<()> {
+        let path = self.path_of_raw(key)?;
+        if let Some(cell) = self.cell_at(&path) {
+            out.extend(cell.values.iter().map(|(name, value)| (name.clone(), value.clone())));
+        }
+        Ok(())
+    }
+
+    fn keys_raw_into(&self, key: &RawKey, out: &mut Vec<KeyEntry>) -> crate::err::ForensicResult<()> {
+        let path = self.path_of_raw(key)?;
+        if let Some(cell) = self.cell_at(&path) {
+            out.extend(cell.keys.keys().map(|name| KeyEntry {
+                name: name.clone(),
+                last_write: None,
+                allocated: true,
+            }));
+        }
+        Ok(())
+    }
+
+    fn values_iter_raw<'a>(
+        &'a self,
+        key: &RawKey,
+    ) -> crate::err::ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + 'a>> {
+        let path = self.path_of_raw(key)?;
+        Ok(match self.cell_at(&path) {
+            Some(cell) => Box::new(cell.values.iter().map(|(name, value)| (name.clone(), value.clone()))),
+            None => Box::new(std::iter::empty()),
+        })
+    }
+
+    fn keys_iter_raw<'a>(
+        &'a self,
+        key: &RawKey,
+    ) -> crate::err::ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
+        let path = self.path_of_raw(key)?;
+        Ok(match self.cell_at(&path) {
+            Some(cell) => Box::new(cell.keys.keys().map(|name| KeyEntry {
+                name: name.clone(),
+                last_write: None,
+                allocated: true,
+            })),
+            None => Box::new(std::iter::empty()),
         })
     }
 }

@@ -287,6 +287,41 @@ impl Registry for AuthorizedRegistryReader {
         self.ensure_target(Some(path))?;
         self.inner.info_raw(inner_key)
     }
+
+    fn values_iter_raw<'a>(
+        &'a self,
+        key: &RawKey,
+    ) -> ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + 'a>> {
+        let (path, inner_iter) = {
+            let paths = self
+                .paths
+                .lock()
+                .expect("AuthorizedRegistryReader paths lock poisoned");
+            let (inner_key, path) = paths.get(&key.raw()).ok_or_else(Self::unknown_handle)?;
+            self.ensure_target(Some(path))?;
+            (path.clone(), self.inner.values_iter_raw(inner_key)?)
+        };
+        Ok(Box::new(inner_iter.filter(move |(name, _)| {
+            let full = Self::child_path(&path, name);
+            self.ensure_target(Some(&full)).is_ok()
+        })))
+    }
+
+    fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
+        let (path, inner_iter) = {
+            let paths = self
+                .paths
+                .lock()
+                .expect("AuthorizedRegistryReader paths lock poisoned");
+            let (inner_key, path) = paths.get(&key.raw()).ok_or_else(Self::unknown_handle)?;
+            self.ensure_target(Some(path))?;
+            (path.clone(), self.inner.keys_iter_raw(inner_key)?)
+        };
+        Ok(Box::new(inner_iter.filter(move |entry| {
+            let full = Self::child_path(&path, &entry.name);
+            self.ensure_target(Some(&full)).is_ok()
+        })))
+    }
 }
 
 /// An event log reader that exposes only caller-authorized channels and records.

@@ -286,6 +286,27 @@ mod tests {
                 ..Default::default()
             })
         }
+        fn values_iter_raw<'a>(
+            &'a self,
+            key: &RawKey,
+        ) -> ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + 'a>> {
+            let path = self.path_of(key)?;
+            Ok(match self.values.get(&path) {
+                Some(values) => Box::new(values.iter().cloned()),
+                None => Box::new(std::iter::empty()),
+            })
+        }
+        fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
+            let path = self.path_of(key)?;
+            Ok(match self.children.get(&path) {
+                Some(children) => Box::new(children.iter().map(|name| KeyEntry {
+                    name: name.clone(),
+                    last_write: None,
+                    allocated: true,
+                })),
+                None => Box::new(std::iter::empty()),
+            })
+        }
     }
 
     #[test]

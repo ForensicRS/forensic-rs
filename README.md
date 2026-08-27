@@ -52,6 +52,10 @@ pub trait Registry: Send + Sync {
     fn values_raw(&self, key: &RawKey) -> ForensicResult<Vec<(String, RegValue)>>;
     fn keys_raw(&self, key: &RawKey) -> ForensicResult<Vec<KeyEntry>>;
     fn info_raw(&self, key: &RawKey) -> ForensicResult<KeyInfo>;
+    // Required: lazy, one-at-a-time enumeration (no default — see the
+    // trait's doc comment for why boxing `values_raw`'s `Vec` wouldn't do).
+    fn values_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + 'a>>;
+    fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>>;
 }
 ```
 

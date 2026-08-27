@@ -94,11 +94,26 @@ pub struct KeyInfo {
 }
 
 /// Everything a backend must implement: seven mechanical, `&self`-based
-/// methods. `Vec`-returning rather than visitor-callback — every backend in
-/// this crate already materializes the full list before a visitor loop
-/// would run anyway, so the callback style buys early-exit ergonomics but no
-/// real streaming savings (see the RFC 0001 implementation plan, workstream
-/// D1, for the full justification).
+/// methods, plus the two required lazy-enumeration methods below, plus two
+/// optional buffer-reuse overrides. `Vec`-returning rather than
+/// visitor-callback for the seven core methods — every backend in this
+/// crate already materializes the full list before a visitor loop would run
+/// anyway, so the callback style buys early-exit ergonomics but no real
+/// streaming savings (see the RFC 0001 implementation plan, workstream D1,
+/// for the full justification).
+///
+/// [`values_raw_into`](Registry::values_raw_into)/[`keys_raw_into`](Registry::keys_raw_into)
+/// are a separate, unrelated concern: they don't avoid materializing a
+/// single enumeration, they let a caller that repeats the *same* enumeration
+/// many times (e.g. across every user hive) reuse one buffer instead of
+/// paying a fresh allocation each time. Both default to calling the `Vec`
+/// method above and extending `out` with the result.
+///
+/// [`values_iter_raw`](Registry::values_iter_raw)/[`keys_iter_raw`](Registry::keys_iter_raw)
+/// are yet another, orthogonal concern: they avoid materializing a *single*
+/// enumeration's result at all, producing entries on demand. Required, not
+/// optional — see their own doc comments for why a default would defeat the
+/// purpose.
 pub trait Registry: Send + Sync {
     fn root(&self, hive: PredefinedHive) -> ForensicResult<RawKey>;
     /// `name` may be a full multi-segment relative path (e.g.
@@ -119,6 +134,52 @@ pub trait Registry: Send + Sync {
     fn as_recovery(&self) -> Option<&dyn RecoverDeleted> {
         None
     }
+
+    /// Like [`values_raw`](Registry::values_raw), but appends into a
+    /// caller-owned buffer instead of allocating a fresh `Vec` on every
+    /// call. Intended for a caller that re-enumerates the same-shaped path
+    /// repeatedly (e.g. inside [`RegistryExt::for_each_user_hive`]) — reusing
+    /// one buffer across iterations turns O(n) allocations into O(1)
+    /// amortized. Appends; does not clear `out` first, so the caller owns
+    /// clearing/capacity. The default delegates to
+    /// [`values_raw`](Registry::values_raw) (no savings) — a backend
+    /// overrides this only if it can actually avoid the intermediate `Vec`.
+    fn values_raw_into(&self, key: &RawKey, out: &mut Vec<(String, RegValue)>) -> ForensicResult<()> {
+        out.extend(self.values_raw(key)?);
+        Ok(())
+    }
+    /// Like [`keys_raw`](Registry::keys_raw); see
+    /// [`values_raw_into`](Registry::values_raw_into) for the buffer-reuse
+    /// contract this follows.
+    fn keys_raw_into(&self, key: &RawKey, out: &mut Vec<KeyEntry>) -> ForensicResult<()> {
+        out.extend(self.keys_raw(key)?);
+        Ok(())
+    }
+
+    /// Lazily enumerates values, one at a time, with no `Vec` of the full
+    /// result ever materialized. `Box<dyn Iterator<...> + '_>` rather than
+    /// `-> impl Iterator` — [`Registry`] must stay object-safe (`dyn
+    /// Registry` is the canonical currency type throughout the framework,
+    /// see [`RegKey`]'s doc comment), and `-> impl Trait` in a trait method
+    /// is not dyn-compatible. A `Box<dyn Iterator>` is still a concrete,
+    /// `Sized` return type, so it costs one small heap allocation for the
+    /// iterator object itself — not one per enumerated item — while letting
+    /// an early-exit consumer (`.find(...)`, `.take(n)`) skip producing
+    /// entries it never looks at.
+    ///
+    /// Deliberately no default (unlike
+    /// [`values_raw_into`](Registry::values_raw_into)): a default that
+    /// boxed `values_raw`'s `Vec` would type-check while silently defeating
+    /// the entire point of this method — every backend must say explicitly
+    /// how it produces entries one at a time.
+    fn values_iter_raw<'a>(
+        &'a self,
+        key: &RawKey,
+    ) -> ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + 'a>>;
+    /// Like [`keys_raw`](Registry::keys_raw); see
+    /// [`values_iter_raw`](Registry::values_iter_raw) for the laziness
+    /// contract, the object-safety rationale, and why there's no default.
+    fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>>;
 }
 
 /// RAII guard for an open registry key, tied to the `&'r T` it was opened
@@ -188,6 +249,26 @@ impl<'r, T: Registry + ?Sized> RegKey<'r, T> {
     }
     pub fn keys(&self) -> ForensicResult<Vec<KeyEntry>> {
         self.reg.keys_raw(&self.raw)
+    }
+    /// Buffer-reuse counterpart to [`values`](RegKey::values) — see
+    /// [`Registry::values_raw_into`] for the contract.
+    pub fn values_into(&self, out: &mut Vec<(String, RegValue)>) -> ForensicResult<()> {
+        self.reg.values_raw_into(&self.raw, out)
+    }
+    /// Buffer-reuse counterpart to [`keys`](RegKey::keys) — see
+    /// [`Registry::keys_raw_into`] for the contract.
+    pub fn keys_into(&self, out: &mut Vec<KeyEntry>) -> ForensicResult<()> {
+        self.reg.keys_raw_into(&self.raw, out)
+    }
+    /// Lazy counterpart to [`values`](RegKey::values) — see
+    /// [`Registry::values_iter_raw`] for the laziness contract.
+    pub fn values_iter(&self) -> ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + '_>> {
+        self.reg.values_iter_raw(&self.raw)
+    }
+    /// Lazy counterpart to [`keys`](RegKey::keys) — see
+    /// [`Registry::keys_iter_raw`] for the laziness contract.
+    pub fn keys_iter(&self) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + '_>> {
+        self.reg.keys_iter_raw(&self.raw)
     }
     pub fn info(&self) -> ForensicResult<KeyInfo> {
         self.reg.info_raw(&self.raw)
@@ -419,6 +500,29 @@ mod tests {
                 ..Default::default()
             })
         }
+
+        fn values_iter_raw<'a>(
+            &'a self,
+            key: &RawKey,
+        ) -> ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + 'a>> {
+            let path = self.path_of(key)?;
+            Ok(match self.tree.get(&path) {
+                Some((values, _)) => Box::new(values.iter().cloned()),
+                None => Box::new(std::iter::empty()),
+            })
+        }
+
+        fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
+            let path = self.path_of(key)?;
+            Ok(match self.tree.get(&path) {
+                Some((_, children)) => Box::new(children.iter().map(|name| KeyEntry {
+                    name: name.clone(),
+                    last_write: None,
+                    allocated: true,
+                })),
+                None => Box::new(std::iter::empty()),
+            })
+        }
     }
 
     fn accepts_dyn_registry(_r: &dyn Registry) {}
@@ -493,6 +597,72 @@ mod tests {
         })
         .unwrap();
         assert_eq!(visited, vec!["S-1-5-21-1".to_string()]);
+    }
+
+    #[test]
+    fn values_into_and_keys_into_default_impl_appends_matching_vec_returning_methods() {
+        let reg = MiniRegistry::new();
+        let key = reg.key("HKLM\\Software").unwrap();
+
+        let expected_values = key.values().unwrap();
+        let expected_keys = key.keys().unwrap();
+
+        let mut values_out = Vec::new();
+        key.values_into(&mut values_out).unwrap();
+        assert_eq!(values_out, expected_values);
+
+        let mut keys_out = Vec::new();
+        key.keys_into(&mut keys_out).unwrap();
+        assert_eq!(keys_out.len(), expected_keys.len());
+        assert_eq!(keys_out[0].name, expected_keys[0].name);
+    }
+
+    #[test]
+    fn values_into_and_keys_into_append_rather_than_clear() {
+        let reg = MiniRegistry::new();
+        let key = reg.key("HKLM\\Software").unwrap();
+
+        let mut values_out = vec![("Sentinel".to_string(), RegValue::DWord(1))];
+        key.values_into(&mut values_out).unwrap();
+        assert_eq!(values_out[0], ("Sentinel".to_string(), RegValue::DWord(1)));
+        assert_eq!(values_out.len(), 1 + key.values().unwrap().len());
+
+        let mut keys_out = vec![KeyEntry {
+            name: "Sentinel".to_string(),
+            last_write: None,
+            allocated: true,
+        }];
+        key.keys_into(&mut keys_out).unwrap();
+        assert_eq!(keys_out[0].name, "Sentinel");
+        assert_eq!(keys_out.len(), 1 + key.keys().unwrap().len());
+    }
+
+    #[test]
+    fn values_iter_and_keys_iter_yield_same_entries_as_vec_returning_methods() {
+        let reg = MiniRegistry::new();
+        let key = reg.key("HKLM\\Software").unwrap();
+
+        let expected_values = key.values().unwrap();
+        let expected_keys = key.keys().unwrap();
+
+        let values_via_iter: Vec<_> = key.values_iter().unwrap().collect();
+        assert_eq!(values_via_iter, expected_values);
+
+        let keys_via_iter: Vec<_> = key.keys_iter().unwrap().collect();
+        assert_eq!(keys_via_iter.len(), expected_keys.len());
+        assert_eq!(keys_via_iter[0].name, expected_keys[0].name);
+    }
+
+    #[test]
+    fn values_iter_supports_partial_consumption() {
+        let reg = MiniRegistry::new();
+        let key = reg.key("HKLM\\Software").unwrap();
+        // `values_iter` returns a real `Iterator`, so a caller can take just
+        // the first `n` entries via `.next()`/`.take(n)` without collecting
+        // into a `Vec` first.
+        let mut iter = key.values_iter().unwrap();
+        assert_eq!(iter.next(), Some(("InstallDate".to_string(), RegValue::DWord(20240101))));
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
