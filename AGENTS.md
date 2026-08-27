@@ -1,4 +1,4 @@
-# GitHub Copilot Instructions for forensic-rs
+# forensic-rs Agent Guide
 
 ## Project Overview
 
@@ -12,11 +12,11 @@ The framework achieves this through **trait-based polymorphism** across three ar
 Both the Registry and Filesystem domains follow the same four-layer pattern:
 1. **Core** — a minimal, mechanical, `&self`-based, `Send + Sync` trait implemented by backends (`Registry`, `FileSystem`). Object-safe so `Arc<dyn Registry>`/`Arc<dyn FileSystem>` can be shared across worker threads.
 2. **Ext** — a blanket-impl'd trait with the ergonomic convenience API callers actually use (`RegistryExt::key()`/`value()`, `FileSystemExt::read_all()`/`exists()`/`walk()`/`glob()`). A backend author never implements these directly.
-3. **Capability** — an authorization-checking wrapper around a core trait object (`AuthorizedRegistryReader`, `AuthorizedVirtualFileSystem`) used by the MCP capability layer to enforce per-caller path/source grants.
+3. **Capability** — an authorization-checking wrapper around a core trait object (`AuthorizedRegistryReader`, `AuthorizedVirtualFileSystem`, in `src/capabilities/source_guards.rs`) used by the MCP capability layer (`src/capabilities/`) to enforce per-caller path/source grants.
 4. **Factory** — opens a derived reader from evidence discovered through the filesystem (`RegistryReaderFactory`, `ForensicDbFactory`, `EventLogReaderFactory`), taking `(filesystem: Arc<dyn FileSystem>, path: &FPath)`.
 
-**Current version**: 0.14.0  
-**Repository**: https://github.com/ForensicRS/forensic-rs  
+**Current version**: 0.14.0
+**Repository**: https://github.com/ForensicRS/forensic-rs
 **License**: MIT
 
 ---
@@ -35,6 +35,37 @@ src/
     factories.rs      — ForensicDbFactory, EventLogReaderFactory, RegistryReaderFactory (open a derived reader from an Arc<dyn FileSystem> + path)
     registry/         — mod.rs: RegValue (13 variants), RegValueRef, RegistryBuffer; raw.rs: Registry, RegistryExt, RegKey, RawKey, PredefinedHive; windows.rs: system_root(), users(), build() free functions
       extra/          — Registry helpers (e.g., get_env_vars_of_users())
+  capabilities/       — MCP-facing authorization layer: gate access to sources, expose them as discoverable tools/resources
+    access.rs         — AccessContext, AccessKind, AccessRequest, AccessDecision, AccessAuditEvent, AccessAuditSink, AccessPolicy, AuditedAccessPolicy, AllowAllPolicy, DenyAllPolicy
+    source_guards.rs  — AuthorizedVirtualFileSystem, AuthorizedRegistryReader, AuthorizedEventLogReader, AuthorizedForensicDb (path/policy-checking wrappers around the core source traits)
+    registry.rs       — CapabilityRegistry, ScopedCapabilityRegistry (caller-scoped discovery/invocation of tools and resource providers)
+    tools.rs          — ForensicTool, ToolDescriptor, ToolHints, ToolContent, ToolResult, InvocationContext, ProgressReporter, CapabilityError
+    resources.rs      — ResourceProvider, ResourceId, ResourceEntry, ResourceMetadata, ResourceContent, ResourceKind, Page/PageRequest
+    schema.rs         — ValueType, ValueSchema, ObjectSchema (native JSON-Schema-like model for tool/resource inputs and outputs)
+    value.rs          — CapabilityValue (lossless, protocol-neutral value type exchanged by tools/resource providers)
+    pipeline.rs       — PipelineSourceKind, AccessRequirements, AuthorizedSourceFactory, PipelineTaskFactory, PipelineTaskTool (authorization prerequisites for wiring an Analyzer into a capability tool)
+    bridge_adapter.rs — BridgeResourceProvider (adapts a legacy `ForensicProvider` bridge provider to the protocol-neutral ResourceProvider API)
+  pipeline/           — Triage orchestration: run Analyzers/Enrichers over evidence and route Findings to sinks
+    finding.rs        — Finding, FindingSeverity, FindingCategory, AnomalyTally
+    traits.rs         — Analyzer, Enricher, TriageSink
+    mod.rs            — TriagePipeline, TriagePipelineBuilder, ErrorAction, PipelineResult (serial pipeline orchestration/routing)
+    parallel.rs       — ParallelPipeline, ParallelPipelineBuilder, AnalysisModule, PipelineEvent, TaskStats (thread-pool parallel triage pipeline)
+    context.rs        — TriageContext (shared run context: host/tenant/artifact metadata, shared KV store, ProvenanceStore)
+    sources.rs        — TriageSources, TriageSourcesBuilder (VFS/registry evidence sources available to parsers)
+    sinks.rs          — TimelineSink, FindingCollector, JsonlTimelineSink, JsonlFindingSink
+  provenance/         — Where a value came from and how much to trust it — tracked separately from the value itself
+    model.rs          — Acquisition, Recovery, Locus, SourceKey, MergeReason, DerivedFrom, Provenance, ProvenanceSnapshot
+    anomalies.rs       — AnomalyFlags, AnomalyDetail, Anomalies (instance-level, bitflag-based anomaly tracking — "divergence is evidence, not error")
+    confidence.rs      — Confidence (trust level computed from a provenance chain)
+    parsed.rs          — Parsed<T> (value + Anomalies + ProvenanceId container)
+    tracked.rs         — Tracked<T> (field-level provenance for values whose derivation differs from their parent artifact, e.g. a timestamp normalized from a different source)
+    store.rs           — ProvenanceStore, SourceHandle (interning arena; mint/derive/merge API)
+    ids.rs             — ProvenanceId, SourceId (opaque 4-byte interned handles into a ProvenanceStore)
+    serde_support.rs   — ProvenanceSideTable, ExpandedProvenance, expand() (serde-feature-gated provenance-aware serialization)
+  parsing/            — Byte-level parsing helpers shared by binary artifact parsers
+    reader.rs         — ByteReader (zero-copy, position-tracking cursor over &[u8])
+    from_bytes.rs      — FromBytes (raw-bytes-to-typed-struct trait)
+    mod.rs             — read_to_reader()
   bridge/             — Multi-provider UI bridge (channel-based, thread-safe)
     mod.rs            — CancellationToken, BridgeValue, DataOrigin, NodeType, NodeEntry, BridgeResponse, ForensicProvider trait
     client.rs         — BridgeClient: Clone+Send handle; list_providers, children, read, metadata, shutdown
@@ -55,7 +86,9 @@ src/
     ip.rs             — Ip enum (V4/V6), IP parsing and utilities
     utils.rs          — IP parsing helpers (ipv4_from_str, is_local_ipv4, etc.)
   utils/
-    time.rs           — Filetime, ForensicTimestamp, WinFiletime, UnixTimestamp, filetime_to_unix_timestamp
+    time.rs           — Filetime, WinFiletime, UnixTimestamp, filetime_to_unix_timestamp; re-exports ForensicTimestamp and friends from time/timestamp128.rs
+    time/
+      timestamp128.rs — ForensicTimestamp (alias Timestamp128): 16-byte nanosecond-precision timestamp with TimestampPrecision, TimestampSource, TimestampFlags (see ForensicTimestamp section below)
     unpack.rs         — Binary unpacking helpers (u16/u32/u64_at_pos, safe variants)
     testing/          — Test doubles implementing the crate's traits: TestingRegistry (Registry), InMemoryVirtualFileSystem (FileSystem), TestingEventLogReader, InMemoryForensicDb, TestParserBuilder, TestingProviderHook, testing factory wrappers, basic_event_log(), testing_logger_dummy()
     win/
@@ -98,14 +131,17 @@ Key prelude exports:
 - `EventLogReader`, `EventLogIterator`, `EventLogQuery`, `EventRecord`, `EventLevel` — event logs
 - `BridgeClient`, `ForensicBridge`, `ForensicBridgeBuilder` — bridge server/client
 - `ForensicProvider`, `BridgeValue`, `BridgeResponse`, `CancellationToken`, `DataOrigin`, `NodeEntry`, `NodeType` — bridge types
-- `RegistryProvider`, `VfsProvider`, `EventLogProvider`, `DatabaseProvider` — bridge provider impls
 - `ProviderHook` — bridge postprocessing hook trait
 - `Artifact` — artifact type categorization
 - `compact_str::CompactString` — inline-SSO string, re-exported; use `CompactString::const_new(...)` for `'static` literals to keep them allocation-free
-- `Filetime`, `ForensicTimestamp`, `WinFiletime`, `UnixTimestamp`, `filetime_to_unix_timestamp` — time types
+- `Filetime`, `ForensicTimestamp`, `Timestamp128`, `TimestampPrecision`, `TimestampSource`, `TimestampFlags`, `WinFiletime`, `UnixTimestamp`, `filetime_to_unix_timestamp` — time types (`src/utils/time.rs` and `src/utils/time/timestamp128.rs`; see ForensicTimestamp section below)
 - Logging macros: `error!`, `warn!`, `info!`, `debug!`, `trace!`, `log!` — engineer-facing diagnostics, not forensic alerts
-- `Finding`, `FindingSeverity`, `FindingCategory` — structured, severity-ranked forensic alerts, produced by an `Analyzer` and routed to every `TriageSink`
-- `Anomalies`, `AnomalyFlags`, `AnomalyDetail`, `Parsed<T>` — cheap, value-carried divergence tracking for parsers ("divergence is evidence, not error")
+- `Finding`, `FindingSeverity`, `FindingCategory` — structured, severity-ranked forensic alerts (`src/pipeline/finding.rs`), produced by an `Analyzer` and routed to every `TriageSink`
+- `TriagePipeline`, `TriagePipelineBuilder`, `ParallelPipeline`, `Analyzer`, `Enricher`, `TriageSink`, `TriageContext`, `TriageSources` — pipeline orchestration (`src/pipeline/`): run `Analyzer`s/`Enricher`s over `TriageSources`, route `Finding`s to `TriageSink`s
+- `Anomalies`, `AnomalyFlags`, `AnomalyDetail`, `Parsed<T>` — cheap, value-carried divergence tracking for parsers (`src/provenance/`; "divergence is evidence, not error")
+- `ProvenanceStore`, `ProvenanceId`, `Provenance`, `Confidence`, `Tracked<T>` — provenance/lineage tracking (`src/provenance/`): where a value came from and how much to trust it
+- `ForensicTool`, `CapabilityRegistry`, `ResourceProvider`, `AccessPolicy`, `ValueSchema`, `CapabilityValue`, `AuthorizedVirtualFileSystem`, `AuthorizedRegistryReader` — MCP capability layer (`src/capabilities/`): authorization, and exposing sources as discoverable tools/resources
+- `FromBytes`, `ByteReader`, `read_to_reader()` — zero-copy byte-cursor parsing helpers for binary artifact formats (`src/parsing/`)
 
 **Findings vs. logs vs. errors**: if an analyst would want it in the case report, it's a `Finding` (or an `Anomaly` on the value it describes, folded in via `ForensicData::set_parsed`). If only an engineer debugging the tool wants it, it's a log. If the tool can't proceed, it's a `ForensicError`. There is no fourth option — do not add a new notification/alert side-channel; extend `Finding`/`Anomalies` instead.
 
@@ -413,6 +449,8 @@ use forensic_rs::utils::unpack::{u32_at_pos, u64_at_pos};
 let value = u32_at_pos(&buffer, offset)?;  // safe, returns ForensicResult
 ```
 
+For structured binary parsing, prefer `FromBytes` + `ByteReader` (`src/parsing/`) over raw offset arithmetic when a format has more than a couple of fields — the cursor tracks position for you and composes across nested structs.
+
 ---
 
 ## ECS Dictionary (`src/dictionary.rs`)
@@ -450,7 +488,7 @@ GitHub Actions runs `cargo test --verbose` on **ubuntu-latest**, **windows-lates
 
 ### Commit Message Format
 
-Following the project's [CONTRIBUTING.md](../CONTRIBUTING.md):
+Following the project's [CONTRIBUTING.md](CONTRIBUTING.md):
 
 1. **First line**: `<subcrate>: <short description>` (≤ 50 chars, lowercase except proper nouns/code)
    - `forensic-rs: add lznt1 decompression support`
@@ -473,37 +511,43 @@ When deprecating API:
 
 ## ForensicTimestamp
 
-`ForensicTimestamp` is a compact, bitpacked u64 type (8 bytes) with microsecond precision and a year range of 0–4095. It provides a format-agnostic timestamp for forensic artifacts:
-
-**Bit layout**: `year(12)|month(4)|day(5)|hour(5)|minute(6)|second(6)|micros(22)|reserved(4)` = 64 bits
+`ForensicTimestamp` (type alias `Timestamp128`, defined in `src/utils/time/timestamp128.rs`) is a validated, nanosecond-precision forensic timestamp: a 16-byte `#[repr(C, align(16))]` struct (`utc_seconds: i64`, `nanoseconds: u32`, `utc_offset_minutes: i16`, `flags: TimestampFlags`). The stored instant is always UTC — the optional offset only records source display context and never affects chronological comparison. `TimestampFlags` packs a `TimestampPrecision` (`Unknown`/`Days`/`Seconds`/`Milliseconds`/`Microseconds`/`HundredNanoseconds`/`Nanoseconds`) and a `TimestampSource` (`Unknown`/`Unix`/`WindowsFiletime`/`WebKit`/`OleAutomation`/`HfsPlus`/`Cocoa`/`Calendar`/`SystemTime`/`ParsedText`/`Derived`), plus marker bits (`APPROXIMATE`, `NORMALIZED`) — so every timestamp carries how precise it is and where it came from, not just an instant.
 
 ```rust
 use forensic_rs::prelude::*;
 
-// Constructors for common forensic timestamp formats
-let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000);
-let ts = ForensicTimestamp::from_win_filetime(133514430235959706); // Windows FILETIME
+// Infallible constructors for common forensic timestamp formats
 let ts = ForensicTimestamp::from_unix_secs(1706969423);
 let ts = ForensicTimestamp::from_unix_millis(1706969423596);
 let ts = ForensicTimestamp::from_unix_micros(1706969423596123);
-let ts = ForensicTimestamp::from_ole_date(25569.0);               // OLE Automation
+let ts = ForensicTimestamp::from_win_filetime(133514430235959706); // Windows FILETIME
 let ts = ForensicTimestamp::from_webkit(13351443023595970);       // Chrome/WebKit
 let ts = ForensicTimestamp::from_hfs_plus(3_789_814_223);         // macOS HFS+
-let ts = ForensicTimestamp::from_cocoa(728_662_223.0);            // macOS/iOS Cocoa
+
+// Fallible constructors return ForensicResult<Self> — the input can be out of range
+let ts = ForensicTimestamp::try_from_unix_nanos(1_706_969_423_596_123_000)?;
+let ts = ForensicTimestamp::try_from_ole_date(25569.0)?;                        // OLE Automation
+let ts = ForensicTimestamp::try_from_cocoa(728_662_223.0)?;                     // macOS/iOS Cocoa
+let ts = ForensicTimestamp::with_ymd_and_hms(2024, 2, 3, 14, 10, 23, 596_000)?; // -> ForensicResult<Self>
 
 // Accessors
 ts.year(); ts.month(); ts.day(); ts.hour(); ts.minute(); ts.second();
-ts.milliseconds(); ts.microseconds();
+ts.milliseconds(); ts.microseconds(); ts.utc_offset_minutes(); ts.flags();
 
 // Output conversions
-ts.to_unix_secs(); ts.to_unix_millis(); ts.to_unix_micros(); ts.to_win_filetime();
+ts.to_unix_secs(); ts.to_unix_millis(); ts.to_unix_micros();
+ts.to_win_filetime()?; // -> ForensicResult<u64>; fails if the instant predates the FILETIME epoch
 
-// Bidirectional conversion with Filetime
-let ft: Filetime = ts.into();
-let ts2: ForensicTimestamp = ft.into();
+// One-directional conversion from the legacy Filetime type — Filetime -> ForensicTimestamp only,
+// there is no reverse `From<ForensicTimestamp> for Filetime`
+let ts: ForensicTimestamp = my_filetime.into();
+
+// Fixed-width (de)serialization for on-disk/wire formats
+let bytes: [u8; 16] = ts.to_le_bytes();
+let ts2 = ForensicTimestamp::from_le_bytes(bytes)?;
 ```
 
-`ForensicTimestamp` implements `Display` (DD-MM-YYYY HH:MM:SS.mmm), `Ord`, `Add<Duration>`, `Sub<Duration>`, and serde `Serialize`/`Deserialize` (feature-gated).
+`ForensicTimestamp` implements `Display` (`"{utc_seconds}.{nanoseconds:09} UTC"`), `Ord`/`PartialOrd` (instant-only comparison — offset and flags are ignored), `Add<Duration>`/`Sub<Duration>` (saturating), and serde `Serialize`/`Deserialize` (feature-gated). Prefer the `try_*` constructors at call sites that must reject out-of-range input rather than silently clamp or panic.
 
 ---
 
