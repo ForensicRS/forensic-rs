@@ -43,7 +43,7 @@ impl ArtifactParser for AutorunParser {
         sources: &'a mut TriageSources,
     ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
         let registry = sources.registry()
-            .ok_or(ForensicError::missing_data("Registry source required", SCow::Borrowed("AutorunParser")))?;
+            .ok_or(ForensicError::missing_data("Registry source required", CompactString::const_new("AutorunParser")))?;
         let users = windows::users(registry.as_ref())?;
         let mut records = Vec::new();
 

@@ -1301,7 +1301,7 @@ mod registry_tests {
             } else {
                 Err(ForensicError::missing_data(
                     "TestDatabase",
-                    "missing table".into(),
+                    compact_str::CompactString::const_new("missing table"),
                 ))
             }
         }

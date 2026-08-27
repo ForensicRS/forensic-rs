@@ -203,7 +203,7 @@ impl TryInto<i64> for ForensicValue {
             _ => Err(ForensicError::cast_error(
                 "ForensicValue",
                 "i64",
-                "Incompatible value type".into(),
+                compact_str::CompactString::const_new("Incompatible value type"),
             )),
         }
     }
@@ -220,7 +220,7 @@ impl TryInto<f64> for ForensicValue {
             _ => Err(ForensicError::cast_error(
                 "ForensicValue",
                 "f64",
-                "Incompatible value type".into(),
+                compact_str::CompactString::const_new("Incompatible value type"),
             )),
         }
     }
@@ -235,7 +235,7 @@ impl TryInto<Vec<u8>> for ForensicValue {
             _ => Err(ForensicError::cast_error(
                 "ForensicValue",
                 "Vec<u8>",
-                "Incompatible value type".into(),
+                compact_str::CompactString::const_new("Incompatible value type"),
             )),
         }
     }

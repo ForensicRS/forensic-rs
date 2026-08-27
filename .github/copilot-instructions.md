@@ -66,9 +66,8 @@ src/
         lz77.rs       — LZ77 and LZNT1 decompression
         xpress_huff.rs — LZ77+Huffman (Xpress Huffman) decompression
   data.rs             — ForensicData container (BTreeMap<Text, Field> + Artifact)
-  err.rs              — ForensicError, ForensicResult, validation macros
+  err.rs              — ForensicError, ForensicResult, validation macros (uses compact_str::CompactString)
   artifact.rs         — Artifact enum, OS-specific artifact type enums
-  scow.rs             — SCow: Static Copy-On-Write string type
   context.rs          — ForensicContext: thread-local artifact/host/tenant metadata
   logging/            — Logger, Level, channel-based log macros (error!, warn!, info!, debug!, trace!) — engineer-facing diagnostics only, not forensic alerts (see Findings vs. logs vs. errors below)
   channel.rs          — Underlying channel for logging
@@ -102,7 +101,7 @@ Key prelude exports:
 - `RegistryProvider`, `VfsProvider`, `EventLogProvider`, `DatabaseProvider` — bridge provider impls
 - `ProviderHook` — bridge postprocessing hook trait
 - `Artifact` — artifact type categorization
-- `SCow` — static copy-on-write string
+- `compact_str::CompactString` — inline-SSO string, re-exported; use `CompactString::const_new(...)` for `'static` literals to keep them allocation-free
 - `Filetime`, `ForensicTimestamp`, `WinFiletime`, `UnixTimestamp`, `filetime_to_unix_timestamp` — time types
 - Logging macros: `error!`, `warn!`, `info!`, `debug!`, `trace!`, `log!` — engineer-facing diagnostics, not forensic alerts
 - `Finding`, `FindingSeverity`, `FindingCategory` — structured, severity-ranked forensic alerts, produced by an `Analyzer` and routed to every `TriageSink`
@@ -156,10 +155,11 @@ ForensicError::missing_str("description")    // DEPRECATED since 0.14.0 — use 
 let name: Text = Text::Borrowed("process_name");
 let name: Text = Text::Owned(runtime_string);
 
-// SCow: Static Copy-On-Write for error messages and other metadata.
-// Avoids heap allocation for compile-time constant strings:
-let msg = SCow::Borrowed("file not found");
-let msg = SCow::Owned(format!("key '{}' not found", key_name));
+// CompactString: for error messages and other metadata.
+// Use const_new for 'static literals (zero-cost, any length);
+// .into()/From for dynamic content (inline up to 24 bytes, heap beyond):
+let msg = CompactString::const_new("file not found");
+let msg = CompactString::from(format!("key '{}' not found", key_name));
 ```
 
 ### Data Containers

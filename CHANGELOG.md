@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Categorized `ForensicError` variants: `Buffer`, `Format`, `Compression`, `DataAccess`, `Registry`, `Cast`, `Timestamp`, `Io`, `Other`
 - Validation macros for ergonomic error construction: `ensure_buffer_size!`, `ensure_buffer_range!`, `ensure_format!`, `ensure_min_length!`, `ensure_max_length!`, `ensure_version!`, `compression_error!`, `invalid_offset!`, `missing_data!`
 - `registry_key_not_found!` and `registry_value_not_found!` macros for registry-specific errors
-- `SCow` type (`src/scow.rs`) for static copy-on-write strings, used in error messages to avoid heap allocations on compile-time constants
+- `compact_str::CompactString` used throughout error messages and metadata to avoid heap allocations for both short strings (inline storage) and `'static` strings of any length (via `CompactString::const_new`)
 - Protocol-neutral capability API (`src/capabilities/`) for external MCP server integrations: caller-scoped tool and resource discovery, typed `CapabilityValue` inputs and outputs, native schemas, progress reporting, cancellation, and sanitized public errors.
 - Feature-gated serde support for `CapabilityValue`, native schemas, tool descriptors, tool content/results, progress updates, and capability errors, with JSON round-trip compatibility tests for adapter-owned wire messages.
 - Capability access controls: `AccessContext`, `AccessPolicy`, `AuditedAccessPolicy`, trusted `AccessAuditSink` records, execution-plan authorization, and path/channel/table/row guards for VFS, Registry, Event Log, and Database sources.

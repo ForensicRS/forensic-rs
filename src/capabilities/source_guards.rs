@@ -851,7 +851,7 @@ mod tests {
             if index != 0 {
                 return Err(ForensicError::missing_data(
                     "column",
-                    "missing column".into(),
+                    compact_str::CompactString::const_new("missing column"),
                 ));
             }
             let value = self

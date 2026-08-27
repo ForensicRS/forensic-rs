@@ -8,19 +8,20 @@ pub mod utils;
 
 pub use ip::Ip;
 
+use compact_str::CompactString;
+
 use crate::err::ForensicError;
-use crate::scow::SCow;
 use crate::utils::time::{Filetime, ForensicTimestamp};
 
 fn field_cast_err(from: &'static str, to: &'static str) -> ForensicError {
-    ForensicError::cast_error(from, to, SCow::Borrowed("incompatible field variant"))
+    ForensicError::cast_error(from, to, CompactString::const_new("incompatible field variant"))
 }
 
 fn field_range_err(from: &'static str, to: &'static str) -> ForensicError {
     ForensicError::cast_error(
         from,
         to,
-        SCow::Borrowed("value is outside the target range"),
+        CompactString::const_new("value is outside the target range"),
     )
 }
 

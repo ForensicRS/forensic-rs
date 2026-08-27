@@ -261,7 +261,7 @@ use forensic_rs::prelude::*;
 
 fn analyze_prefetch(sources: &TriageSources) -> ForensicResult<Vec<PrefetchFile>> {
     let vfs = sources.vfs().ok_or_else(||
-        ForensicError::missing_data("prefetch", SCow::Borrowed("PrefetchTool"))
+        ForensicError::missing_data("prefetch", CompactString::const_new("PrefetchTool"))
     )?;
 
     let prefetch_dir = FPath::new(r"C:\Windows\Prefetch");

@@ -294,6 +294,7 @@ impl TriagePipeline {
 
 #[cfg(test)]
 mod tests {
+    use compact_str::CompactString;
     use super::*;
     use crate::{
         artifact::{Artifact, RegistryArtifacts, WindowsArtifacts, WindowsEvents},
@@ -302,7 +303,6 @@ mod tests {
         field::{Field, Text},
         pipeline::finding::{Finding, FindingCategory, FindingSeverity},
         pipeline::sinks::{FindingCollector, TimelineSink},
-        scow::SCow,
         utils::testing::{test_provenance_id, TestParserBuilder, TestingRegistry},
     };
 
@@ -511,7 +511,7 @@ mod tests {
             Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
             Err(ForensicError::missing_data(
                 "test missing data",
-                SCow::Borrowed("pipeline test"),
+                CompactString::const_new("pipeline test"),
             )),
             Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
         ];
@@ -532,7 +532,7 @@ mod tests {
             Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
             Err(ForensicError::missing_data(
                 "halt test",
-                SCow::Borrowed("pipeline test"),
+                CompactString::const_new("pipeline test"),
             )),
             Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
         ];

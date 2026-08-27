@@ -6,7 +6,7 @@ The error system is optimized for memory efficiency and provides rich contextual
 
 ## Design Principles
 
-1. **Memory Efficient**: Uses `SCow` (Static Copy-On-Write) to minimize allocations
+1. **Memory Efficient**: Uses `CompactString` to avoid heap allocations for short and/or `'static` strings
 2. **Contextual**: Each error provides detailed information about what went wrong and where
 3. **Categorized**: Errors are grouped by their domain (Buffer, Format, Compression, etc.)
 4. **Type Safe**: Strongly typed error variants prevent misuse
@@ -267,7 +267,9 @@ macro_rules! registry_value_not_found {
     };
 }
 
-use crate::{scow::SCow, traits::registry::PredefinedHive};
+use compact_str::CompactString;
+
+use crate::traits::registry::PredefinedHive;
 
 /// The main error type for forensic artifact parsing operations.
 ///
@@ -345,8 +347,8 @@ use crate::{scow::SCow, traits::registry::PredefinedHive};
 /// fn get_install_date(reg: &Registry) -> ForensicResult<u32> {
 ///     reg.get_value("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "InstallDate")
 ///         .ok_or_else(|| ForensicError::registry_value_not_found(
-///             "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion".into(),
-///             "InstallDate".into()
+///             Some(CompactString::const_new("HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion")),
+///             CompactString::const_new("InstallDate")
 ///         ))
 /// }
 /// ```
@@ -396,7 +398,7 @@ pub enum ForensicError {
         /// The underlying I/O error kind
         kind: std::io::ErrorKind,
         /// Additional context about the operation that failed
-        context: SCow,
+        context: CompactString,
         /// Original I/O error, when one is available.
         source: Option<std::sync::Arc<std::io::Error>>,
     },
@@ -565,7 +567,7 @@ impl std::fmt::Display for BufferError {
 ///     let checksum_pos = 64;
 ///     if data.len() < checksum_pos + 4 {
 ///         return Err(ForensicError::format_corrupted("PE", checksum_pos as u64,
-///             "Missing checksum field".into()));
+///             CompactString::const_new("Missing checksum field")));
 ///     }
 ///     
 ///     Ok(PEHeader { /* ... */ })
@@ -581,7 +583,7 @@ pub enum FormatError {
         /// Type of artifact being parsed (e.g., "PE", "registry_hive", "prefetch")
         artifact_type: &'static str,
         /// Detailed description of what validation failed
-        reason: SCow,
+        reason: CompactString,
     },
 
     /// File version doesn't match expectations
@@ -605,7 +607,7 @@ pub enum FormatError {
         /// The expected magic bytes/signature
         expected: &'static str,
         /// The actual magic bytes found in the file
-        found: SCow,
+        found: CompactString,
     },
 
     /// Data appears corrupted at a specific location
@@ -617,7 +619,7 @@ pub enum FormatError {
         /// Byte position where corruption was detected
         position: u64,
         /// Description of the corruption detected
-        reason: SCow,
+        reason: CompactString,
     },
 }
 
@@ -705,7 +707,7 @@ pub enum CompressionError {
         /// Name of the compression algorithm (e.g., "LZNT1", "Xpress", "XpressHuff")
         algorithm: &'static str,
         /// Detailed description of the algorithm error
-        reason: SCow,
+        reason: CompactString,
     },
 
     /// Invalid offset encountered during compression operations
@@ -809,13 +811,13 @@ impl std::fmt::Display for CompressionError {
 ///     
 ///     std::fs::read(path)
 ///         .map_err(|_| ForensicError::access_denied(path.into(),
-///             "Permission denied".into()))
+///             CompactString::const_new("Permission denied")))
 /// }
 ///
 /// fn parse_directory_entries(entries: &[u8]) -> ForensicResult<Vec<Entry>> {
 ///     if entries.is_empty() {
 ///         return Err(ForensicError::missing_data("directory_entries",
-///             "Directory contains no entries".into()));
+///             CompactString::const_new("Directory contains no entries")));
 ///     }
 ///     // ... parsing logic
 /// }
@@ -830,7 +832,7 @@ pub enum DataAccessError {
         /// Type of data that was expected (e.g., "file", "registry_key", "metadata")
         data_type: &'static str,
         /// Additional context about what was missing and where
-        context: SCow,
+        context: CompactString,
     },
 
     /// File size exceeds allowed limits
@@ -858,9 +860,9 @@ pub enum DataAccessError {
     /// Used when permission issues prevent accessing a resource.
     AccessDenied {
         /// The resource that couldn't be accessed
-        resource: SCow,
+        resource: CompactString,
         /// Additional context about the access denial
-        context: SCow,
+        context: CompactString,
     },
 
     /// No more data available for iteration
@@ -941,7 +943,7 @@ pub enum RegistryError {
         /// The registry hive key (e.g., HKEY_LOCAL_MACHINE)
         key: PredefinedHive,
         /// Optional sub-path within the hive
-        key_path: Option<SCow>,
+        key_path: Option<CompactString>,
     },
 
     /// Registry value not found within a key
@@ -951,9 +953,9 @@ pub enum RegistryError {
         /// The registry hive key where the value was expected
         key: PredefinedHive,
         /// Optional sub-path within the hive  
-        key_path: Option<SCow>,
+        key_path: Option<CompactString>,
         /// Name of the value that was not found
-        value_name: SCow,
+        value_name: CompactString,
     },
 
     /// Registry value has wrong data type
@@ -963,7 +965,7 @@ pub enum RegistryError {
         /// The expected registry value type (e.g., "REG_DWORD", "REG_SZ")
         expected: &'static str,
         /// The actual type found in the registry
-        found: SCow,
+        found: CompactString,
     },
 
     /// Invalid registry handle encountered
@@ -1075,7 +1077,7 @@ pub enum CastError {
         /// The target type name
         to_type: &'static str,
         /// Explanation of why the conversion failed
-        reason: SCow,
+        reason: CompactString,
     },
 
     /// Value is outside the valid range for the target type
@@ -1083,7 +1085,7 @@ pub enum CastError {
     /// Used when the value could theoretically be converted but is too large/small.
     ValueOutOfRange {
         /// The value that couldn't be converted (as string)
-        value: SCow,
+        value: CompactString,
         /// The target type that couldn't accommodate the value
         target_type: &'static str,
     },
@@ -1130,7 +1132,7 @@ impl std::fmt::Display for CastError {
 ///     
 ///     if filetime < filetime_epoch {
 ///         return Err(ForensicError::illegal_timestamp(filetime,
-///             "FILETIME before epoch (1601-01-01)".into()));
+///             CompactString::const_new("FILETIME before epoch (1601-01-01)")));
 ///     }
 ///     
 ///     let unix_timestamp = (filetime - filetime_epoch) / 10_000_000;
@@ -1152,7 +1154,7 @@ pub enum TimestampError {
         /// The invalid timestamp value
         timestamp: u64,
         /// Explanation of why the timestamp is invalid
-        reason: SCow,
+        reason: CompactString,
     },
 
     /// Timestamp is outside acceptable range
@@ -1314,7 +1316,7 @@ impl ForensicError {
     ///     Ok(())
     /// }
     /// ```
-    pub fn invalid_format(artifact_type: &'static str, reason: impl Into<SCow>) -> Self {
+    pub fn invalid_format(artifact_type: &'static str, reason: impl Into<CompactString>) -> Self {
         Self::Format(FormatError::Invalid {
             artifact_type,
             reason: reason.into(),
@@ -1374,7 +1376,7 @@ impl ForensicError {
     pub fn invalid_magic(
         artifact_type: &'static str,
         expected: &'static str,
-        found: impl Into<SCow>,
+        found: impl Into<CompactString>,
     ) -> Self {
         Self::Format(FormatError::InvalidMagic {
             artifact_type,
@@ -1399,12 +1401,12 @@ impl ForensicError {
     /// fn parse_section_table(data: &[u8], offset: u64) -> ForensicResult<Vec<Section>> {
     ///     if (offset as usize + 40) > data.len() {
     ///         return Err(ForensicError::format_corrupted("PE", offset,
-    ///             "Section table extends beyond file".into()));
+    ///             CompactString::const_new("Section table extends beyond file")));
     ///     }
     ///     // ... parse sections
     /// }
     /// ```
-    pub fn format_corrupted(artifact_type: &'static str, position: u64, reason: SCow) -> Self {
+    pub fn format_corrupted(artifact_type: &'static str, position: u64, reason: CompactString) -> Self {
         Self::Format(FormatError::Corrupted {
             artifact_type,
             position,
@@ -1436,7 +1438,7 @@ impl ForensicError {
     ///     // ... parse key node
     /// }
     /// ```
-    pub fn registry_cell_error(cell_type: &'static str, reason: impl Into<SCow>) -> Self {
+    pub fn registry_cell_error(cell_type: &'static str, reason: impl Into<CompactString>) -> Self {
         Self::Format(FormatError::Invalid {
             artifact_type: cell_type,
             reason: reason.into(),
@@ -1463,7 +1465,7 @@ impl ForensicError {
     ///     // ... parse hive header  
     /// }
     /// ```
-    pub fn registry_hive_error(hive_type: &'static str, reason: impl Into<SCow>) -> Self {
+    pub fn registry_hive_error(hive_type: &'static str, reason: impl Into<CompactString>) -> Self {
         Self::Format(FormatError::Invalid {
             artifact_type: hive_type,
             reason: reason.into(),
@@ -1494,7 +1496,7 @@ impl ForensicError {
     ///     // ... decompression logic
     /// }
     /// ```
-    pub fn compression_error(algorithm: &'static str, reason: impl Into<SCow>) -> Self {
+    pub fn compression_error(algorithm: &'static str, reason: impl Into<CompactString>) -> Self {
         Self::Compression(CompressionError::AlgorithmError {
             algorithm,
             reason: reason.into(),
@@ -1610,7 +1612,7 @@ impl ForensicError {
     ///             format!("Could not read metadata for {}", path).into()))
     /// }
     /// ```
-    pub fn missing_data(data_type: &'static str, context: SCow) -> Self {
+    pub fn missing_data(data_type: &'static str, context: CompactString) -> Self {
         Self::DataAccess(DataAccessError::Missing { data_type, context })
     }
 
@@ -1693,7 +1695,7 @@ impl ForensicError {
     ///         })
     /// }
     /// ```
-    pub fn access_denied(resource: impl Into<SCow>, context: impl Into<SCow>) -> Self {
+    pub fn access_denied(resource: impl Into<CompactString>, context: impl Into<CompactString>) -> Self {
         Self::DataAccess(DataAccessError::AccessDenied {
             resource: resource.into(),
             context: context.into(),
@@ -1721,7 +1723,7 @@ impl ForensicError {
     ///     Err(ForensicError::registry_key_not_found(hive, Some(path.into())))
     /// }
     /// ```
-    pub fn registry_key_not_found(key: PredefinedHive, key_path: Option<SCow>) -> Self {
+    pub fn registry_key_not_found(key: PredefinedHive, key_path: Option<CompactString>) -> Self {
         Self::Registry(RegistryError::KeyNotFound { key, key_path })
     }
 
@@ -1742,15 +1744,15 @@ impl ForensicError {
     ///     // ... attempt to read ProductName value
     ///     Err(ForensicError::registry_value_not_found(
     ///         PredefinedHive::LocalMachine,
-    ///         Some("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion".into()),
-    ///         "ProductName"
+    ///         Some(CompactString::const_new("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion")),
+    ///         CompactString::const_new("ProductName")
     ///     ))
     /// }
     /// ```
     pub fn registry_value_not_found(
         key: PredefinedHive,
-        key_path: Option<SCow>,
-        value_name: impl Into<SCow>,
+        key_path: Option<CompactString>,
+        value_name: impl Into<CompactString>,
     ) -> Self {
         Self::Registry(RegistryError::ValueNotFound {
             key,
@@ -1779,7 +1781,7 @@ impl ForensicError {
     ///     }
     /// }
     /// ```
-    pub fn registry_invalid_type(expected: &'static str, found: impl Into<SCow>) -> Self {
+    pub fn registry_invalid_type(expected: &'static str, found: impl Into<CompactString>) -> Self {
         Self::Registry(RegistryError::InvalidValueType {
             expected,
             found: found.into(),
@@ -1862,12 +1864,12 @@ impl ForensicError {
     ///     match value {
     ///         RegistryValue::String(s) => Ok(s.clone()),
     ///         RegistryValue::DWord(_) => Err(ForensicError::cast_error(
-    ///             "REG_DWORD", "String", "DWORD values cannot be converted to strings".into())),
+    ///             "REG_DWORD", "String", CompactString::const_new("DWORD values cannot be converted to strings"))),
     ///         // ... other variants
     ///     }
     /// }
     /// ```
-    pub fn cast_error(from_type: &'static str, to_type: &'static str, reason: SCow) -> Self {
+    pub fn cast_error(from_type: &'static str, to_type: &'static str, reason: CompactString) -> Self {
         Self::Cast(CastError::InvalidConversion {
             from_type,
             to_type,
@@ -1894,7 +1896,7 @@ impl ForensicError {
     ///     Ok(value as u32)
     /// }
     /// ```
-    pub fn value_out_of_range(value: impl Into<SCow>, target_type: &'static str) -> Self {
+    pub fn value_out_of_range(value: impl Into<CompactString>, target_type: &'static str) -> Self {
         Self::Cast(CastError::ValueOutOfRange {
             value: value.into(),
             target_type,
@@ -1921,12 +1923,12 @@ impl ForensicError {
     ///     const FILETIME_EPOCH: u64 = 116444736000000000;
     ///     if filetime < FILETIME_EPOCH {
     ///         return Err(ForensicError::illegal_timestamp(filetime,
-    ///             "FILETIME before epoch (1601-01-01)".into()));
+    ///             CompactString::const_new("FILETIME before epoch (1601-01-01)")));
     ///     }
     ///     // ... conversion logic
     /// }
     /// ```
-    pub fn illegal_timestamp(timestamp: u64, reason: SCow) -> Self {
+    pub fn illegal_timestamp(timestamp: u64, reason: CompactString) -> Self {
         Self::Timestamp(TimestampError::Invalid { timestamp, reason })
     }
 
@@ -1983,7 +1985,7 @@ impl ForensicError {
     ///             format!("Failed to read evidence file: {}", path)))
     /// }
     /// ```
-    pub fn io_error(kind: std::io::ErrorKind, context: impl Into<SCow>) -> Self {
+    pub fn io_error(kind: std::io::ErrorKind, context: impl Into<CompactString>) -> Self {
         Self::Io {
             kind,
             context: context.into(),
@@ -1996,7 +1998,7 @@ impl ForensicError {
     /// Prefer this constructor, or `From<std::io::Error>`, when an I/O
     /// operation has already produced an error. The source remains available
     /// through [`std::error::Error::source`].
-    pub fn io_error_with_source(error: std::io::Error, context: impl Into<SCow>) -> Self {
+    pub fn io_error_with_source(error: std::io::Error, context: impl Into<CompactString>) -> Self {
         Self::Io {
             kind: error.kind(),
             context: context.into(),
@@ -2038,7 +2040,7 @@ impl ForensicError {
     pub fn bad_format_str(err: &'static str) -> Self {
         Self::Format(FormatError::Invalid {
             artifact_type: "unknown",
-            reason: SCow::borrowed(err),
+            reason: CompactString::const_new(err),
         })
     }
 
@@ -2060,7 +2062,7 @@ impl ForensicError {
     pub fn missing_str(err: &'static str) -> Self {
         Self::DataAccess(DataAccessError::Missing {
             data_type: "unknown",
-            context: SCow::borrowed(err),
+            context: CompactString::const_new(err),
         })
     }
 
@@ -2223,7 +2225,7 @@ impl Eq for ForensicError {}
 
 impl From<std::io::Error> for ForensicError {
     fn from(e: std::io::Error) -> Self {
-        ForensicError::io_error_with_source(e, SCow::Borrowed("IO operation failed"))
+        ForensicError::io_error_with_source(e, CompactString::const_new("IO operation failed"))
     }
 }
 

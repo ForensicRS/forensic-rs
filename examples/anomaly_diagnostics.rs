@@ -73,7 +73,7 @@ impl ArtifactParser for MeasurementParser {
             if checksum(value) != stored_checksum {
                 anomalies.add_detail(AnomalyDetail {
                     kind: AnomalyFlags::CHECKSUM_MISMATCH,
-                    message: SCow::owned(format!(
+                    message: CompactString::from(format!(
                         "stored checksum {stored_checksum:#010x} does not match computed {:#010x}",
                         checksum(value)
                     )),

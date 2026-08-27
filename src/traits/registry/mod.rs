@@ -292,7 +292,9 @@ impl RegistryBuffer {
         let value_type = self.value_type.ok_or_else(|| {
             ForensicError::missing_data(
                 "registry_value",
-                "RegistryBuffer does not contain a registry value".into(),
+                compact_str::CompactString::const_new(
+                    "RegistryBuffer does not contain a registry value",
+                ),
             )
         })?;
         value_type.parse_bytes(self.as_bytes())
@@ -990,7 +992,7 @@ impl TryFrom<RegValue> for String {
             _ => Err(ForensicError::cast_error(
                 "RegValue",
                 "String",
-                "Incompatible registry value type".into(),
+                compact_str::CompactString::const_new("Incompatible registry value type"),
             )),
         }
     }
@@ -1004,7 +1006,7 @@ impl TryFrom<RegValue> for u32 {
             _ => Err(ForensicError::cast_error(
                 "RegValue",
                 "u32",
-                "Incompatible registry value type".into(),
+                compact_str::CompactString::const_new("Incompatible registry value type"),
             )),
         }
     }
@@ -1018,7 +1020,7 @@ impl TryFrom<RegValue> for u64 {
             _ => Err(ForensicError::cast_error(
                 "RegValue",
                 "u64",
-                "Incompatible registry value type".into(),
+                compact_str::CompactString::const_new("Incompatible registry value type"),
             )),
         }
     }
@@ -1035,7 +1037,7 @@ impl TryFrom<RegValue> for Vec<u8> {
             _ => Err(ForensicError::cast_error(
                 "RegValue",
                 "Vec<u8>",
-                "Incompatible registry value type".into(),
+                compact_str::CompactString::const_new("Incompatible registry value type"),
             )),
         }
     }

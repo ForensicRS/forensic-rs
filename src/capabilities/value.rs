@@ -283,12 +283,12 @@ impl From<&'static str> for CapabilityValue {
 
 #[cfg(test)]
 mod tests {
+    use compact_str::CompactString;
     use crate::{
         artifact::Artifact,
         field::Field,
         pipeline::finding::{FindingCategory, FindingSeverity},
         provenance::AnomalyDetail,
-        scow::SCow,
     };
 
     use super::*;
@@ -355,7 +355,7 @@ mod tests {
         anomalies.add(AnomalyFlags::TRUNCATED);
         anomalies.add_detail(AnomalyDetail {
             kind: AnomalyFlags::CHECKSUM_MISMATCH,
-            message: SCow::Borrowed("fixup mismatch"),
+            message: CompactString::const_new("fixup mismatch"),
         });
         let ceiling = anomalies.confidence_ceiling();
 

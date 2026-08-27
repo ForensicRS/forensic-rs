@@ -186,8 +186,11 @@ fn prefix_code_tree_add_leaf(
     let mut node = match tree_nodes.first() {
         Some(v) => v.clone(),
         None => {
-            return ForensicError::compression_error("express_huff", "No valid PrefixCodeNode")
-                .into()
+            return ForensicError::compression_error(
+                "express_huff",
+                compact_str::CompactString::const_new("No valid PrefixCodeNode"),
+            )
+            .into()
         }
     };
     let mut i = leaf_index + 1;

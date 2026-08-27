@@ -13,7 +13,6 @@ pub mod logging;
 pub mod parsing;
 pub mod pipeline;
 pub mod provenance;
-pub mod scow;
 pub mod traits;
 pub mod utils;
 
@@ -46,7 +45,7 @@ pub mod prelude {
         traits::{Analyzer, Enricher, TriageSink},
         ErrorAction, PipelineResult, TriagePipeline, TriagePipelineBuilder,
     };
-    pub use crate::scow::SCow;
+    pub use compact_str::CompactString;
     pub use crate::traits::db::{
         ForensicColumnDef, ForensicColumnType, ForensicDb, ForensicRow, ForensicRows,
         ForensicTable, ForensicValue, ForensicValueRef, RowIterator, SqlCapable,

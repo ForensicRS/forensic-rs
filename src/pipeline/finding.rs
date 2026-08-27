@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
+use compact_str::CompactString;
+
 use crate::{
     artifact::Artifact,
     data::ForensicData,
     err::ForensicError,
     field::Text,
     provenance::{AnomalyFlags, Anomalies},
-    scow::SCow,
     utils::time::ForensicTimestamp,
 };
 
@@ -164,7 +165,7 @@ impl Finding {
     /// into a single aggregate finding. Used by [`AnomalyTally`] instead of
     /// emitting one finding per anomalous record, which would flood the
     /// report at scale.
-    pub fn from_anomaly(flag: AnomalyFlags, count: u64, sample: Option<SCow>) -> Self {
+    pub fn from_anomaly(flag: AnomalyFlags, count: u64, sample: Option<CompactString>) -> Self {
         let (category, severity) = anomaly_category_severity(flag);
         let mut finding = Self::new(
             severity,
@@ -240,7 +241,7 @@ fn known_anomaly_mask() -> u32 {
 #[derive(Debug, Default)]
 pub struct AnomalyTally {
     counts: BTreeMap<u32, u64>,
-    samples: BTreeMap<u32, SCow>,
+    samples: BTreeMap<u32, CompactString>,
     unknown_count: u64,
 }
 
@@ -266,7 +267,7 @@ impl AnomalyTally {
                     .iter()
                     .find(|d| d.kind == flag)
                     .map(|d| d.message.clone())
-                    .unwrap_or(SCow::Borrowed(""))
+                    .unwrap_or(CompactString::const_new(""))
             });
         }
         if flags.bits() & !known_anomaly_mask() != 0 {

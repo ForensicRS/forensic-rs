@@ -55,11 +55,12 @@ use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use compact_str::CompactString;
+
 use crate::{
     bridge::CancellationToken,
     data::ForensicData,
     err::{ForensicError, ForensicResult},
-    scow::SCow,
     traits::forensic::ArtifactParser,
 };
 
@@ -466,7 +467,7 @@ impl StandardParallelTaskBuilder {
             None => {
                 return Err(ForensicError::missing_data(
                     "parser",
-                    SCow::Borrowed("StandardParallelTaskBuilder: call .parser() before .build()"),
+                    CompactString::const_new("StandardParallelTaskBuilder: call .parser() before .build()"),
                 ))
             }
         };
@@ -475,7 +476,7 @@ impl StandardParallelTaskBuilder {
             None => {
                 return Err(ForensicError::missing_data(
                     "sources_factory",
-                    SCow::Borrowed("StandardParallelTaskBuilder: call .sources() before .build()"),
+                    CompactString::const_new("StandardParallelTaskBuilder: call .sources() before .build()"),
                 ))
             }
         };
@@ -830,7 +831,7 @@ impl AnalysisModuleBuilder {
             None => {
                 return Err(ForensicError::missing_data(
                     "analyzer",
-                    SCow::Borrowed("AnalysisModuleBuilder: call .analyzer() before .build()"),
+                    CompactString::const_new("AnalysisModuleBuilder: call .analyzer() before .build()"),
                 ))
             }
         };
@@ -839,7 +840,7 @@ impl AnalysisModuleBuilder {
             None => {
                 return Err(ForensicError::missing_data(
                     "sources_factory",
-                    SCow::Borrowed("AnalysisModuleBuilder: call .sources() before .build()"),
+                    CompactString::const_new("AnalysisModuleBuilder: call .sources() before .build()"),
                 ))
             }
         };
@@ -1358,7 +1359,7 @@ mod tests {
             {
                 Err(ForensicError::missing_data(
                     "test",
-                    SCow::Borrowed("intentional failure"),
+                    CompactString::const_new("intentional failure"),
                 ))
             }
         }

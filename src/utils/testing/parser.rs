@@ -202,7 +202,7 @@ mod tests {
             ))
             .with_result(Err(crate::err::ForensicError::missing_data(
                 "test",
-                "intentional".into(),
+                compact_str::CompactString::const_new("intentional"),
             )))
             .build();
         let mut sources = test_sources();

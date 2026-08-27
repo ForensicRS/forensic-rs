@@ -669,7 +669,7 @@ impl From<super::Filetime> for ForensicTimestamp {
 }
 
 fn invalid_timestamp(timestamp: u64, reason: &'static str) -> ForensicError {
-    ForensicError::illegal_timestamp(timestamp, reason.into())
+    ForensicError::illegal_timestamp(timestamp, compact_str::CompactString::const_new(reason))
 }
 
 fn is_leap_year(year: i64) -> bool {

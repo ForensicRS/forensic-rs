@@ -6,8 +6,9 @@
 //! artifacts), so this uses a 4-byte bitflag plus a rare, optionally-boxed
 //! detail payload instead.
 
+use compact_str::CompactString;
+
 use crate::provenance::confidence::Confidence;
-use crate::scow::SCow;
 
 /// A cross-family classification of what disagreed or failed a check.
 ///
@@ -87,7 +88,7 @@ impl std::ops::BitAnd for AnomalyFlags {
 pub struct AnomalyDetail {
     /// Which single flag this detail elaborates.
     pub kind: AnomalyFlags,
-    pub message: SCow,
+    pub message: CompactString,
 }
 
 /// Cheap, always-present anomaly tracking for one instance of data.
@@ -190,7 +191,7 @@ mod tests {
         let mut b = Anomalies::empty();
         b.add_detail(AnomalyDetail {
             kind: AnomalyFlags::CHECKSUM_MISMATCH,
-            message: SCow::Borrowed("checksum failed"),
+            message: CompactString::const_new("checksum failed"),
         });
 
         a.merge(b);
@@ -214,7 +215,7 @@ mod tests {
         let mut anomalies = Anomalies::empty();
         anomalies.add_detail(AnomalyDetail {
             kind: AnomalyFlags::CHECKSUM_MISMATCH,
-            message: SCow::Borrowed("fixup signature mismatch"),
+            message: CompactString::const_new("fixup signature mismatch"),
         });
         assert!(anomalies.has(AnomalyFlags::CHECKSUM_MISMATCH));
         assert_eq!(anomalies.details().len(), 1);
