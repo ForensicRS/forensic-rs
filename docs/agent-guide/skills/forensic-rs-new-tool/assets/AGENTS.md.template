@@ -1,0 +1,23 @@
+# {{crate_name}} Agent Guide
+
+## Project Overview
+
+{{crate_name}} implements the `forensic-rs` {{trait name(s)}} trait(s) for {{artifact/data source, e.g. "SOFTWARE/SYSTEM/NTUSER.DAT registry hive files" or "the live Windows Event Log API"}}.
+
+**Depends on:** [`forensic-rs`](https://github.com/ForensicRS/forensic-rs) {{version}}
+
+## Review discipline
+
+Apply the `forensic-rs-tool-review` skill (copied into `.claude/skills/`) to every change here: it covers the trait-layering contract (Core vs. `Ext`), forensic soundness (never fabricate a missing timestamp, source divergence is evidence not noise, the Finding/log/error three-way split), and adversarial-input robustness (no panics on evidence bytes, bounds-checked parsing). Don't restate that content in this file — this file is for what's specific to {{crate_name}}.
+
+## Module structure
+
+{{module map — mirror the level of detail in forensic-rs's own AGENTS.md module structure section}}
+
+## Error handling
+
+Use `ForensicResult<T>`/`ForensicError` from `forensic-rs`. {{any crate-specific error variants or conventions}}
+
+## Testing
+
+{{crate-specific test setup, beyond the forensic-rs testing doubles already covered by the review skill}}

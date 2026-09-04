@@ -10,6 +10,10 @@ While `ForensicTool` exposes **actions** (operations that analyze data), `Resour
 - Navigate hierarchical data (registry keys, filesystem directories)
 - Read specific values or files
 - Get metadata about resources
+- Discover which already-registered tools apply to a specific node (see
+  [Node Actions](#node-actions-linking-resources-to-tools) below) — the one place
+  where the resources/tools split above isn't absolute: a resource node can point
+  back at the tools that make sense to run against it.
 
 ## ResourceProvider Trait
 
@@ -19,6 +23,9 @@ pub trait ResourceProvider: Send + Sync {
     fn children(&self, path: &str, cancellation: &CancellationToken) -> CapabilityResult<Vec<ResourceEntry>>;
     fn read(&self, path: &str, cancellation: &CancellationToken) -> CapabilityResult<ResourceContent>;
     fn metadata(&self, path: &str, cancellation: &CancellationToken) -> CapabilityResult<ResourceMetadata>;
+
+    // Default: no actions. See "Node Actions" below.
+    fn actions(&self, path: &str, cancellation: &CancellationToken) -> CapabilityResult<Vec<String>> { Ok(Vec::new()) }
 }
 
 pub struct ResourceProviderDescriptor {
@@ -205,6 +212,33 @@ pub enum ResourceContentData {
     Structured(CapabilityValue),
 }
 ```
+
+## Node Actions: Linking Resources to Tools
+
+`ForensicTool`/`ResourceProvider` are otherwise two disconnected registries — the only
+built-in link is one-directional (a tool's result can reference a resource via
+`ToolContent::ResourceReference`, never the other way around). `ResourceProvider::actions()`
+closes that gap in the other direction: given a resource path, it returns the IDs of
+already-registered tools that make sense to run against that specific node — e.g. "decode
+this binary value as a timestamp" for one registry value, but not for another.
+
+This is pure discovery, not a new invocation mechanism. `ScopedCapabilityRegistry::list_node_actions(provider_id, path, cancellation)`
+calls `provider.actions()`, drops any ID that isn't a registered tool or that the caller
+isn't authorized to discover (same `AccessKind::DiscoverTool` check as `list_tools()`), and
+returns the surviving `ToolDescriptor`s. Invocation is unchanged — pass one of their `id`s to
+the existing `invoke_tool()`. A tool meant to be used this way should accept a resource
+locator (e.g. a `provider`/`path` pair) as part of its `input_schema`, since forensic-rs
+stays protocol-neutral and does not auto-inject the path into tool input.
+
+For `RegistryProvider`/`VfsProvider`, a node's actions come from `ProviderHook::action_ids()`
+(for a real node) and `ProviderHook::virtual_action_ids()` (for a node nested inside a hook's
+own virtual namespace) — the same hooks already used to inject virtual children, gated by the
+same `matches_path`/`matches_value` check. A parser or analyzer author registers a hook once
+via `add_hook()` and both virtual data *and* applicable commands follow.
+
+No MCP method exists for "list actions on a resource" — this stays a Rust-API-level
+capability. A server author wires `list_node_actions` into whatever discovery convention
+their own client expects (e.g. attaching it to their own `resources/list` response).
 
 ## Next Steps
 

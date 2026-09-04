@@ -248,7 +248,11 @@ pub trait EventLogIterator {
 /// # Object Safety
 /// All methods use concrete types (no generics) so the trait can be used as
 /// `&dyn EventLogReader` or `Box<dyn EventLogReader>`.
-pub trait EventLogReader {
+///
+/// `Send + Sync`: a mounted event log is cached and shared across parallel
+/// pipeline workers the same way `FileSystem`/`Registry` are (RFC 0001 §1,
+/// P5) -- see [`crate::traits::format::Mounted::EventLog`].
+pub trait EventLogReader: Send + Sync {
     /// List available log channels (e.g., "Security", "System", "Application").
     fn channels(&self) -> ForensicResult<Vec<String>>;
 

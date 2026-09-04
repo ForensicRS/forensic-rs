@@ -205,6 +205,10 @@ pub enum BridgeResponse {
         origin: DataOrigin,
         metadata: BTreeMap<Text, BridgeValue>,
     },
+    Actions {
+        origin: DataOrigin,
+        actions: Vec<String>,
+    },
     Providers(Vec<String>),
     Error {
         message: String,
@@ -247,6 +251,16 @@ pub trait ForensicProvider: Send {
         path: &str,
         cancel: &CancellationToken,
     ) -> ForensicResult<BTreeMap<Text, BridgeValue>>;
+
+    /// List command/tool IDs applicable to this node. Default: none.
+    ///
+    /// This is a *discovery* link to already-registered `ForensicTool`/
+    /// `ForensicTool`-equivalent IDs (see `crate::capabilities::tools`) — it does
+    /// not invoke anything itself.
+    #[allow(unused_variables)]
+    fn actions(&self, path: &str, cancel: &CancellationToken) -> ForensicResult<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]

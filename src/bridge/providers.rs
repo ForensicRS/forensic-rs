@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 use crate::capabilities::{
@@ -14,7 +15,7 @@ use crate::traits::events::{EventLogQuery, EventLogReader};
 use crate::traits::registry::{Registry, RegistryExt};
 use crate::traits::vfs::{FileSystem, FileSystemExt, VFileType};
 
-use super::hooks::{inject_hook_children, split_virtual_path, ProviderHook};
+use super::hooks::{collect_hook_actions, inject_hook_children, split_virtual_path, ProviderHook};
 use super::{BridgeValue, CancellationToken, ForensicProvider, NodeEntry, NodeType};
 
 // ============================================================================
@@ -144,6 +145,15 @@ impl ResourceProvider for RegistryProvider {
             values,
         })
     }
+
+    fn actions(
+        &self,
+        path: &str,
+        cancellation: &CancellationToken,
+    ) -> CapabilityResult<Vec<String>> {
+        ensure_resource_not_cancelled(cancellation)?;
+        ForensicProvider::actions(self, path, cancellation).map_err(|_| registry_capability_error())
+    }
 }
 
 fn registry_capability_error() -> CapabilityError {
@@ -173,12 +183,14 @@ impl ForensicProvider for RegistryProvider {
         // Check for virtual path segment (hook delegation)
         if let Some((real_parent, hook_name, virtual_child)) = split_virtual_path(path) {
             if !virtual_child.is_empty() {
-                // Nested virtual path — delegate read to the hook
+                // Nested virtual path — delegate to the hook, passing the
+                // remaining sub-path through so it can self-route arbitrary depth.
                 for hook in &self.hooks {
                     if hook.name() == hook_name {
                         return hook.virtual_children(
                             real_parent,
                             &BridgeValue::Null,
+                            virtual_child,
                             offset,
                             limit,
                         );
@@ -193,7 +205,7 @@ impl ForensicProvider for RegistryProvider {
             let value = ForensicProvider::read(self, real_parent, cancel)?;
             for hook in &self.hooks {
                 if hook.name() == hook_name {
-                    return hook.virtual_children(real_parent, &value, offset, limit);
+                    return hook.virtual_children(real_parent, &value, "", offset, limit);
                 }
             }
             return Err(ForensicError::other(
@@ -335,6 +347,22 @@ impl ForensicProvider for RegistryProvider {
         }
         Ok(meta)
     }
+
+    fn actions(&self, path: &str, cancel: &CancellationToken) -> ForensicResult<Vec<String>> {
+        if let Some((real_parent, hook_name, virtual_tail)) = split_virtual_path(path) {
+            for hook in &self.hooks {
+                if hook.name() == hook_name {
+                    return Ok(hook.virtual_action_ids(real_parent, virtual_tail));
+                }
+            }
+            return Err(ForensicError::other(
+                "RegistryProvider",
+                format!("hook '{}' not found", hook_name),
+            ));
+        }
+        let value = ForensicProvider::read(self, path, cancel)?;
+        Ok(collect_hook_actions(&self.hooks, path, &value))
+    }
 }
 
 // ============================================================================
@@ -377,6 +405,52 @@ impl VfsProvider {
 
     pub fn add_hook(&mut self, hook: Box<dyn ProviderHook>) {
         self.hooks.push(hook);
+    }
+
+    /// Bounded content peek used for hook matching/dispatch, not a full read.
+    ///
+    /// Files can be large, so hooks never see the whole file just to run
+    /// `matches_value` — only the first 64 bytes, as `BridgeValue::Binary`.
+    fn content_peek(&self, path: &str) -> ForensicResult<BridgeValue> {
+        let mut file = self.inner.open(FPath::new(path))?;
+        let mut buf = [0u8; 64];
+        let n = Read::read(&mut file, &mut buf).unwrap_or(0);
+        Ok(BridgeValue::Binary(buf[..n].to_vec()))
+    }
+
+    /// Resolve `path` against a registered hook when it doesn't resolve
+    /// directly. VFS has no `[hookname]` bracket-segment marker (unlike
+    /// `RegistryProvider`) — a path already maps 1:1 to a single value and a
+    /// file has no real children, so a matched hook can simply "become" the
+    /// recognized file's children with no collision risk.
+    ///
+    /// Walks up `path`'s ancestors to find the longest real-file prefix,
+    /// takes a content peek of that file, and returns the first hook whose
+    /// `matches_path`/`matches_value` gate holds for it, along with the real
+    /// file's own path and whatever remains of `path` below it ("" at the
+    /// file's own path, e.g. "Applications" one level deeper).
+    fn resolve_hook(&self, path: &str) -> Option<(&dyn ProviderHook, String, String, BridgeValue)> {
+        let mut candidate = FPath::new(path);
+        loop {
+            if let Ok(meta) = self.inner.metadata(candidate) {
+                if meta.is_file() {
+                    let real_file_path = candidate.as_str().to_string();
+                    let tail = path[real_file_path.len()..]
+                        .trim_start_matches(['/', '\\'])
+                        .to_string();
+                    let peek = self.content_peek(&real_file_path).ok()?;
+                    for hook in &self.hooks {
+                        if hook.matches_path(&real_file_path)
+                            && hook.matches_value(&real_file_path, &peek)
+                        {
+                            return Some((hook.as_ref(), real_file_path, tail, peek));
+                        }
+                    }
+                    return None;
+                }
+            }
+            candidate = candidate.parent()?;
+        }
     }
 }
 
@@ -499,6 +573,20 @@ impl ResourceProvider for VfsProvider {
             values,
         })
     }
+
+    fn actions(
+        &self,
+        path: &str,
+        cancellation: &CancellationToken,
+    ) -> CapabilityResult<Vec<String>> {
+        if cancellation.is_cancelled() {
+            return Err(CapabilityError::new(
+                CapabilityErrorKind::Cancelled,
+                "operation cancelled",
+            ));
+        }
+        ForensicProvider::actions(self, path, cancellation).map_err(|_| vfs_capability_error())
+    }
 }
 
 fn vfs_capability_error() -> CapabilityError {
@@ -521,10 +609,19 @@ impl ForensicProvider for VfsProvider {
         cancel: &CancellationToken,
     ) -> ForensicResult<(Vec<NodeEntry>, u64)> {
         let dir_path = if path.is_empty() { "/" } else { path };
-        let entries_raw: Vec<_> = self
-            .inner
-            .read_dir(FPath::new(dir_path))?
-            .collect::<ForensicResult<Vec<_>>>()?;
+        let read_dir_iter = match self.inner.read_dir(FPath::new(dir_path)) {
+            Ok(iter) => iter,
+            Err(err) => {
+                // `path` isn't a real directory (it may be a file whose
+                // content a registered hook recognizes) — try hook dispatch
+                // before propagating the original error.
+                if let Some((hook, real_file_path, tail, peek)) = self.resolve_hook(path) {
+                    return hook.virtual_children(&real_file_path, &peek, &tail, offset, limit);
+                }
+                return Err(err);
+            }
+        };
+        let entries_raw: Vec<_> = read_dir_iter.collect::<ForensicResult<Vec<_>>>()?;
         let total = entries_raw.len() as u64;
         let entries: Vec<NodeEntry> = entries_raw
             .into_iter()
@@ -550,7 +647,19 @@ impl ForensicProvider for VfsProvider {
     }
 
     fn read(&self, path: &str, _cancel: &CancellationToken) -> ForensicResult<BridgeValue> {
-        let data = self.inner.read_all(FPath::new(path))?;
+        let data = match self.inner.read_all(FPath::new(path)) {
+            Ok(data) => data,
+            Err(err) => {
+                // `path` isn't a real, directly-readable file — it may be
+                // nested inside a registered hook's virtual namespace.
+                return match self.resolve_hook(path) {
+                    Some((hook, real_file_path, tail, _peek)) => {
+                        hook.read_virtual(&real_file_path, &tail)
+                    }
+                    None => Err(err),
+                };
+            }
+        };
         // Try to decode as UTF-8; fall back to binary
         match String::from_utf8(data) {
             Ok(s) => Ok(BridgeValue::Text(Text::Owned(s))),
@@ -588,6 +697,25 @@ impl ForensicProvider for VfsProvider {
                 .unwrap_or(BridgeValue::Null),
         );
         Ok(map)
+    }
+
+    fn actions(&self, path: &str, _cancel: &CancellationToken) -> ForensicResult<Vec<String>> {
+        if let Ok(meta) = self.inner.metadata(FPath::new(path)) {
+            if meta.is_file() {
+                let peek = self.content_peek(path)?;
+                return Ok(collect_hook_actions(&self.hooks, path, &peek));
+            }
+            // A real directory has no hook-matchable content of its own.
+            return Ok(Vec::new());
+        }
+        // `path` doesn't resolve directly — it may be nested inside a
+        // registered hook's virtual namespace.
+        match self.resolve_hook(path) {
+            Some((hook, real_file_path, tail, _peek)) => {
+                Ok(hook.virtual_action_ids(&real_file_path, &tail))
+            }
+            None => Ok(Vec::new()),
+        }
     }
 }
 
@@ -1164,7 +1292,7 @@ mod registry_tests {
     use crate::traits::db::{
         ForensicColumnDef, ForensicColumnType, ForensicRows, ForensicTable, ForensicValueRef,
     };
-    use crate::utils::testing::{basic_event_log, TestingRegistry};
+    use crate::utils::testing::{basic_event_log, TestingProviderHook, TestingRegistry};
     use std::io::Write;
     use std::sync::Arc;
 
@@ -1209,6 +1337,68 @@ mod registry_tests {
 
         assert!(!entries.is_empty());
         assert!(cached.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn registry_provider_threads_nested_virtual_path_to_hook() {
+        // Regression test: the nested branch of RegistryProvider::children used
+        // to discard the requested sub-path and always behave like the hook's
+        // root — proving the fix threads `virtual_child` through as `virtual_path`.
+        let mut provider = RegistryProvider::new(Arc::new(TestingRegistry::new()));
+        let hook = TestingProviderHook::new("testhook")
+            .with_child(
+                "",
+                NodeEntry {
+                    name: Text::Borrowed("Applications"),
+                    node_type: NodeType::Container,
+                    description: None,
+                },
+            )
+            .with_child(
+                "Applications",
+                NodeEntry {
+                    name: Text::Borrowed("Sub"),
+                    node_type: NodeType::Leaf,
+                    description: None,
+                },
+            );
+        provider.add_hook(Box::new(hook));
+        let cancel = CancellationToken::new();
+
+        let value_path = format!(r"{}\USERPROFILE", ENVIRONMENT_PATH);
+        let root_virtual_path = format!(r"{}\[testhook]", value_path);
+        let (root_children, root_total) =
+            ForensicProvider::children(&provider, &root_virtual_path, 0, 100, &cancel).unwrap();
+        assert_eq!(root_total, 1);
+        assert_eq!(root_children[0].name.as_ref(), "Applications");
+
+        let nested_virtual_path = format!(r"{}\Applications", root_virtual_path);
+        let (nested_children, nested_total) =
+            ForensicProvider::children(&provider, &nested_virtual_path, 0, 100, &cancel).unwrap();
+        assert_eq!(nested_total, 1);
+        assert_eq!(nested_children[0].name.as_ref(), "Sub");
+    }
+
+    #[test]
+    fn registry_provider_actions_cover_real_and_virtual_nodes() {
+        let mut provider = RegistryProvider::new(Arc::new(TestingRegistry::new()));
+        let hook = TestingProviderHook::new("testhook")
+            .with_action("registry.explain")
+            .with_virtual_action("Applications", "registry.explain_child");
+        provider.add_hook(Box::new(hook));
+        let cancel = CancellationToken::new();
+
+        let value_path = format!(r"{}\USERPROFILE", ENVIRONMENT_PATH);
+        assert_eq!(
+            ForensicProvider::actions(&provider, &value_path, &cancel).unwrap(),
+            vec!["registry.explain".to_string()]
+        );
+
+        let nested_virtual_path = format!(r"{}\[testhook]\Applications", value_path);
+        assert_eq!(
+            ForensicProvider::actions(&provider, &nested_virtual_path, &cancel).unwrap(),
+            vec!["registry.explain_child".to_string()]
+        );
     }
 
     #[test]
@@ -1433,6 +1623,88 @@ mod registry_tests {
         );
         let metadata = ResourceProvider::metadata(&provider, &file_path, &cancellation).unwrap();
         assert_eq!(metadata.size, Some(17));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn vfs_provider_dispatches_hooks_for_recognized_file_content() {
+        let directory =
+            std::env::temp_dir().join(format!("forensic_rs_vfs_hook_{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let matching_file = directory.join("bundle.plist");
+        std::fs::write(&matching_file, b"bplist00-fake-content").unwrap();
+        std::fs::write(directory.join("plain.txt"), b"just text").unwrap();
+
+        let matching_path = matching_file.to_string_lossy().to_string();
+        let hook = TestingProviderHook::new("plist")
+            .matching_path({
+                let matching_path = matching_path.clone();
+                move |p| p == matching_path
+            })
+            .matching_value(|_, value| {
+                matches!(value, BridgeValue::Binary(bytes) if bytes.starts_with(b"bplist00"))
+            })
+            .with_child(
+                "",
+                NodeEntry {
+                    name: Text::Borrowed("Applications"),
+                    node_type: NodeType::Container,
+                    description: None,
+                },
+            )
+            .with_child(
+                "Applications",
+                NodeEntry {
+                    name: Text::Borrowed("Sub"),
+                    node_type: NodeType::Leaf,
+                    description: None,
+                },
+            );
+
+        let mut provider = VfsProvider::new(Arc::new(StdVirtualFS::new()));
+        provider.add_hook(Box::new(hook));
+        let cancel = CancellationToken::new();
+
+        // A non-matching file lists as a normal Leaf with no virtual children.
+        let (entries, total) = ForensicProvider::children(
+            &provider,
+            &directory.to_string_lossy(),
+            0,
+            100,
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(total, 2);
+        let plain_entry = entries
+            .iter()
+            .find(|e| e.name.as_ref() == "plain.txt")
+            .expect("plain.txt must be listed");
+        assert_eq!(plain_entry.node_type, NodeType::Leaf);
+
+        // The matching file's own path returns the hook's root virtual children...
+        let (root_children, root_total) =
+            ForensicProvider::children(&provider, &matching_path, 0, 100, &cancel).unwrap();
+        assert_eq!(root_total, 1);
+        assert_eq!(root_children[0].name.as_ref(), "Applications");
+
+        // ...while read() on that same path still returns the raw file content
+        // (the fixture is valid UTF-8, so it decodes as Text — the point is
+        // that it's the real file's bytes, not something the hook produced).
+        let raw = ForensicProvider::read(&provider, &matching_path, &cancel).unwrap();
+        assert!(matches!(raw, BridgeValue::Text(text) if text.as_ref() == "bplist00-fake-content"));
+
+        // A path nested one level into the hook's namespace reaches the hook's
+        // nested branch (the regression this proves: virtual_path threaded
+        // through, not silently treated as the root every time).
+        let nested_path = std::path::Path::new(&matching_path)
+            .join("Applications")
+            .to_string_lossy()
+            .to_string();
+        let (nested_children, nested_total) =
+            ForensicProvider::children(&provider, &nested_path, 0, 100, &cancel).unwrap();
+        assert_eq!(nested_total, 1);
+        assert_eq!(nested_children[0].name.as_ref(), "Sub");
 
         std::fs::remove_dir_all(directory).unwrap();
     }

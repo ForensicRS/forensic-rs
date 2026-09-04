@@ -14,28 +14,50 @@ Parsers → Enrichers → Analyzers → Sinks
 
 ## Recipe 1: Wrapping a Parser as MCP Tool
 
-Expose an `ArtifactParser` as a tool.
+Expose an `ArtifactParserFactory` as a tool. A factory is stateless and
+`&self` — one instance behind an `Arc` serves the serial pipeline, every
+parallel worker, and every `AnalysisModule` that needs it. Parse-local state
+(the opened registry key, in this example) lives in `open()`'s stack frame,
+never in `self`.
 
 ```rust
 use forensic_rs::prelude::*;
 
 // Your parser (from examples/triage_pipeline.rs)
-pub struct AutorunParser;
+pub struct AutorunParser {
+    descriptor: ParserDescriptor,
+}
 
-impl ArtifactParser for AutorunParser {
-    fn name(&self) -> &str { "autoruns" }
-    fn description(&self) -> &str { "Reads Run/RunOnce registry keys" }
-    fn version(&self) -> &str { "0.1.0" }
+impl AutorunParser {
+    pub fn new() -> Self {
+        Self {
+            descriptor: ParserDescriptor::new(
+                "autoruns",
+                "autoruns",
+                "Reads Run/RunOnce registry keys",
+                "0.1.0",
+            )
+            .with_artifacts(vec![Artifact::Windows(WindowsArtifacts::Registry(
+                RegistryArtifacts::AutoRuns,
+            ))]),
+        }
+    }
+}
 
-    fn supported_artifacts(&self) -> Vec<Artifact> {
-        vec![Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns))]
+impl ArtifactParserFactory for AutorunParser {
+    fn descriptor(&self) -> &ParserDescriptor {
+        &self.descriptor
     }
 
-    fn parse<'a>(&'a mut self, sources: &'a mut TriageSources)
-        -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>>
-    {
-        let registry = sources.registry()
-            .ok_or_else(|| ForensicError::missing_data("autoruns", "Registry required"))?;
+    fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+        let registry = ctx.registry()
+            .ok_or_else(|| ForensicError::missing_data("autoruns", "Registry required".into()))?;
+        // Registered here, not injected at construction — the parser is the
+        // only thing that knows what its own source key should be.
+        let source = ctx.register_source(SourceKey::Live {
+            host: ctx.host().to_string(),
+            api: "RegistryReader".to_string(),
+        });
 
         // `RegistryExt::key` takes a single hive-prefixed path string and
         // returns a `RegKey` RAII guard — no separate hive argument, no
@@ -45,17 +67,24 @@ impl ArtifactParser for AutorunParser {
 
         for (name, value) in key.values()? {
             if let Ok(cmd) = String::try_from(value) {
-                let mut data = ForensicData::new("WORKSTATION01", self.supported_artifacts()[0].clone());
+                let provenance = source.mint(Acquisition::LiveApi, Recovery::Allocated);
+                let mut data = ForensicData::new("WORKSTATION01", self.descriptor.artifacts[0].clone(), provenance);
                 data.insert("autorun.name", Field::Text(Text::Owned(name)));
                 data.insert("autorun.command", Field::Text(Text::Owned(cmd)));
                 results.push(Ok(data));
             }
         }
 
-        Ok(Box::new(results.into_iter()))
+        Ok(ParserRun::pull(results.into_iter()))
     }
 }
 ```
+
+For a reader that only hands back borrowed cursors (a nested database table,
+an event-log iterator) rather than an owned `Vec`/iterator, return
+`ParserRun::push(move |out| { ... })` instead — see
+[`ArtifactParserFactory`](https://docs.rs/forensic-rs) for a worked example
+and the trade-offs of each mode.
 
 ## Recipe 2: Wrapping an Analyzer as MCP Tool
 
@@ -238,14 +267,17 @@ Factory that creates fresh pipeline per invocation.
 use forensic_rs::capabilities::pipeline::*;
 
 pub struct AnalysisTaskFactory {
-    parser: Box<dyn ArtifactParser>,
+    // `Arc`, not `Box`: `ArtifactParserFactory` is stateless and `Send + Sync`,
+    // so the same instance is shared across every invocation instead of
+    // being cloned or reconstructed per call.
+    parser: Arc<dyn ArtifactParserFactory>,
     analyzers: Vec<Box<dyn Analyzer>>,
     sinks: Vec<Box<dyn TriageSink>>,
 }
 
 impl AnalysisTaskFactory {
     pub fn new(
-        parser: Box<dyn ArtifactParser>,
+        parser: Arc<dyn ArtifactParserFactory>,
         analyzers: Vec<Box<dyn Analyzer>>,
     ) -> Self {
         Self {
@@ -267,7 +299,7 @@ impl PipelineTaskFactory for AnalysisTaskFactory {
         // Create fresh pipeline for this invocation
         let pipeline = TriagePipeline::builder()
             .context(TriageContext::new("WORKSTATION01", "ACME-Corp"))
-            .parser(self.parser.box_clone())
+            .parser(Arc::clone(&self.parser))
             .sinks(std::mem::take(&mut self.sinks.clone()))  // Clone sinks
             .build()
             .map_err(|e| CapabilityError::new(CapabilityErrorKind::Internal, e.to_string()))?;

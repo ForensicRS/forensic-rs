@@ -121,6 +121,22 @@ pub trait Registry: Send + Sync {
     /// matches the legacy `open_key`'s contract, so a backend need not pay
     /// one round trip per path segment.
     fn open_raw(&self, parent: &RawKey, name: &str) -> ForensicResult<RawKey>;
+    /// Opens a single child by its *exact*, literal name — unlike
+    /// [`open_raw`](Registry::open_raw), `name` is never split into path
+    /// segments, even if it contains `/` or `\`. Use this to re-open a child
+    /// by the literal name returned from [`keys_raw`](Registry::keys_raw)/
+    /// [`keys_iter_raw`](Registry::keys_iter_raw): some registry data (e.g.
+    /// AmCache's `InventoryDriverBinary`, keyed by full lowercase file
+    /// paths) legitimately has flat child names containing path-separator
+    /// characters that are not a hierarchy to descend.
+    ///
+    /// Defaults to [`open_raw`](Registry::open_raw), which is correct as
+    /// long as `name` has no separator characters — the common case. A
+    /// backend whose enumerated child names can contain `/`/`\` should
+    /// override this to open by exact match instead of path-splitting.
+    fn open_child_raw(&self, parent: &RawKey, name: &str) -> ForensicResult<RawKey> {
+        self.open_raw(parent, name)
+    }
     /// Infallible: called from [`RegKey`]'s `Drop` impl, which cannot
     /// propagate an error. A backend that can fail to close should log
     /// internally; [`RegKey::close`] is the fallible, explicit escape hatch.
@@ -241,6 +257,13 @@ impl<'r, T: Registry + ?Sized> RegKey<'r, T> {
         let raw = self.reg.open_raw(&self.raw, name)?;
         Ok(RegKey::from_raw(self.reg, raw))
     }
+    /// Like [`open`](RegKey::open), but opens `name` as a single literal
+    /// child rather than a possibly multi-segment path — see
+    /// [`Registry::open_child_raw`].
+    pub fn open_child(&self, name: &str) -> ForensicResult<RegKey<'r, T>> {
+        let raw = self.reg.open_child_raw(&self.raw, name)?;
+        Ok(RegKey::from_raw(self.reg, raw))
+    }
     pub fn value(&self, name: &str) -> ForensicResult<RegValue> {
         self.reg.read_raw(&self.raw, name)
     }
@@ -266,6 +289,101 @@ impl<'r, T: Registry + ?Sized> RegKey<'r, T> {
         self.reg.values_iter_raw(&self.raw)
     }
     /// Lazy counterpart to [`keys`](RegKey::keys) — see
+    /// [`Registry::keys_iter_raw`] for the laziness contract.
+    pub fn keys_iter(&self) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + '_>> {
+        self.reg.keys_iter_raw(&self.raw)
+    }
+    pub fn info(&self) -> ForensicResult<KeyInfo> {
+        self.reg.info_raw(&self.raw)
+    }
+
+    /// Explicit early close. Prefer letting the key drop; use this only
+    /// when a close failure must be observed by the caller.
+    pub fn close(self) -> ForensicResult<()> {
+        self.reg.close_raw(&self.raw);
+        std::mem::forget(self);
+        Ok(())
+    }
+}
+
+/// `Arc`-owning counterpart to [`RegKey`], for a caller that must own its
+/// reader (e.g. a parser that discovers and mounts its own hive out of a
+/// [`crate::traits::vfs::FileSystem`]) rather than borrowing one handed to it
+/// by lifetime.
+///
+/// Same four guarantees as [`RegKey`], enforced by ownership instead of a
+/// lifetime parameter: cannot outlive its registry (it keeps an `Arc` to it
+/// alive), cannot cross readers (private fields, no method takes a foreign
+/// key), cannot leak (no `Copy`/`Clone`, unconditional `Drop`), cannot be
+/// used after close (`close(self)` consumes it). Deliberately no `fn
+/// borrow(&self) -> RegKey<'_>` — `RegKey::drop` would close the handle and
+/// then `OwnedRegKey::drop` would double-close it.
+pub struct OwnedRegKey {
+    reg: std::sync::Arc<dyn Registry>,
+    raw: RawKey,
+    // Mirrors RegKey's thread-confinement contract (see RegKey's field of
+    // the same name) for backends with thread-confined live handles.
+    _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl std::fmt::Debug for OwnedRegKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedRegKey").finish_non_exhaustive()
+    }
+}
+
+impl Drop for OwnedRegKey {
+    fn drop(&mut self) {
+        self.reg.close_raw(&self.raw);
+    }
+}
+
+impl OwnedRegKey {
+    /// Backend/parser-only constructor.
+    pub fn new(reg: std::sync::Arc<dyn Registry>, raw: RawKey) -> Self {
+        OwnedRegKey {
+            reg,
+            raw,
+            _not_send_sync: PhantomData,
+        }
+    }
+
+    pub fn open(&self, name: &str) -> ForensicResult<OwnedRegKey> {
+        let raw = self.reg.open_raw(&self.raw, name)?;
+        Ok(OwnedRegKey::new(std::sync::Arc::clone(&self.reg), raw))
+    }
+    /// Like [`open`](OwnedRegKey::open), but opens `name` as a single
+    /// literal child rather than a possibly multi-segment path — see
+    /// [`Registry::open_child_raw`].
+    pub fn open_child(&self, name: &str) -> ForensicResult<OwnedRegKey> {
+        let raw = self.reg.open_child_raw(&self.raw, name)?;
+        Ok(OwnedRegKey::new(std::sync::Arc::clone(&self.reg), raw))
+    }
+    pub fn value(&self, name: &str) -> ForensicResult<RegValue> {
+        self.reg.read_raw(&self.raw, name)
+    }
+    pub fn values(&self) -> ForensicResult<Vec<(String, RegValue)>> {
+        self.reg.values_raw(&self.raw)
+    }
+    pub fn keys(&self) -> ForensicResult<Vec<KeyEntry>> {
+        self.reg.keys_raw(&self.raw)
+    }
+    /// Buffer-reuse counterpart to [`values`](OwnedRegKey::values) — see
+    /// [`Registry::values_raw_into`] for the contract.
+    pub fn values_into(&self, out: &mut Vec<(String, RegValue)>) -> ForensicResult<()> {
+        self.reg.values_raw_into(&self.raw, out)
+    }
+    /// Buffer-reuse counterpart to [`keys`](OwnedRegKey::keys) — see
+    /// [`Registry::keys_raw_into`] for the contract.
+    pub fn keys_into(&self, out: &mut Vec<KeyEntry>) -> ForensicResult<()> {
+        self.reg.keys_raw_into(&self.raw, out)
+    }
+    /// Lazy counterpart to [`values`](OwnedRegKey::values) — see
+    /// [`Registry::values_iter_raw`] for the laziness contract.
+    pub fn values_iter(&self) -> ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + '_>> {
+        self.reg.values_iter_raw(&self.raw)
+    }
+    /// Lazy counterpart to [`keys`](OwnedRegKey::keys) — see
     /// [`Registry::keys_iter_raw`] for the laziness contract.
     pub fn keys_iter(&self) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + '_>> {
         self.reg.keys_iter_raw(&self.raw)
@@ -677,4 +795,63 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<std::sync::Arc<dyn Registry>>();
     }
+
+    fn owned_root(reg: &std::sync::Arc<dyn Registry>) -> OwnedRegKey {
+        let raw = reg.root(PredefinedHive::LocalMachine).unwrap();
+        OwnedRegKey::new(std::sync::Arc::clone(reg), raw)
+    }
+
+    #[test]
+    fn owned_reg_key_opens_and_reads_like_reg_key() {
+        let reg: std::sync::Arc<dyn Registry> = std::sync::Arc::new(MiniRegistry::new());
+        let root = owned_root(&reg);
+        let software = root.open("Software").unwrap();
+        assert_eq!(
+            software.value("InstallDate").unwrap(),
+            RegValue::DWord(20240101)
+        );
+        let run = software.open("Run").unwrap();
+        assert_eq!(run.value("Updater").unwrap(), RegValue::SZ("updater.exe".to_string()));
+    }
+
+    #[test]
+    fn owned_reg_key_closes_on_drop() {
+        let mini = std::sync::Arc::new(MiniRegistry::new());
+        let reg: std::sync::Arc<dyn Registry> = mini.clone();
+        {
+            let root = owned_root(&reg);
+            let _software = root.open("Software").unwrap();
+            assert_eq!(mini.cache.lock().unwrap().len(), 2);
+        }
+        assert_eq!(mini.cache.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn owned_reg_key_explicit_close_removes_handle_immediately() {
+        let mini = std::sync::Arc::new(MiniRegistry::new());
+        let reg: std::sync::Arc<dyn Registry> = mini.clone();
+        let root = owned_root(&reg);
+        let software = root.open("Software").unwrap();
+        software.close().unwrap();
+        assert_eq!(mini.cache.lock().unwrap().len(), 1); // root itself still open
+    }
+
+    #[test]
+    fn owned_reg_key_outlives_the_key_that_created_it() {
+        // The whole point: an OwnedRegKey does not borrow the RegKey (or
+        // anything) that produced its parent — it can be returned from a
+        // function whose local `Arc<dyn Registry>` has gone out of scope
+        // everywhere except inside the key itself.
+        fn open_software() -> OwnedRegKey {
+            let reg: std::sync::Arc<dyn Registry> = std::sync::Arc::new(MiniRegistry::new());
+            let root = owned_root(&reg);
+            root.open("Software").unwrap()
+        }
+        let software = open_software();
+        assert_eq!(
+            software.value("InstallDate").unwrap(),
+            RegValue::DWord(20240101)
+        );
+    }
+
 }

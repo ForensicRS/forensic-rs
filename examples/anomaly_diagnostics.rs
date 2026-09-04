@@ -13,20 +13,28 @@
 //!
 //! Run with: `cargo run --example anomaly_diagnostics`
 
+use std::sync::Arc;
+
 use forensic_rs::prelude::*;
 
 /// One measurement record: a sensor-style value plus a checksum that
 /// occasionally fails to match — bit rot, a bad sector, a corrupted export,
 /// anything that survives to disk mangled.
 struct MeasurementParser {
-    source: SourceHandle,
+    descriptor: ParserDescriptor,
     records: Vec<(u64, u32)>, // (value, stored_checksum)
 }
 
 impl MeasurementParser {
-    fn new(source: SourceHandle) -> Self {
+    fn new() -> Self {
         Self {
-            source,
+            descriptor: ParserDescriptor::new(
+                "measurement_parser",
+                "measurement_parser",
+                "Mock sensor-log parser demonstrating anomaly tracking",
+                "0.1.0",
+            )
+            .with_artifacts(vec![Artifact::Unknown]),
             records: vec![
                 (42, checksum(42)),     // clean
                 (9001, checksum(9001)), // clean, but analyzer-worthy (over threshold)
@@ -43,26 +51,17 @@ fn checksum(value: u64) -> u32 {
     (value as u32).wrapping_mul(2_654_435_761)
 }
 
-impl ArtifactParser for MeasurementParser {
-    fn name(&self) -> &str {
-        "measurement_parser"
-    }
-    fn description(&self) -> &str {
-        "Mock sensor-log parser demonstrating anomaly tracking"
-    }
-    fn version(&self) -> &str {
-        "0.1.0"
-    }
-    fn supported_artifacts(&self) -> Vec<Artifact> {
-        vec![Artifact::Unknown]
+impl ArtifactParserFactory for MeasurementParser {
+    fn descriptor(&self) -> &ParserDescriptor {
+        &self.descriptor
     }
 
-    fn parse<'a>(
-        &'a mut self,
-        _sources: &'a mut TriageSources,
-    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
-        let source = self.source.clone();
-        let iter = self.records.iter().map(move |&(value, stored_checksum)| {
+    fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+        // Registered here, not injected at construction — the parser is the
+        // only thing that knows what its own source key should be.
+        let source = ctx.register_source(SourceKey::Synthetic("sensor-log".to_string()));
+        let records = self.records.clone();
+        let iter = records.into_iter().map(move |(value, stored_checksum)| {
             let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
             let mut data = ForensicData::new("SENSOR01", Artifact::Unknown, provenance);
 
@@ -85,7 +84,7 @@ impl ArtifactParser for MeasurementParser {
             Ok(data)
         });
 
-        Ok(Box::new(iter))
+        Ok(ParserRun::pull(iter))
     }
 }
 
@@ -145,25 +144,20 @@ impl TriageSink for PrintingSink {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let context = TriageContext::new("SENSOR01", "DEMO");
-    let source = context
-        .provenance_store()
-        .register_source(SourceKey::Synthetic("sensor-log".to_string()));
-
     let mut pipeline = TriagePipeline::builder()
-        .context(context)
-        .parser(Box::new(MeasurementParser::new(source)))
+        .context(TriageContext::new("SENSOR01", "DEMO"))
+        .parser(Arc::new(MeasurementParser::new()))
         .analyzer(Box::new(ThresholdAnalyzer { threshold: 1000 }))
         .sink(Box::new(PrintingSink))
         .sink(Box::new(FindingCollector::new()))
         .build()?;
 
-    let mut sources = TriageSources::builder().build();
+    let sources = TriageSources::builder().build();
 
     println!("=== Anomaly + Finding Diagnostics Demo ===\n");
     println!("5 records parsed: 3 clean, 1 over-threshold, 2 with a checksum mismatch.\n");
     println!("Findings:");
-    let result = pipeline.run(&mut sources)?;
+    let result = pipeline.run(&sources)?;
 
     println!("\nItems processed : {}", result.items_processed);
     println!("Findings raised : {}", result.findings_count);

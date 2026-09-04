@@ -561,12 +561,21 @@ impl ForensicTool for LongScanTool {
 // docs/mcp-server-guide/07_capability_coverage.md, "Nested/Cross-Family
 // Resource Design", for the full reasoning.
 //
-// `MiniArchiveFactory` below is a toy `FileSystemFactory` — forensic-rs ships
-// no real zip/E01/OLE parser (that would need an extra dependency this crate
+// `MiniArchiveFactory` below is a toy `FormatFactory` — forensic-rs ships no
+// real zip/E01/OLE parser (that would need an extra dependency this crate
 // deliberately doesn't take on), so this stands in for one to demonstrate the
 // mechanism end to end. A real deployment registers a real zip/E01-aware
-// `FileSystemFactory` instead; everything else here (the mount cache, the
+// `FormatFactory` instead; everything else here (the `MountResolver`, the
 // `[mount]` path convention, the `resources/read` wiring) is unchanged.
+//
+// Mounting is driven by `MountResolver`, which caches by `EvidenceLocator`
+// (a structured chain of hops) rather than by a flat string path — the
+// earlier flat-string cache could represent only one level of nesting,
+// because `split_mount_path` located the *first* `[mount]` marker in a
+// path and silently handed everything after it, markers included, to the
+// single mounted filesystem's `read_all`/`read_dir`. Locating the *last*
+// marker and mounting each hop in the chain in turn (see
+// `mounted_filesystem` below) removes that ceiling.
 
 const MOUNT_MARKER: &str = "[mount]";
 const MINI_ARCHIVE_MAGIC: &str = "FRTRIAGE1";
@@ -605,41 +614,47 @@ fn parse_mini_archive(bytes: &[u8]) -> Option<InMemoryVirtualFileSystem> {
     Some(fs)
 }
 
-/// Toy `FileSystemFactory`: recognizes the mini-archive magic and mounts its
+/// Toy `FormatFactory`: recognizes the mini-archive magic and mounts its
 /// entries into an in-memory filesystem. Stand-in for a real zip/E01/OLE
 /// factory — see the module comment above.
 struct MiniArchiveFactory;
 
-impl FileSystemFactory for MiniArchiveFactory {
+impl FormatFactory for MiniArchiveFactory {
     fn name(&self) -> &'static str {
         "mini-archive"
     }
 
-    fn probe(&self, file: &mut dyn VirtualFile) -> ForensicResult<bool> {
+    fn yields(&self) -> MountKind {
+        MountKind::FileSystem
+    }
+
+    fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
         let start = file.stream_position()?;
         let mut magic = vec![0u8; MINI_ARCHIVE_MAGIC.len()];
         let matches = file.read_exact(&mut magic).is_ok() && magic == MINI_ARCHIVE_MAGIC.as_bytes();
         file.seek(SeekFrom::Start(start))?;
-        Ok(matches)
+        Ok(if matches { ProbeScore::Strong } else { ProbeScore::No })
     }
 
-    fn mount(&self, mut file: Box<dyn VirtualFile>) -> ForensicResult<Arc<dyn FileSystem>> {
+    fn mount(&self, mut file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         let fs = parse_mini_archive(&bytes).ok_or_else(|| {
             ForensicError::other("MiniArchiveFactory", "malformed mini-archive".to_string())
         })?;
-        Ok(Arc::new(fs))
+        Ok(Mounted::FileSystem(Arc::new(fs)))
     }
 }
 
-/// Splits a resource path at the `[mount]` marker into `(container_path,
-/// inner_path)`. `"case.frtriage/[mount]/README.txt"` ->
-/// `Some(("case.frtriage", "README.txt"))`; `"case.frtriage/[mount]"` (or with
-/// a trailing slash) -> `Some(("case.frtriage", ""))` (the mount's own root).
+/// Splits a resource path at the **last** `[mount]` marker into
+/// `(container_chain, inner_path)`. `container_chain` may itself contain
+/// earlier `[mount]` markers, one per nested container --
+/// `"a.zip/[mount]/b.zip/[mount]/x"` -> `Some(("a.zip/[mount]/b.zip", "x"))`.
+/// `"case.frtriage/[mount]"` (or with a trailing slash) ->
+/// `Some(("case.frtriage", ""))` (the mount's own root).
 fn split_mount_path(path: &str) -> Option<(&str, &str)> {
     let marker = "/[mount]";
-    let idx = path.find(marker)?;
+    let idx = path.rfind(marker)?;
     let container = &path[..idx];
     let inner = path[idx + marker.len()..].trim_start_matches('/');
     Some((container, inner))
@@ -656,14 +671,31 @@ fn mount_child_uri(provider: &str, container_path: &str, inner_path: &str) -> St
     encode_resource_uri(provider, &format!("{}/{}{}", container_path, MOUNT_MARKER, suffix))
 }
 
-/// Whether a resource's content looks like a recognized container format —
-/// used to hint a `mount_uri` on an otherwise-ordinary successful read.
-fn looks_like_container(content: &ResourceContent) -> bool {
-    let magic = MINI_ARCHIVE_MAGIC.as_bytes();
-    match content {
-        ResourceContent::Text { text, .. } => text.as_bytes().starts_with(magic),
-        ResourceContent::Bytes { data, .. } => data.starts_with(magic),
-        ResourceContent::Structured { .. } => false,
+/// A `Cursor<Vec<u8>>`-backed [`VirtualFile`] over already-read bytes, so
+/// [`Server::looks_like_container`] can route through the real registered
+/// `FormatFactory::probe` implementations instead of duplicating their
+/// magic-byte check.
+struct BytesFile(std::io::Cursor<Vec<u8>>);
+impl Read for BytesFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+impl std::io::Seek for BytesFile {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+impl VirtualFile for BytesFile {
+    fn metadata(&self) -> ForensicResult<forensic_rs::traits::vfs::VMetadata> {
+        Ok(forensic_rs::traits::vfs::VMetadata {
+            file_type: VFileType::File,
+            size: self.0.get_ref().len() as u64,
+            allocated_size: None,
+            times: MacbTimes::default(),
+            id: None,
+            attributes: FileAttributes::empty(),
+        })
     }
 }
 
@@ -792,14 +824,11 @@ struct Server {
     /// `mounted_filesystem` can open a container file's raw bytes without going
     /// through the resource-authorization layer twice.
     vfs: Arc<dyn FileSystem>,
-    /// Registered container-format sniffers, tried in order. See
-    /// `mounted_filesystem`.
-    mount_factories: Vec<Arc<dyn FileSystemFactory>>,
-    /// Lazy mount cache, keyed by the container file's path in `vfs`. Populated
-    /// on first access — never scanned eagerly — so cost is paid only for
-    /// containers someone actually reads into. See "Nested/Cross-Family
-    /// Resource Design" in docs/mcp-server-guide/07_capability_coverage.md.
-    mounted: Mutex<BTreeMap<String, Arc<dyn FileSystem>>>,
+    /// Registered container-format sniffers plus the lazy mount cache,
+    /// keyed by `EvidenceLocator` rather than a flat string path — see
+    /// `mounted_filesystem` and "Nested/Cross-Family Resource Design" in
+    /// docs/mcp-server-guide/07_capability_coverage.md.
+    mount_resolver: MountResolver,
 }
 
 /// Server setup and initialization.
@@ -843,57 +872,90 @@ impl Server {
             access,
             cancellations: Mutex::new(BTreeMap::new()),
             vfs,
-            mount_factories: vec![Arc::new(MiniArchiveFactory)],
-            mounted: Mutex::new(BTreeMap::new()),
+            mount_resolver: MountResolver::builder().factory(Arc::new(MiniArchiveFactory)).build(),
         }
     }
 
-    /// Returns the mounted filesystem for a container file at `container_path`
-    /// (within `self.vfs`), mounting and caching it on first access. Never
-    /// scans anything beyond the one file actually being accessed — see the
-    /// module comment above `MiniArchiveFactory`.
-    fn mounted_filesystem(&self, container_path: &str) -> CapabilityResult<Arc<dyn FileSystem>> {
-        if let Some(fs) = self.mounted.lock().unwrap().get(container_path) {
-            return Ok(Arc::clone(fs));
+    /// Returns the mounted filesystem for the (possibly multi-hop)
+    /// container chain named by `container_chain` — one path segment per
+    /// `[mount]` hop, joined by `/[mount]/` (see [`split_mount_path`]).
+    /// Mounts and caches each hop on first access, keyed by its full
+    /// [`EvidenceLocator`] so a second-level nested container is a distinct
+    /// cache entry from the first-level one that contains it, rather than
+    /// colliding on a shared flat string. Never scans anything beyond the
+    /// containers actually being opened — see the module comment above
+    /// `MiniArchiveFactory`.
+    fn mounted_filesystem(
+        &self,
+        container_chain: &str,
+        cancellation: &CancellationToken,
+    ) -> CapabilityResult<Arc<dyn FileSystem>> {
+        let mut current_fs = Arc::clone(&self.vfs);
+        let mut locator = EvidenceLocator::root();
+        for hop in container_chain.split("/[mount]/") {
+            locator = locator.push(LocatorSegment::Path(FPathBuf::from(hop)));
+            let file = current_fs.open(FPath::new(hop)).map_err(|_| {
+                CapabilityError::new(CapabilityErrorKind::NotFound, "container not found")
+            })?;
+            let mounted = self
+                .mount_resolver
+                .resolve(&current_fs, &locator, file, Some(MountKind::FileSystem), cancellation)
+                .map_err(|_| {
+                    CapabilityError::new(
+                        CapabilityErrorKind::InvalidInput,
+                        "not a recognized container format, or failed to mount",
+                    )
+                })?;
+            current_fs = mounted
+                .as_file_system()
+                .ok_or_else(|| {
+                    CapabilityError::new(
+                        CapabilityErrorKind::Internal,
+                        "mount did not yield a filesystem",
+                    )
+                })?
+                .clone();
         }
-        let mut file = self.vfs.open(FPath::new(container_path)).map_err(|_| {
-            CapabilityError::new(CapabilityErrorKind::NotFound, "container not found")
-        })?;
-        let mut matched_index = None;
-        for (index, factory) in self.mount_factories.iter().enumerate() {
-            if factory.probe(&mut *file).unwrap_or(false) {
-                matched_index = Some(index);
-                break;
-            }
-        }
-        let Some(index) = matched_index else {
-            return Err(CapabilityError::new(
-                CapabilityErrorKind::InvalidInput,
-                "not a recognized container format",
-            ));
+        Ok(current_fs)
+    }
+
+    /// Whether a resource's already-read content looks like a recognized
+    /// container format — used to hint a `mount_uri` on an otherwise-
+    /// ordinary successful read. Routes through the same registered
+    /// `FormatFactory::probe` implementations `mounted_filesystem` mounts
+    /// with, via [`MountResolver::probe_only`], instead of duplicating
+    /// their magic-byte check.
+    fn looks_like_container(
+        &self,
+        content: &ResourceContent,
+        path: &str,
+        cancellation: &CancellationToken,
+    ) -> bool {
+        let bytes = match content {
+            ResourceContent::Text { text, .. } => text.as_bytes().to_vec(),
+            ResourceContent::Bytes { data, .. } => data.clone(),
+            ResourceContent::Structured { .. } => return false,
         };
-        let mounted = self.mount_factories[index].mount(file).map_err(|_| {
-            CapabilityError::new(CapabilityErrorKind::Internal, "failed to mount container")
-        })?;
-        self.mounted
-            .lock()
-            .unwrap()
-            .insert(container_path.to_string(), Arc::clone(&mounted));
-        Ok(mounted)
+        let mut file = BytesFile(std::io::Cursor::new(bytes));
+        let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from(path)));
+        self.mount_resolver
+            .probe_only(&self.vfs, &locator, &mut file, Some(MountKind::FileSystem), cancellation)
+            .unwrap_or(false)
     }
 
-    /// Reads or lists `inner_path` inside the container mounted at
-    /// `container_path`, mounting it on demand via `mounted_filesystem`. Called
-    /// from the `"resources/read"` arm of `handle` whenever the requested path
-    /// contains a `[mount]` marker.
+    /// Reads or lists `inner_path` inside the container chain
+    /// `container_chain`, mounting it on demand via `mounted_filesystem`.
+    /// Called from the `"resources/read"` arm of `handle` whenever the
+    /// requested path contains a `[mount]` marker.
     fn read_mounted(
         &self,
         provider: &str,
-        container_path: &str,
+        container_chain: &str,
         inner_path: &str,
+        cancellation: &CancellationToken,
     ) -> CapabilityResult<serde_json::Value> {
-        let fs = self.mounted_filesystem(container_path)?;
-        let uri = mount_child_uri(provider, container_path, inner_path);
+        let fs = self.mounted_filesystem(container_chain, cancellation)?;
+        let uri = mount_child_uri(provider, container_chain, inner_path);
         let inner = if inner_path.is_empty() { "/" } else { inner_path };
 
         if let Ok(bytes) = fs.read_all(FPath::new(inner)) {
@@ -927,7 +989,7 @@ impl Server {
                     format!("{}/{}", inner_path, name)
                 };
                 serde_json::json!({
-                    "uri": mount_child_uri(provider, container_path, &child_inner),
+                    "uri": mount_child_uri(provider, container_chain, &child_inner),
                     "name": name,
                 })
             })
@@ -1033,15 +1095,15 @@ impl Server {
                             // bypassing the resource-provider registry entirely
                             // (the mounted filesystem isn't a registered
                             // `ResourceProvider`, just a plain `FileSystem`).
-                            if let Some((container_path, inner_path)) = split_mount_path(&path) {
-                                self.read_mounted(&provider, container_path, inner_path)
+                            if let Some((container_chain, inner_path)) = split_mount_path(&path) {
+                                self.read_mounted(&provider, container_chain, inner_path, &cancellation)
                             } else {
                                 let resource_id = ResourceId::new(provider, path);
                                 match scoped.read_resource(&resource_id, &cancellation) {
                                     Ok(content) => {
                                         let mut value =
                                             resource_content_to_mcp(&resource_id, content.clone());
-                                        if looks_like_container(&content) {
+                                        if self.looks_like_container(&content, &resource_id.path, &cancellation) {
                                             if let serde_json::Value::Object(map) = &mut value {
                                                 map.insert(
                                                     "mount_uri".to_string(),
@@ -1295,5 +1357,87 @@ fn main() {
             println!("{}", response);
             std::io::stdout().flush().ok();
         }
+    }
+}
+
+#[cfg(test)]
+mod nested_mount_tests {
+    use super::*;
+
+    fn nested_mini_archive_vfs() -> Arc<dyn FileSystem> {
+        let inner = "FRTRIAGE1\nhello.txt\nhi";
+        let outer = format!("FRTRIAGE1\ninner.frtriage\n{inner}");
+        let vfs = InMemoryVirtualFileSystem::new().with_text_file("outer.frtriage", outer);
+        Arc::new(vfs)
+    }
+
+    fn test_server(vfs: Arc<dyn FileSystem>) -> Server {
+        Server {
+            registry: CapabilityRegistry::new(Arc::new(AllowAllPolicy)),
+            access: AccessContext::new("test", "test"),
+            cancellations: Mutex::new(BTreeMap::new()),
+            vfs,
+            mount_resolver: MountResolver::builder().factory(Arc::new(MiniArchiveFactory)).build(),
+        }
+    }
+
+    #[test]
+    fn resolves_two_levels_of_nested_mounts() {
+        let server = test_server(nested_mini_archive_vfs());
+        let cancellation = CancellationToken::new();
+        let fs = server
+            .mounted_filesystem("outer.frtriage/[mount]/inner.frtriage", &cancellation)
+            .expect("second-level mount should resolve");
+        let bytes = fs.read_all(FPath::new("hello.txt")).expect("hello.txt inside the inner mount");
+        assert_eq!(bytes, b"hi");
+    }
+
+    #[test]
+    fn read_mounted_serves_content_two_hops_deep() {
+        let server = test_server(nested_mini_archive_vfs());
+        let cancellation = CancellationToken::new();
+        let value = server
+            .read_mounted(
+                "filesystem",
+                "outer.frtriage/[mount]/inner.frtriage",
+                "hello.txt",
+                &cancellation,
+            )
+            .expect("read_mounted should serve the doubly-nested file");
+        assert_eq!(value["text"], serde_json::Value::String("hi".to_string()));
+    }
+
+    #[test]
+    fn split_mount_path_finds_the_last_marker_not_the_first() {
+        let path = "outer.frtriage/[mount]/inner.frtriage/[mount]/hello.txt";
+        let (container_chain, inner) = split_mount_path(path).unwrap();
+        assert_eq!(container_chain, "outer.frtriage/[mount]/inner.frtriage");
+        assert_eq!(inner, "hello.txt");
+    }
+
+    #[test]
+    fn single_level_mount_still_works() {
+        let server = test_server(nested_mini_archive_vfs());
+        let cancellation = CancellationToken::new();
+        let fs = server
+            .mounted_filesystem("outer.frtriage", &cancellation)
+            .expect("single-level mount should still resolve");
+        assert!(fs.exists(FPath::new("inner.frtriage")));
+    }
+
+    #[test]
+    fn looks_like_container_recognizes_mini_archive_bytes_via_probe() {
+        let server = test_server(nested_mini_archive_vfs());
+        let cancellation = CancellationToken::new();
+        let content = ResourceContent::Text {
+            text: "FRTRIAGE1\nx\ny".to_string(),
+            media_type: None,
+        };
+        assert!(server.looks_like_container(&content, "outer.frtriage", &cancellation));
+        let not_container = ResourceContent::Text {
+            text: "just some plain text".to_string(),
+            media_type: None,
+        };
+        assert!(!server.looks_like_container(&not_container, "plain.txt", &cancellation));
     }
 }

@@ -449,7 +449,11 @@ impl<'a> From<&'a ForensicValue> for ForensicValueRef<'a> {
 /// Unified database access trait. Replaces `SqlDb`.
 ///
 /// Construction is handled by each backend's own `open()` / `from_bytes()`.
-pub trait ForensicDb {
+///
+/// `Send + Sync`: a mounted database is cached and shared across parallel
+/// pipeline workers the same way `FileSystem`/`Registry` are (RFC 0001 §1,
+/// P5) -- see [`crate::traits::format::Mounted::Database`].
+pub trait ForensicDb: Send + Sync {
     /// List all user table names.
     fn list_tables(&self) -> ForensicResult<Vec<String>>;
 

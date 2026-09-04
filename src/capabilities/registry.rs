@@ -187,6 +187,39 @@ impl ScopedCapabilityRegistry<'_> {
         provider.metadata(&id.path, cancellation)
     }
 
+    /// List command/tool IDs applicable to a caller-authorized resource node.
+    ///
+    /// This is pure discovery — a `ForensicTool` meant to be used as a node
+    /// action should accept a resource locator (e.g. a `provider`/`path`
+    /// pair) as part of its `input_schema`, since forensic-rs stays
+    /// protocol-neutral and does not auto-inject the path into tool input.
+    /// Actual invocation is unchanged: call [`Self::invoke_tool`] with one of
+    /// the returned descriptors' `id`.
+    ///
+    /// A provider referencing an unregistered or hidden tool ID is silently
+    /// dropped, not an error — consistent with the hidden/missing philosophy
+    /// used elsewhere in this registry.
+    pub fn list_node_actions(
+        &self,
+        provider_id: &str,
+        path: &str,
+        cancellation: &crate::bridge::CancellationToken,
+    ) -> CapabilityResult<Vec<ToolDescriptor>> {
+        let provider = self.visible_resource_provider(provider_id)?;
+        if !self.allows(AccessKind::ListResource, provider_id, Some(path)) {
+            return Err(CapabilityError::not_found());
+        }
+        let ids = provider.actions(path, cancellation)?;
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| {
+                let tool = self.registry.tools.get(&id)?;
+                self.allows(AccessKind::DiscoverTool, &id, None)
+                    .then(|| tool.descriptor().clone())
+            })
+            .collect())
+    }
+
     /// Invoke a visible tool. Hidden and unknown IDs have identical errors.
     pub fn invoke_tool(
         &self,
@@ -587,5 +620,136 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(denied, CapabilityError::not_found());
+    }
+
+    /// A small custom `ResourceProvider` — not one of the crate's built-in
+    /// providers — proving node-action discovery isn't special-cased to them.
+    struct ActionableResourceProvider {
+        descriptor: ResourceProviderDescriptor,
+    }
+
+    impl ActionableResourceProvider {
+        fn new(id: &str) -> Self {
+            Self {
+                descriptor: ResourceProviderDescriptor {
+                    id: id.to_string(),
+                    title: id.to_string(),
+                    description: "test resources with actions".to_string(),
+                },
+            }
+        }
+    }
+
+    impl ResourceProvider for ActionableResourceProvider {
+        fn descriptor(&self) -> &ResourceProviderDescriptor {
+            &self.descriptor
+        }
+
+        fn children(
+            &self,
+            _path: &str,
+            _cancellation: &CancellationToken,
+        ) -> CapabilityResult<Vec<ResourceEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn read(
+            &self,
+            path: &str,
+            _cancellation: &CancellationToken,
+        ) -> CapabilityResult<ResourceContent> {
+            Ok(ResourceContent::Text {
+                text: path.to_string(),
+                media_type: None,
+            })
+        }
+
+        fn metadata(
+            &self,
+            _path: &str,
+            _cancellation: &CancellationToken,
+        ) -> CapabilityResult<ResourceMetadata> {
+            Ok(ResourceMetadata::default())
+        }
+
+        fn actions(
+            &self,
+            path: &str,
+            _cancellation: &CancellationToken,
+        ) -> CapabilityResult<Vec<String>> {
+            match path {
+                "matching" => Ok(vec![
+                    "visible.tool".to_string(),
+                    "hidden.tool".to_string(),
+                    "unregistered.tool".to_string(),
+                ]),
+                _ => Ok(Vec::new()),
+            }
+        }
+    }
+
+    struct NodeActionPolicy;
+
+    impl AccessPolicy for NodeActionPolicy {
+        fn evaluate(
+            &self,
+            _context: &AccessContext,
+            request: &AccessRequest<'_>,
+        ) -> AccessDecision {
+            match (request.kind, request.capability_id, request.target) {
+                (AccessKind::DiscoverResourceProvider, "actionable", None) => AccessDecision::Allow,
+                (AccessKind::ListResource, "actionable", Some("matching")) => AccessDecision::Allow,
+                (AccessKind::ListResource, "actionable", Some("unmatched")) => AccessDecision::Allow,
+                (AccessKind::ListResource, "actionable", Some("denied-path")) => AccessDecision::Deny,
+                (AccessKind::DiscoverTool, "visible.tool", None) => AccessDecision::Allow,
+                (AccessKind::DiscoverTool, "hidden.tool", None) => AccessDecision::Deny,
+                _ => AccessDecision::Deny,
+            }
+        }
+    }
+
+    #[test]
+    fn list_node_actions_filters_by_registration_and_policy() {
+        let mut registry = CapabilityRegistry::new(Arc::new(NodeActionPolicy));
+        registry
+            .register_resource_provider(Arc::new(ActionableResourceProvider::new("actionable")))
+            .unwrap();
+        registry
+            .register_tool(Arc::new(TestTool::new("visible.tool")))
+            .unwrap();
+        registry
+            .register_tool(Arc::new(TestTool::new("hidden.tool")))
+            .unwrap();
+        // "unregistered.tool" is deliberately never registered.
+        let scoped = registry.scope(AccessContext::new("analyst", "tenant"));
+        let cancellation = CancellationToken::new();
+
+        // A matching path surfaces only the registered, discoverable tool —
+        // the hidden tool and the unregistered ID are both silently dropped.
+        let actions = scoped
+            .list_node_actions("actionable", "matching", &cancellation)
+            .unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].id, "visible.tool");
+
+        // A path the provider has no actions for returns an empty list, not
+        // an error (ListResource is allowed for this path).
+        let none = scoped
+            .list_node_actions("actionable", "unmatched", &cancellation)
+            .unwrap();
+        assert!(none.is_empty());
+
+        // ListResource denied for this path -> not_found, without ever
+        // consulting the provider's actions().
+        let denied = scoped
+            .list_node_actions("actionable", "denied-path", &cancellation)
+            .unwrap_err();
+        assert_eq!(denied, CapabilityError::not_found());
+
+        // Unknown provider id -> not_found, same as every other discovery path.
+        let unknown_provider = scoped
+            .list_node_actions("no-such-provider", "matching", &cancellation)
+            .unwrap_err();
+        assert_eq!(unknown_provider, CapabilityError::not_found());
     }
 }

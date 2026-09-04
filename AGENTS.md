@@ -1,5 +1,7 @@
 # forensic-rs Agent Guide
 
+> Building or reviewing a tool that *depends on* forensic-rs, rather than contributing to this repo? Use [`docs/agent-guide/`](./docs/agent-guide/README.md) instead — it has a downstream-focused review skill and new-repo scaffolding templates.
+
 ## Project Overview
 
 **forensic-rs** is a Rust framework for building reusable forensic artifact analysis tools. The core design principle is **decoupling analysis logic from data access**: an analyzer that reads registry keys should work identically whether it talks to a live Windows registry, a parsed hive file, or a mock in a unit test — without any code changes.
@@ -13,7 +15,7 @@ Both the Registry and Filesystem domains follow the same four-layer pattern:
 1. **Core** — a minimal, mechanical, `&self`-based, `Send + Sync` trait implemented by backends (`Registry`, `FileSystem`). Object-safe so `Arc<dyn Registry>`/`Arc<dyn FileSystem>` can be shared across worker threads.
 2. **Ext** — a blanket-impl'd trait with the ergonomic convenience API callers actually use (`RegistryExt::key()`/`value()`, `FileSystemExt::read_all()`/`exists()`/`walk()`/`glob()`). A backend author never implements these directly.
 3. **Capability** — an authorization-checking wrapper around a core trait object (`AuthorizedRegistryReader`, `AuthorizedVirtualFileSystem`, in `src/capabilities/source_guards.rs`) used by the MCP capability layer (`src/capabilities/`) to enforce per-caller path/source grants.
-4. **Factory** — opens a derived reader from evidence discovered through the filesystem (`RegistryReaderFactory`, `ForensicDbFactory`, `EventLogReaderFactory`), taking `(filesystem: Arc<dyn FileSystem>, path: &FPath)`.
+4. **Factory** — opens a derived reader from evidence discovered through the filesystem, via one unified `FormatFactory` trait (`name()`, `yields() -> MountKind`, `probe()`, `mount()`) producing a `Mounted` value (`FileSystem`/`Registry`/`Database`/`EventLog`/`Object`/`File`). See "Stacking File Systems" below.
 
 **Current version**: 0.14.0
 **Repository**: https://github.com/ForensicRS/forensic-rs
@@ -27,12 +29,13 @@ Both the Registry and Filesystem domains follow the same four-layer pattern:
 src/
   lib.rs              — Module declarations + `prelude` with all public re-exports
   traits/             — Core abstraction traits (the "interfaces" of the framework)
-    vfs.rs            — FileSystem, FileSystemExt, VirtualFile, VMetadata, DirEntry, VFileType, SourceKind, CaseSensitivity, FileSystemFactory
-    forensic.rs       — ArtifactParser, IntoTimeline, IntoActivity, RegistryParser
+    vfs.rs            — FileSystem, FileSystemExt, VirtualFile, VMetadata, DirEntry, VFileType, SourceKind, CaseSensitivity
+    forensic.rs       — ArtifactParserFactory, ParserDescriptor, ParserRun, ParserOutput, OutputFlow, ArtifactStream, PushDriver, IntoTimeline, IntoActivity, Requirement, Resolution, UnavailableReason, SchemaFingerprint, TargetSpec, KeySpec, ChannelSpec
+    format.rs         — FormatFactory, Mounted, MountKind, ProbeScore, MountContext, StructuredObject (unified sniff-and-mount contract, replacing the old vfs.rs FileSystemFactory and traits/factories.rs)
+    digest.rs         — Digest, DigestAlgorithm, ContentAddress (content-hashing contract, no hashing dependency taken)
     sql.rs            — SqlStatement, SqlDb, ColumnValue
     db.rs             — ForensicDb, ForensicRows, ForensicValue, ForensicRow, RowIterator
     events.rs         — EventLogReader, EventLogIterator, EventLogQuery, EventRecord, EventLevel
-    factories.rs      — ForensicDbFactory, EventLogReaderFactory, RegistryReaderFactory (open a derived reader from an Arc<dyn FileSystem> + path)
     registry/         — mod.rs: RegValue (13 variants), RegValueRef, RegistryBuffer; raw.rs: Registry, RegistryExt, RegKey, RawKey, PredefinedHive; windows.rs: system_root(), users(), build() free functions
       extra/          — Registry helpers (e.g., get_env_vars_of_users())
   capabilities/       — MCP-facing authorization layer: gate access to sources, expose them as discoverable tools/resources
@@ -45,14 +48,17 @@ src/
     value.rs          — CapabilityValue (lossless, protocol-neutral value type exchanged by tools/resource providers)
     pipeline.rs       — PipelineSourceKind, AccessRequirements, AuthorizedSourceFactory, PipelineTaskFactory, PipelineTaskTool (authorization prerequisites for wiring an Analyzer into a capability tool)
     bridge_adapter.rs — BridgeResourceProvider (adapts a legacy `ForensicProvider` bridge provider to the protocol-neutral ResourceProvider API)
-  pipeline/           — Triage orchestration: run Analyzers/Enrichers over evidence and route Findings to sinks
+  pipeline/           — Triage orchestration: run Parsers/Analyzers/Enrichers over evidence and route Findings to sinks
     finding.rs        — Finding, FindingSeverity, FindingCategory, AnomalyTally
     traits.rs         — Analyzer, Enricher, TriageSink
     mod.rs            — TriagePipeline, TriagePipelineBuilder, ErrorAction, PipelineResult (serial pipeline orchestration/routing)
     parallel.rs       — ParallelPipeline, ParallelPipelineBuilder, AnalysisModule, PipelineEvent, TaskStats (thread-pool parallel triage pipeline)
-    context.rs        — TriageContext (shared run context: host/tenant/artifact metadata, shared KV store, ProvenanceStore)
-    sources.rs        — TriageSources, TriageSourcesBuilder (VFS/registry evidence sources available to parsers)
+    processor.rs      — RecordProcessor, RecordDestination (pub(crate); the one enrich→tally→analyze→route body shared by the serial and parallel drivers)
+    context.rs        — TriageContext (shared run context: host/tenant/artifact metadata, shared KV store, ProvenanceStore), ParseContext (what one ArtifactParserFactory::open() call sees: sources, host, acquisition, cancellation, register_source())
+    registry.rs       — ParserRegistry (ID-keyed store of ArtifactParserFactory instances, backing AccessRequirements::parser(id))
+    sources.rs        — TriageSources, TriageSourcesBuilder (VFS/registry evidence sources available to parsers, plus optional MountResolver/SecretProvider attachments)
     sinks.rs          — TimelineSink, FindingCollector, JsonlTimelineSink, JsonlFindingSink
+    timeline.rs       — EventId, TimelineStore, InMemoryTimelineStore, TimelineRecordSink: an ordered, deduped timeline (TimelineSink is stats-only; this is the "implement a custom TriageSink" it points to)
   provenance/         — Where a value came from and how much to trust it — tracked separately from the value itself
     model.rs          — Acquisition, Recovery, Locus, SourceKey, MergeReason, DerivedFrom, Provenance, ProvenanceSnapshot
     anomalies.rs       — AnomalyFlags, AnomalyDetail, Anomalies (instance-level, bitflag-based anomaly tracking — "divergence is evidence, not error")
@@ -62,6 +68,7 @@ src/
     store.rs           — ProvenanceStore, SourceHandle (interning arena; mint/derive/merge API)
     ids.rs             — ProvenanceId, SourceId (opaque 4-byte interned handles into a ProvenanceStore)
     serde_support.rs   — ProvenanceSideTable, ExpandedProvenance, expand() (serde-feature-gated provenance-aware serialization)
+  secrets.rs          — Secret, SecretKind, SecretRequest, SecretProvider (externally supplied key material; Secret has no Debug/Serialize/Clone and zeroizes on drop)
   parsing/            — Byte-level parsing helpers shared by binary artifact parsers
     reader.rs         — ByteReader (zero-copy, position-tracking cursor over &[u8])
     from_bytes.rs      — FromBytes (raw-bytes-to-typed-struct trait)
@@ -75,6 +82,9 @@ src/
     hooks.rs          — ProviderHook trait, virtual_segment(), inject_hook_children(), path helpers
   core/
     path.rs           — FPath, FPathBuf: `/`-normalized, drive-aware, case-preserving evidence paths (replace std::path::Path/PathBuf in FileSystem/Registry APIs)
+    locator.rs        — EvidenceLocator, LocatorSegment: structured, typed chain of hops through nested containers (no FromStr, by design)
+    limits.rs         — Limits, LimitExceeded, SpillStore, MemorySpillStore: resource budgets for hostile/untrusted evidence containers
+    resolver.rs       — MountResolver, MountResolverBuilder: drives FormatFactory probe/mount across every registered factory, caches by EvidenceLocator, enforces Limits
     fs/
       stdfs.rs        — StdVirtualFS: FileSystem over std::fs
       chroot.rs       — ChRootFileSystem: path-remapping FileSystem wrapper (wraps an Arc<dyn FileSystem>)
@@ -90,7 +100,7 @@ src/
     time/
       timestamp128.rs — ForensicTimestamp (alias Timestamp128): 16-byte nanosecond-precision timestamp with TimestampPrecision, TimestampSource, TimestampFlags (see ForensicTimestamp section below)
     unpack.rs         — Binary unpacking helpers (u16/u32/u64_at_pos, safe variants)
-    testing/          — Test doubles implementing the crate's traits: TestingRegistry (Registry), InMemoryVirtualFileSystem (FileSystem), TestingEventLogReader, InMemoryForensicDb, TestParserBuilder, TestingProviderHook, testing factory wrappers, basic_event_log(), testing_logger_dummy()
+    testing/          — Test doubles implementing the crate's traits: TestingRegistry (Registry), InMemoryVirtualFileSystem (FileSystem), TestingEventLogReader, InMemoryForensicDb, TestParserFactoryBuilder (ArtifactParserFactory), TestingFormatFactory (FormatFactory), TestingProviderHook, basic_event_log(), testing_logger_dummy()
     win/
       sid.rs          — to_string_sid(), SID constants (LOCAL_SYSTEM, BUILTIN_ADMINS, etc.)
       csidl.rs        — FOLDERID_* constants for 60+ Windows shell folders
@@ -102,6 +112,13 @@ src/
   err.rs              — ForensicError, ForensicResult, validation macros (uses compact_str::CompactString)
   artifact.rs         — Artifact enum, OS-specific artifact type enums
   context.rs          — ForensicContext: thread-local artifact/host/tenant metadata
+  investigation.rs    — Investigation, InvestigationId, TenantId: small, opaque identity to seal provenance/coverage reporting against — not case management
+  evidence.rs         — EvidenceSet, EvidenceItem, EvidenceItemId: an investigation's ordered set of evidence items, each lazily resolving into a TriageSources view
+  collection.rs       — CollectionManifest, ToolIdentity, CollectionError, StaticCollectionManifest: what a collection tool (KAPE, CyLR, ...) says it did and what it failed to collect
+  coverage.rs         — CoverageReport, CoverageGap, CoverageGapReason: CollectionManifest targets checked against what's actually present in the evidence
+  host_profile.rs     — HostProfile: a host's identity facts (computer name, system root, OS version, users), every field Option<Tracked<T>> so an unresolved fact never defaults
+  entity.rs           — EntityId, EntityKind: content-derived, stable-across-runs identity for correlation subjects (Host, User, Executable, File, Process, ...)
+  fact_store.rs       — FactStore, InMemoryFactStore, ObservationOutcome, FactRecord: cross-artifact corroboration — append-only observations, agreement merges provenance, disagreement is retained not overwritten
   logging/            — Logger, Level, channel-based log macros (error!, warn!, info!, debug!, trace!) — engineer-facing diagnostics only, not forensic alerts (see Findings vs. logs vs. errors below)
   channel.rs          — Underlying channel for logging
   dictionary.rs       — Elastic Common Schema (ECS) field name constants (~80+)
@@ -126,7 +143,21 @@ Key prelude exports:
 - `FPath`, `FPathBuf` — evidence path types (replace `std::path::Path`/`PathBuf` in filesystem/registry APIs)
 - `Registry`, `RegistryExt`, `RegKey`, `RawKey`, `RegValue`, `PredefinedHive` — registry (path-based `key()`/`value()`, RAII `RegKey`)
 - `windows` — free functions (`system_root()`, `users()`, `build()`) for Windows-specific registry semantics
-- `ForensicDbFactory`, `EventLogReaderFactory`, `RegistryReaderFactory` — factories that open a derived reader from evidence discovered through a filesystem
+- `FormatFactory`, `Mounted`, `MountKind`, `ProbeScore`, `MountContext`, `StructuredObject` — unified sniff-and-mount contract that opens a derived reader (or a nested filesystem, or a structured object's children) from evidence discovered through a filesystem
+- `EvidenceLocator`, `LocatorSegment` — structured, typed addressing through nested containers (no `FromStr`, by design)
+- `MountResolver`, `MountResolverBuilder` — drives `FormatFactory` probing/mounting, caches by `EvidenceLocator`, enforces `Limits`
+- `Limits`, `LimitExceeded`, `SpillStore`, `MemorySpillStore` — resource budgets for hostile/untrusted evidence containers
+- `Digest`, `DigestAlgorithm`, `ContentAddress` — content-hashing contract (trait only, no hashing dependency)
+- `Requirement`, `Resolution`, `UnavailableReason`, `SchemaFingerprint`, `TargetSpec`, `KeySpec`, `ChannelSpec` — what a parser needs beyond a bare VFS/registry handle, declared on `ParserDescriptor::requirements` and resolved via `ParseContext::resolve()`/`ParseContext::mount()`
+- `Secret`, `SecretKind`, `SecretRequest`, `SecretProvider` — externally supplied key material for decrypting evidence-derived ciphertext
+- `Investigation`, `InvestigationId`, `TenantId` — small, opaque investigation identity (not case management) that provenance/coverage reporting seals against
+- `EvidenceSet`, `EvidenceItem`, `EvidenceItemId` — an investigation's ordered set of evidence items, each lazily resolving into a `TriageSources` view
+- `CollectionManifest`, `ToolIdentity`, `CollectionError`, `StaticCollectionManifest` — what a collection tool (KAPE, CyLR, ...) says it did, and what it itself failed to collect
+- `CoverageReport`, `CoverageGap`, `CoverageGapReason` — `CollectionManifest` targets checked against what evidence is actually present, with the reason for each gap
+- `HostProfile` — a host's identity facts (computer name, system root, OS version, users), every field `Option<Tracked<T>>`
+- `EventId`, `TimelineStore`, `InMemoryTimelineStore`, `TimelineRecordSink`, `InsertOutcome` — a stable-identity, ordered, deduped timeline; `TimelineData`/`TimeContext`/`IntoTimeline`/`IntoActivity` (`src/traits/forensic.rs`) are what a timeline event actually holds
+- `EntityId`, `EntityKind` — content-derived, stable-across-runs identity for correlation subjects
+- `FactStore`, `InMemoryFactStore`, `ObservationOutcome`, `FactRecord`, `FactObservation` — cross-artifact corroboration: append-only observations about an `EntityId`, agreement merges provenance, disagreement is retained not overwritten
 - `ForensicDb`, `ForensicTable`, `ForensicRows`, `ForensicValue`, `ForensicRow`, `RowIterator` — database
 - `EventLogReader`, `EventLogIterator`, `EventLogQuery`, `EventRecord`, `EventLevel` — event logs
 - `BridgeClient`, `ForensicBridge`, `ForensicBridgeBuilder` — bridge server/client
@@ -137,7 +168,7 @@ Key prelude exports:
 - `Filetime`, `ForensicTimestamp`, `Timestamp128`, `TimestampPrecision`, `TimestampSource`, `TimestampFlags`, `WinFiletime`, `UnixTimestamp`, `filetime_to_unix_timestamp` — time types (`src/utils/time.rs` and `src/utils/time/timestamp128.rs`; see ForensicTimestamp section below)
 - Logging macros: `error!`, `warn!`, `info!`, `debug!`, `trace!`, `log!` — engineer-facing diagnostics, not forensic alerts
 - `Finding`, `FindingSeverity`, `FindingCategory` — structured, severity-ranked forensic alerts (`src/pipeline/finding.rs`), produced by an `Analyzer` and routed to every `TriageSink`
-- `TriagePipeline`, `TriagePipelineBuilder`, `ParallelPipeline`, `Analyzer`, `Enricher`, `TriageSink`, `TriageContext`, `TriageSources` — pipeline orchestration (`src/pipeline/`): run `Analyzer`s/`Enricher`s over `TriageSources`, route `Finding`s to `TriageSink`s
+- `TriagePipeline`, `TriagePipelineBuilder`, `ParallelPipeline`, `ArtifactParserFactory`, `ParserDescriptor`, `ParserRun`, `ParseContext`, `ParserRegistry`, `Analyzer`, `Enricher`, `TriageSink`, `TriageContext`, `TriageSources` — pipeline orchestration (`src/pipeline/`): run `ArtifactParserFactory`s/`Analyzer`s/`Enricher`s over `TriageSources`, route `Finding`s to `TriageSink`s
 - `Anomalies`, `AnomalyFlags`, `AnomalyDetail`, `Parsed<T>` — cheap, value-carried divergence tracking for parsers (`src/provenance/`; "divergence is evidence, not error")
 - `ProvenanceStore`, `ProvenanceId`, `Provenance`, `Confidence`, `Tracked<T>` — provenance/lineage tracking (`src/provenance/`): where a value came from and how much to trust it
 - `ForensicTool`, `CapabilityRegistry`, `ResourceProvider`, `AccessPolicy`, `ValueSchema`, `CapabilityValue`, `AuthorizedVirtualFileSystem`, `AuthorizedRegistryReader` — MCP capability layer (`src/capabilities/`): authorization, and exposing sources as discoverable tools/resources
@@ -246,7 +277,7 @@ let f: Field = my_forensic_ts.into();       // Field::Date(...) via Filetime con
 
 | Kind | Pattern | Examples |
 |------|---------|---------|
-| Traits | Concept noun, `Ext` suffix for the ergonomic layer | `FileSystem` / `FileSystemExt`, `Registry` / `RegistryExt`, `ArtifactParser` |
+| Traits | Concept noun, `Ext` suffix for the ergonomic layer | `FileSystem` / `FileSystemExt`, `Registry` / `RegistryExt`, `ArtifactParserFactory` |
 | Structs | PascalCase | `ForensicData`, `ChRootFileSystem`, `StdVirtualFS` |
 | Enums | PascalCase | `Field`, `RegValue`, `Artifact`, `CompressionAlgorithm` |
 | Enum variants | PascalCase | `CompressionFormatLznt1`, `RegValue::DWord` |
@@ -296,7 +327,9 @@ A backend author implements only the minimal core trait (`FileSystem`, `Registry
 
 ### Stacking File Systems
 
-`FileSystem` supports nesting without any special core-trait methods, since `Arc<dyn FileSystem>` is the common currency type: a `FileSystemFactory` sniffs and mounts a nested filesystem (ZIP, E01, ...) out of an opened `VirtualFile`; `MountTable`/`OverlayFs` (`src/core/fs/mount.rs`) compose several filesystems into one layered view; `ChRootFileSystem` wraps an `Arc<dyn FileSystem>` and remaps paths under a different root.
+`FileSystem` supports nesting without any special core-trait methods, since `Arc<dyn FileSystem>` is the common currency type: `MountTable`/`OverlayFs` (`src/core/fs/mount.rs`) compose several filesystems into one layered view; `ChRootFileSystem` wraps an `Arc<dyn FileSystem>` and remaps paths under a different root.
+
+Nesting *through* a container — a ZIP, an E01 volume, a SQLite database, a PE's embedded resources — is a different problem: "inside" is really three relationships (containment, interpretation, embedding), and a `FormatFactory` (`src/traits/format.rs`) covers all three through one `probe()`/`mount()` contract, producing a `Mounted` value. `MountResolver` (`src/core/resolver.rs`) drives probing across every registered factory, picks a winner deterministically (highest `ProbeScore`, tied broken by factory name — never registration order), and caches by `EvidenceLocator` (`src/core/locator.rs`) rather than a string path, so an arbitrary depth of nesting is a distinct, correctly-scoped cache entry at every hop instead of colliding on a flat key. `Limits` (`src/core/limits.rs`) bound nesting depth, total expanded bytes, entry count, and expansion ratio across the whole resolution, shared rather than per-container, so many small containers can't each individually pass a check and still sum to an unbounded expansion.
 
 ### Default Implementations
 
@@ -647,6 +680,6 @@ pub struct ForensicActivity {
 
 These changes affect downstream code:
 
-1. **Fallible iterators**: `ArtifactParser` now requires `IntoIterator<Item = ForensicResult<ForensicData>>`. `IntoTimeline` and `IntoActivity` similarly wrap items in `ForensicResult`.
+1. **Parser factories replace parsers**: `ArtifactParser` (`&mut self`, one `parse<'a>(&'a mut self, sources: &'a mut TriageSources)` tying the parser's lifetime to `TriageSources`') is removed entirely. `ArtifactParserFactory` (`&self`, `Send + Sync`, one `open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun>`) replaces it: `ParserRun::Pull(ArtifactStream)` for the common owned-iterator case, `ParserRun::Push(PushDriver)` for a reader that returns borrowed cursors (registry key, db row cursor, event-log iterator) and must drive its own loop instead of handing back a self-referential stream. `name()`/`description()`/`version()`/`supported_artifacts()` fold into one `ParserDescriptor`; a caller-injected `SourceHandle`/`Acquisition` is replaced by `ParseContext::register_source()`/`acquisition()`, called from inside `open()` against the pipeline's own `ProvenanceStore`. Every builder (`TriagePipelineBuilder::parser`, `StandardParallelTaskBuilder::parser`, `AnalysisModuleBuilder::parser`, `ParallelPipelineBuilder::parser`) now takes `Arc<dyn ArtifactParserFactory>` instead of `Box<dyn ArtifactParser>`. `IntoTimeline` and `IntoActivity` still wrap items in `ForensicResult`.
 2. **Field TryInto errors**: `TryInto` impls on `&Field` now return `ForensicError` instead of `&'static str`.
 3. **VMetadata timestamps**: `created`/`accessed`/`modified` changed from `Option<usize>` to `Option<ForensicTimestamp>`. Accessor methods return `ForensicTimestamp` instead of `usize`.

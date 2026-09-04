@@ -23,16 +23,23 @@ use forensic_rs::utils::testing::TestingRegistry;
 /// Simulates parsing a Windows Event Log channel.
 /// In production, this would read .evtx files from the VFS.
 struct MockEvtxParser {
+    descriptor: ParserDescriptor,
     channel: &'static str,
     events: Vec<(u64, u64, u64)>, // (record_id, event_id, unix_secs)
-    source: SourceHandle,
 }
 
 impl MockEvtxParser {
-    fn security_log(source: SourceHandle) -> Self {
+    fn descriptor_for(channel: &'static str) -> ParserDescriptor {
+        ParserDescriptor::new(channel, channel, "Mock Windows Event Log parser", "0.1.0")
+            .with_artifacts(vec![Artifact::Windows(WindowsArtifacts::WinEvt(
+                WindowsEvents::Unknown,
+            ))])
+    }
+
+    fn security_log() -> Self {
         Self {
+            descriptor: Self::descriptor_for("Security"),
             channel: "Security",
-            source,
             events: vec![
                 // Normal sequence with a gap: records 1001-1003, then 1007-1010 (missing 1004-1006)
                 (1001, 4624, 1718400000), // Logon success
@@ -47,10 +54,10 @@ impl MockEvtxParser {
         }
     }
 
-    fn system_log(source: SourceHandle) -> Self {
+    fn system_log() -> Self {
         Self {
+            descriptor: Self::descriptor_for("System"),
             channel: "System",
-            source,
             events: vec![
                 (501, 7045, 1718400000),  // Service installed
                 (502, 7036, 1718400060),  // Service state change
@@ -63,22 +70,18 @@ impl MockEvtxParser {
     }
 }
 
-impl ArtifactParser for MockEvtxParser {
-    fn name(&self) -> &str { self.channel }
-    fn description(&self) -> &str { "Mock Windows Event Log parser" }
-    fn version(&self) -> &str { "0.1.0" }
-
-    fn supported_artifacts(&self) -> Vec<Artifact> {
-        vec![Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown))]
+impl ArtifactParserFactory for MockEvtxParser {
+    fn descriptor(&self) -> &ParserDescriptor {
+        &self.descriptor
     }
 
-    fn parse<'a>(
-        &'a mut self,
-        _sources: &'a mut TriageSources,
-    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
+    fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
         let channel = self.channel;
-        let source = self.source.clone();
-        let iter = self.events.iter().map(move |&(record_id, event_id, unix_secs)| {
+        // Registered here, not injected at construction — the parser is the
+        // only thing that knows what its own source key should be.
+        let source = ctx.register_source(SourceKey::Path(format!("{channel}.evtx")));
+        let events = self.events.clone();
+        let iter = events.into_iter().map(move |(record_id, event_id, unix_secs)| {
             // Each record gets its own provenance: minted from this parser's
             // source, as an allocated read from the (simulated) .evtx image.
             let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
@@ -94,7 +97,7 @@ impl ArtifactParser for MockEvtxParser {
             Ok(data)
         });
 
-        Ok(Box::new(iter))
+        Ok(ParserRun::pull(iter))
     }
 }
 
@@ -225,33 +228,26 @@ impl Analyzer for EventGapDetector {
 /// Demonstrates the same [`EventGapDetector`] running inside a
 /// [`ParallelPipeline`] via [`AnalysisModule`].
 ///
-/// Both EVTX parsers are registered as factories. The pipeline builder
+/// Both EVTX parsers are registered in the pool. The pipeline builder
 /// auto-matches them to the module at `build()` time — neither the analyzer
 /// nor the module needs to know about the concrete parser type.
 fn run_parallel() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Parallel Variant (AnalysisModule) ===\n");
 
-    // Register each channel's source before building the pipeline, so its
-    // SourceHandle can be moved into the parser factory closures below.
-    let context = TriageContext::new("WORKSTATION01", "INCIDENT-2024-001");
-    let store = context.provenance_store();
-    let security_source = store.register_source(SourceKey::Path("Security.evtx".to_string()));
-    let system_source = store.register_source(SourceKey::Path("System.evtx".to_string()));
-
     // AnalysisModule wraps the detector. No explicit parsers — they come
-    // from the factories below, matched by supported_artifacts() overlap.
+    // from the pool below, matched by artifact overlap.
     let module = AnalysisModuleBuilder::new("event_gap_analysis")
         .analyzer(Box::new(EventGapDetector::new()))
         .sources(|| TriageSources::builder().build())
-        .context(context)
+        .context(TriageContext::new("WORKSTATION01", "INCIDENT-2024-001"))
         .build()?;
 
     let mut pipeline = ParallelPipeline::builder()
         .workers(2)
         // Both parsers declare Artifact::Windows(WinEvt(Unknown)), which
         // matches EventGapDetector::supported_artifacts() — auto-injected.
-        .parser_factory(Box::new(move || Box::new(MockEvtxParser::security_log(security_source.clone()))))
-        .parser_factory(Box::new(move || Box::new(MockEvtxParser::system_log(system_source.clone()))))
+        .parser(std::sync::Arc::new(MockEvtxParser::security_log()))
+        .parser(std::sync::Arc::new(MockEvtxParser::system_log()))
         .module(module)
         .sink(Box::new(FindingCollector::new()))
         .build()?;
@@ -279,20 +275,16 @@ fn run_parallel() -> Result<(), Box<dyn std::error::Error>> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = TestingRegistry::new();
     let vfs = StdVirtualFS::new();
-    let mut sources = TriageSources::new(std::sync::Arc::new(vfs), std::sync::Arc::new(registry));
+    let sources = TriageSources::new(std::sync::Arc::new(vfs), std::sync::Arc::new(registry));
 
-    // Register each channel as its own source before building parsers, so
-    // every record they emit mints a real ProvenanceId against it.
-    let context = TriageContext::new("WORKSTATION01", "INCIDENT-2024-001");
-    let store = context.provenance_store();
-    let security_source = store.register_source(SourceKey::Path("Security.evtx".to_string()));
-    let system_source = store.register_source(SourceKey::Path("System.evtx".to_string()));
-
-    // Build pipeline with two parser instances and built-in sinks
+    // Build pipeline with two parser instances and built-in sinks. Unlike
+    // the old `ArtifactParser` shape, nothing needs to be registered against
+    // the provenance store up front — each parser registers its own
+    // `SourceKey` from inside `open()`.
     let mut pipeline = TriagePipeline::builder()
-        .context(context)
-        .parser(Box::new(MockEvtxParser::security_log(security_source)))
-        .parser(Box::new(MockEvtxParser::system_log(system_source)))
+        .context(TriageContext::new("WORKSTATION01", "INCIDENT-2024-001"))
+        .parser(std::sync::Arc::new(MockEvtxParser::security_log()))
+        .parser(std::sync::Arc::new(MockEvtxParser::system_log()))
         .analyzer(Box::new(EventGapDetector::new()))
         .sink(Box::new(TimelineSink::new("@timestamp")))
         .sink(Box::new(FindingCollector::new()))
@@ -300,7 +292,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     println!("=== Event Gap Detector ===\n");
-    let result = pipeline.run(&mut sources)?;
+    let result = pipeline.run(&sources)?;
 
     // Print results
     println!("Parsers run: {:?}", result.parsers_run);

@@ -1,0 +1,24 @@
+# {{crate_name}}
+
+{{One-line description of what this tool does.}}
+
+**Implements:** {{Registry | FileSystem | SqlStatement/ForensicDb | EventLogReader | ArtifactParser — list every forensic-rs trait this crate implements}}
+
+Built on [`forensic-rs`](https://github.com/ForensicRS/forensic-rs), which decouples forensic analysis logic from data access: code written against this crate's trait implementation runs unmodified whether the underlying evidence is {{e.g. "a live Windows registry", "a parsed hive file", "an in-memory test double"}}.
+
+## Usage
+
+```rust
+use forensic_rs::prelude::*;
+use {{crate_name}}::{{MainType}};
+
+{{minimal usage example}}
+```
+
+## Testing
+
+Tests use `forensic_rs::utils::testing` doubles ({{TestingRegistry | InMemoryVirtualFileSystem | TestingEventLogReader}}) rather than the live OS or a mocking library.
+
+## License
+
+MIT

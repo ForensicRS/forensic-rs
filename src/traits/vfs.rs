@@ -107,7 +107,6 @@ impl VMetadata {
 // ---------------------------------------------------------------------
 
 use crate::core::path::{FPath, FPathBuf};
-use std::sync::Arc;
 
 /// Where a [`FileSystem`]'s data actually comes from. Replaces the old
 /// `is_live(): bool`, which couldn't distinguish "this path is absent from
@@ -314,15 +313,6 @@ pub struct Region {
     pub length: u64,
 }
 
-/// Sniffs and mounts a nested filesystem out of an opened file (a ZIP, an
-/// E01 image, an OLE compound file, ...).
-pub trait FileSystemFactory: Send + Sync {
-    fn name(&self) -> &'static str;
-    /// Content-based sniff. Must restore the stream position before returning.
-    fn probe(&self, file: &mut dyn VirtualFile) -> ForensicResult<bool>;
-    fn mount(&self, file: Box<dyn VirtualFile>) -> ForensicResult<Arc<dyn FileSystem>>;
-}
-
 #[cfg(test)]
 mod fs_tests {
     use super::*;
@@ -330,6 +320,7 @@ mod fs_tests {
     use crate::err::ForensicError;
     use std::collections::BTreeMap;
     use std::io::Cursor;
+    use std::sync::Arc;
 
     /// Minimal in-file test double proving `FileSystem` is object-safe and
     /// that the `FileSystemExt` blanket impl works end to end. The real

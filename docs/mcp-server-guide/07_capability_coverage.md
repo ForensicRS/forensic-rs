@@ -18,6 +18,7 @@ references against the current source before relying on them — this page will 
 |---|---|---|---|
 | Tools | ✅ Implemented & demonstrated | `src/capabilities/tools.rs`, `examples/mcp_stdio_server.rs` | `tools/list`/`tools/call` fully wired end to end. |
 | Resources | ✅ Implemented & demonstrated | `src/capabilities/resources.rs`, `src/bridge/providers.rs`, `examples/mcp_stdio_server.rs` | The example registers a chrooted `VfsProvider` and serves `resources/list`/`resources/read` over `forensic://{provider}/{path}` URIs, including lazy on-demand mounting into nested containers (zip-style) — see "Nested/Cross-Family Resource Design" below. |
+| Node actions | ✅ Implemented, no example wiring | `ResourceProvider::actions()`, `ScopedCapabilityRegistry::list_node_actions()` (`src/capabilities/registry.rs`), `ProviderHook::action_ids()`/`virtual_action_ids()` (`src/bridge/hooks.rs`) | Discovery link from a resource node to already-registered tool IDs that apply to it — see [Node Actions](./04_tutorial/06_resources.md#node-actions-linking-resources-to-tools). Rust-API-level only; no MCP method for it exists, so `examples/mcp_stdio_server.rs` doesn't wire it into a JSON-RPC verb. |
 | Progress notifications | ✅ Implemented & demonstrated | `src/capabilities/tools.rs` (`ProgressReporter`) | Real `notifications/progress` emission in the example. |
 | Cancellation | ✅ Implemented & demonstrated | `src/bridge/mod.rs` (`CancellationToken`), `examples/mcp_stdio_server.rs` | `tools/call` runs on a worker thread; `notifications/cancelled` (keyed by `requestId`, per spec) reaches and cancels the matching in-flight call. |
 | Resource templates | ❌ Not implemented | — | No URI-template concept; navigation is `children()`-based only. |
@@ -193,54 +194,87 @@ cover this:
   `ProviderHook` (`src/bridge/hooks.rs`). Injects virtual children under a
   `[hookname]` path segment, still inside the *same* provider, still speaking the
   *same* generic `BridgeValue` model. Already wired through to the MCP-facing
-  `ResourceProvider` surface.
-- **Cross-family containment** (a *file* that, opened, turns out to be a whole
-  different kind of source — a zip, an E01, a registry hive): `FileSystemFactory`
-  (`src/traits/vfs.rs`) and `RegistryReaderFactory` (`src/traits/factories.rs`).
-  Neither produces virtual children inside an existing provider — each produces a
-  brand new, independent `Arc<dyn FileSystem>` / `Box<dyn Registry>` with no
-  automatic path-composition to the outer one.
+  `ResourceProvider` surface. `virtual_children()`/`read_virtual()` both support real
+  multi-level nesting below `[hookname]` — a hook self-routes on the full remaining
+  sub-path it's handed, not just a single flat level. `RegistryProvider` dispatches
+  through the `[hookname]` marker as before; `VfsProvider` now dispatches its hooks
+  too (previously registered but never consulted) using a marker-free convention — a
+  recognized file's own path "becomes" the hook's children, since a file has no real
+  children of its own to collide with.
+- **Cross-family containment/interpretation/embedding** (a *file* that, opened,
+  turns out to be a whole different kind of source — a zip, an E01, a registry
+  hive, a database, a structured object's embedded children): one unified
+  `FormatFactory` trait (`src/traits/format.rs`), covering all three
+  relationships through a single `probe()`/`mount()` contract and a `Mounted`
+  result (`FileSystem`/`Registry`/`Database`/`EventLog`/`Object`/`File`). A
+  successful mount produces a brand new, independent `Arc<dyn FileSystem>` /
+  `Arc<dyn Registry>` / etc. with no automatic path-composition to the outer
+  one — composition is the resolver's job, described below, not the factory's.
 
 **Eager/static pre-mounting (walk the whole evidence tree at startup, mount
 everything mountable) doesn't work.** It requires exhaustively signature-checking
-every file against every registered `FileSystemFactory` before the server can even
+every file against every registered `FormatFactory` before the server can even
 answer `initialize`. A real evidence set can be hundreds of thousands of files —
 that's unbounded startup latency and wasted I/O on files nobody will ever ask about,
 and it cuts against the crate's own lazy-everywhere design (`read_dir` is a lazy
 iterator, `FileSystemExt::walk()` is a real streaming DFS, precisely to avoid this
 kind of unbounded upfront work).
 
-**What's implemented instead: lazy, on-demand mount-and-cache**, in
-`examples/mcp_stdio_server.rs`. A container is sniffed and mounted only the first
-time something actually reads into it, then cached:
+**What's implemented instead: lazy, on-demand mount-and-cache**, via
+`MountResolver` (`src/core/resolver.rs`), used from `examples/mcp_stdio_server.rs`.
+A container is sniffed and mounted only the first time something actually reads
+into it, then cached:
 
-- `Server` holds `mount_factories: Vec<Arc<dyn FileSystemFactory>>` (tried in
-  registration order) and `mounted: Mutex<BTreeMap<String, Arc<dyn FileSystem>>>` (a
-  cache keyed by the container file's path — mounting isn't free, so a second access
-  to the same container doesn't repeat it).
+- `MountResolver` holds every registered `Arc<dyn FormatFactory>` (probed in
+  order, deterministic winner: highest `ProbeScore`, tied broken by factory
+  name — never registration order, so output never depends on wiring) and a
+  cache keyed by `EvidenceLocator` (`src/core/locator.rs`), a structured chain
+  of typed hops — not a flat string path. This matters: a string cache keyed on
+  the container's path string can represent only one level of nesting, because
+  locating a nested marker within an already-nested path is ambiguous over
+  plain text. `EvidenceLocator` has no such ceiling — each hop is its own cache
+  entry, correctly scoped by the exact chain of containers above it, so
+  `Server::mounted_filesystem` resolves an arbitrary depth of `[mount]` markers
+  by mounting one hop at a time and accumulating the locator as it goes (see
+  `tests/nesting.rs` for the multi-hop proof, and the
+  `nested_mount_tests` module in `examples/mcp_stdio_server.rs` for the
+  server-level regression tests this bug fix is pinned by).
 - `resources/read` on an ordinary file whose bytes match a registered factory's
   format gets a `mount_uri` hint alongside its normal content — the read still
-  returns the real bytes; the hint is just a discoverability nicety.
-- A path containing a `[mount]` marker (`.../case.frtriage/[mount]/README.txt`) is
-  resolved directly against the mounted `Arc<dyn FileSystem>` — bypassing the
+  returns the real bytes; the hint is generated by
+  `MountResolver::probe_only()`, which runs the real registered `probe()`
+  implementations without mounting, caching, or charging any resource budget.
+- A path containing a `[mount]` marker (`.../case.frtriage/[mount]/README.txt`,
+  or `.../a.zip/[mount]/b.zip/[mount]/x` for a nested container) is resolved
+  directly against the mounted filesystem — bypassing the
   `ResourceProvider`/`CapabilityRegistry` layer entirely, since a lazily-mounted
   filesystem isn't (and doesn't need to be) a registered provider.
-- The example ships `MiniArchiveFactory`, a **toy** `FileSystemFactory` for a
+- `Limits` (`src/core/limits.rs`) bound nesting depth, total expanded bytes,
+  entry count, and expansion ratio across the *whole* resolution (not
+  per-container), so a chain of small containers can't each individually pass a
+  check and still sum to an unbounded expansion — relevant here because a
+  container file is, by definition, attacker-influenced input.
+- The example ships `MiniArchiveFactory`, a **toy** `FormatFactory` for a
   trivial text-based container format (see `examples/sample_triage.frtriage`) —
   forensic-rs ships no real zip/E01/OLE parser (that needs a dependency the crate
   deliberately doesn't take on). A real deployment registers a real factory instead;
-  the mount-cache and `[mount]`-path mechanism around it is unchanged.
+  the resolver and `[mount]`-path mechanism around it is unchanged.
 
 This is why it wins on both audiences: developers write one reusable piece of
-machinery (the cache + the `mount_uri` hint step) that scales to any container type a
-`FileSystemFactory` is registered for, with no `CapabilityRegistry` mutation and no
-eager cost; users/LLMs get uniform `resources/read` browsing no matter how deep,
-paying a bit of extra latency only on a container's first access.
+machinery (`MountResolver` + the `mount_uri` hint step) that scales to any
+container/interpretation/embedding a `FormatFactory` is registered for, with no
+`CapabilityRegistry` mutation and no eager cost; users/LLMs get uniform
+`resources/read` browsing no matter how deep, paying a bit of extra latency only
+on a container's first access.
 
-The file→registry crossing (a hive file → registry keys, using
-`RegistryReaderFactory`) follows the identical pattern — a parallel `Registry`-side
-cache and a second marker, e.g. `[registry]` — but isn't implemented yet; the file→file
-mount-and-cache above is the piece built first.
+The file→registry crossing (a hive file → registry keys) now follows the
+*identical* mechanism as file→file, because `FormatFactory`/`Mounted` cover both:
+a factory that `yields() -> MountKind::Registry` mounts a hive file the same way
+one that `yields() -> MountKind::FileSystem` mounts a zip. What the example
+doesn't yet wire up is a second marker (e.g. `[registry]`) in its own
+`resources/read` handler to route reads into a mounted `Registry` rather than a
+mounted `FileSystem` — the resolver-level machinery is generic across `Mounted`'s
+variants; only that one server-side dispatch arm is unbuilt.
 
 ## Prioritized Recommendations
 
@@ -260,6 +294,17 @@ timeline:
    zip→triage)~~ — **Done**, in `examples/mcp_stdio_server.rs`. See "Nested/
    Cross-Family Resource Design" above. The file→registry crossing (hive→regkey)
    follows the same pattern but isn't built yet.
+3.6. ~~Node-scoped commands: let a resource node advertise which registered tools
+   apply to it~~ — **Done**, `ResourceProvider::actions()`/
+   `ScopedCapabilityRegistry::list_node_actions()`, plus `ProviderHook::action_ids()`/
+   `virtual_action_ids()` so a parser/analyzer can attach commands to matched nodes the
+   same way hooks already inject virtual children. See
+   [Node Actions](./04_tutorial/06_resources.md#node-actions-linking-resources-to-tools).
+   Closes the tool↔resource link in the direction `ToolContent::ResourceReference`
+   didn't cover (resource → applicable tools). Discovery only — invocation still goes
+   through the existing `invoke_tool()`, and no MCP method exists for "list actions on
+   a resource", so it isn't wired into `examples/mcp_stdio_server.rs`'s JSON-RPC
+   surface.
 4. **Consider new `ResourceProvider`-shaped extension points** for prompts, resource
    templates, roots, and protocol-level logging — each fits the existing registry
    pattern without requiring async or an MCP SDK dependency. Not currently
@@ -269,6 +314,8 @@ timeline:
    generic MCP conveniences that don't touch this crate's actual differentiators
    (evidence access, provenance, access control). Protocol-level logging is the one
    with some merit, but the existing `AccessAuditSink` + local `log` integration
-   already cover most of the need.
+   already cover most of the need. (Node actions, item 3.6 above, was the one
+   resource-shaped extension that *did* touch a real differentiator — evidence
+   access — which is why it was built ahead of this list rather than left on it.)
 5. **Leave sampling and elicitation to server authors**, per the section above — no
    core crate change recommended.

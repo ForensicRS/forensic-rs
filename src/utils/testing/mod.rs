@@ -16,11 +16,9 @@ mod vfs;
 
 pub use db::{InMemoryForensicDb, InMemoryTable};
 pub use events::{basic_event_log, TestingEventLogReader};
-pub use factories::{
-    TestingEventLogReaderFactory, TestingForensicDbFactory, TestingRegistryReaderFactory,
-};
+pub use factories::TestingFormatFactory;
 pub use hooks::TestingProviderHook;
-pub use parser::{TestParser, TestParserBuilder};
+pub use parser::{TestParserFactory, TestParserFactoryBuilder};
 pub use registry::{MountedCell, TestingRegistry};
 pub use vfs::{InMemoryVirtualFile, InMemoryVirtualFileSystem};
 

@@ -11,7 +11,8 @@
 //! [`AnalysisModule`] is the **primary** way to create parallel tasks.
 //! Build it with [`AnalysisModuleBuilder`], then register parser factories on
 //! the pipeline builder. At `build()` time parsers are automatically matched
-//! to each module by intersecting `supported_artifacts()` sets:
+//! to each module by intersecting the analyzer's `supported_artifacts()`
+//! with each factory's [`ParserDescriptor::artifacts`](crate::traits::forensic::ParserDescriptor):
 //!
 //! ```rust,ignore
 //! // 1. Build an analyzer-centric module — no explicit parsers needed.
@@ -25,7 +26,7 @@
 //! let mut pipeline = ParallelPipeline::builder()
 //!     .workers(4)
 //!     .module(module)
-//!     .parser_factory(Box::new(|| Box::new(EvtxParser::new())))
+//!     .parser(Arc::new(EvtxParserFactory::new()))
 //!     .sink(Box::new(FindingCollector::new()))
 //!     .build()?;
 //!
@@ -45,7 +46,8 @@
 //! |-----------|-------------|
 //! | [`AnalysisModule`] | `Send + 'static` — built via [`AnalysisModuleBuilder`] |
 //! | [`StandardParallelTask`] | `Send + 'static` — lower-level alternative |
-//! | Parser / Enricher / Analyzer inside a task | `Send + 'static` |
+//! | Parser factory | `Send + Sync` (part of [`ArtifactParserFactory`]'s bound) — one `Arc` can serve every worker |
+//! | Enricher / Analyzer inside a task | `Send + 'static` |
 //! | [`TriageSources`] | **none** – created on the worker thread via the sources factory |
 //! | [`TriageSink`] | **none** – only ever called from the main thread |
 
@@ -61,12 +63,13 @@ use crate::{
     bridge::CancellationToken,
     data::ForensicData,
     err::{ForensicError, ForensicResult},
-    traits::forensic::ArtifactParser,
+    traits::forensic::{ArtifactParserFactory, ParserRun},
 };
 
 use super::{
-    context::TriageContext,
+    context::{ParseContext, TriageContext},
     finding::{AnomalyTally, Finding},
+    processor::{ChannelDestination, RecordProcessor},
     sources::TriageSources,
     traits::{Analyzer, Enricher, TriageSink},
     ErrorAction,
@@ -124,6 +127,14 @@ pub trait ParallelPipelineTask: Send + 'static {
     ) {
         self.run(tx);
     }
+
+    /// Adopt a pipeline-wide default [`TriageContext`] (see
+    /// [`ParallelPipelineBuilder::context`]), if this task wasn't given its
+    /// own explicit context already. No-op by default — a third-party
+    /// [`ParallelPipelineTask`] that manages its own context can leave this
+    /// unimplemented and simply not participate in the shared-store
+    /// mechanism.
+    fn adopt_shared_context(&mut self, _ctx: &TriageContext) {}
 }
 
 // ============================================================
@@ -152,6 +163,16 @@ pub struct ParallelPipelineResult {
     pub tasks_run: Vec<String>,
     /// Per-task breakdown of items and findings.
     pub task_stats: BTreeMap<String, TaskStats>,
+    /// The shared [`crate::provenance::ProvenanceStore`] every task/module
+    /// minted into, when [`ParallelPipelineBuilder::context`] configured
+    /// one. `None` if no pipeline-wide context was set — in that case each
+    /// task minted into its own independent store and no single handle
+    /// here could resolve confidence across all of them.
+    ///
+    /// Cheap to clone (an `Arc` handle) — use it to call
+    /// `data.confidence(&store)` on records a sink collected during this
+    /// run.
+    pub provenance_store: Option<crate::provenance::ProvenanceStore>,
 }
 
 // ============================================================
@@ -167,7 +188,7 @@ pub struct ParallelPipelineResult {
 /// Build with [`StandardParallelTaskBuilder`].
 pub struct StandardParallelTask {
     name: String,
-    parser: Box<dyn ArtifactParser + Send + 'static>,
+    factory: Arc<dyn ArtifactParserFactory>,
     enrichers: Vec<Box<dyn Enricher + Send + 'static>>,
     analyzers: Vec<Box<dyn Analyzer + Send + 'static>>,
     /// Called on the worker thread so `TriageSources` needs no `Send` bound.
@@ -207,31 +228,31 @@ impl ParallelPipelineTask for StandardParallelTask {
         context.install();
 
         // Create data sources on the worker thread via the factory.
-        let mut sources = (self.sources_factory)();
+        let sources = (self.sources_factory)();
         let analyzer_artifacts: Vec<Vec<crate::artifact::Artifact>> = self
             .analyzers
             .iter()
             .map(|analyzer| analyzer.supported_artifacts())
             .collect();
 
-        let mut items_processed: u64 = 0;
-        let mut findings_count: u64 = 0;
-        let mut anomaly_tally = AnomalyTally::new();
+        let ctx = ParseContext::new(&sources, &context, &cancellation);
+        if !self.factory.can_parse(&ctx) {
+            let _ = tx.send(PipelineEvent::TaskDone {
+                task: task_name,
+                items_processed: 0,
+                findings_count: 0,
+            });
+            return;
+        }
 
-        // Captured before `parse()` borrows `self.parser` mutably for the
-        // lifetime of the returned iterator — `self.parser.name()` would
-        // otherwise conflict with that borrow in the error arms below.
-        let parser_label = format!("parser '{}'", self.parser.name());
-
-        // Obtain the record iterator from the parser.
-        let iter = match self.parser.parse(&mut sources) {
-            Ok(iter) => iter,
+        let parser_id = self.factory.descriptor().id.to_string();
+        let run = match self.factory.open(&ctx) {
+            Ok(run) => run,
             Err(e) => {
-                let finding = Finding::from_error(parser_label.clone(), &e);
+                let finding = Finding::from_error(format!("parser '{parser_id}'"), &e);
                 if tx.send(PipelineEvent::Finding(finding)).is_err() {
                     return;
                 }
-                findings_count += 1;
                 let _ = tx.send(PipelineEvent::TaskError {
                     task: task_name.clone(),
                     error: e,
@@ -239,141 +260,62 @@ impl ParallelPipelineTask for StandardParallelTask {
                 let _ = tx.send(PipelineEvent::TaskDone {
                     task: task_name,
                     items_processed: 0,
-                    findings_count,
+                    findings_count: 1,
                 });
                 return;
             }
         };
 
-        'records: for item_result in iter {
-            if cancellation.is_cancelled() {
-                break 'records;
-            }
+        let mut tally = AnomalyTally::new();
+        let mut dest = ChannelDestination::new(tx.clone());
+        let mut proc = RecordProcessor::new(
+            &mut dest,
+            &mut self.enrichers,
+            &mut self.analyzers,
+            &analyzer_artifacts,
+            &mut context,
+            &mut tally,
+            &cancellation,
+            self.error_action,
+            // The parallel pipeline has always respected `ErrorAction::Halt`
+            // at every stage (parser, enricher, analyzer) — preserved here.
+            true,
+            &parser_id,
+        );
 
-            let mut data = match item_result {
-                Ok(d) => d,
-                Err(e) => {
-                    let finding = Finding::from_error(parser_label.clone(), &e);
-                    if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                        return;
-                    }
-                    findings_count += 1;
-                    let _ = tx.send(PipelineEvent::TaskError {
-                        task: task_name.clone(),
-                        error: e,
-                    });
-                    match self.error_action {
-                        ErrorAction::Continue => continue 'records,
-                        ErrorAction::Halt => break 'records,
-                    }
+        match run {
+            ParserRun::Pull(stream) => proc.drive_pull(stream),
+            ParserRun::Push(drive) => {
+                if let Err(e) = drive(&mut proc) {
+                    proc.parser_error(e);
                 }
-            };
-            let artifact = data.artifact().clone();
-
-            // Enrich the record in-place.
-            for enricher in &mut self.enrichers {
-                if cancellation.is_cancelled() {
-                    break 'records;
-                }
-                if let Err(e) = enricher.enrich(&mut data, &mut context) {
-                    let finding = Finding::from_error(format!("enricher '{}'", enricher.name()), &e)
-                        .with_artifact(artifact.clone());
-                    if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                        return;
-                    }
-                    findings_count += 1;
-                    let _ = tx.send(PipelineEvent::TaskError {
-                        task: task_name.clone(),
-                        error: e,
-                    });
-                    if self.error_action == ErrorAction::Halt {
-                        break 'records;
-                    }
-                }
-            }
-
-            // Anomalies observed while parsing/enriching this record feed the
-            // task-wide tally instead of becoming one finding each.
-            anomaly_tally.record(data.anomalies());
-
-            // Run matching analyzers.
-            for (analyzer, supported) in self.analyzers.iter_mut().zip(&analyzer_artifacts) {
-                if cancellation.is_cancelled() {
-                    break 'records;
-                }
-                if !supported.is_empty() && !supported.contains(&artifact) {
-                    continue;
-                }
-                let mut new_findings = Vec::new();
-                let outcome = analyzer.analyze(&data, &context, &mut new_findings);
-                for f in new_findings {
-                    findings_count += 1;
-                    // Block if channel is full — provides backpressure.
-                    if tx.send(PipelineEvent::Finding(f)).is_err() {
-                        return; // receiver gone
-                    }
-                }
-                if let Err(e) = outcome {
-                    let finding = Finding::from_error(format!("analyzer '{}'", analyzer.name()), &e)
-                        .with_artifact(artifact.clone());
-                    if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                        return;
-                    }
-                    findings_count += 1;
-                    let _ = tx.send(PipelineEvent::TaskError {
-                        task: task_name.clone(),
-                        error: e,
-                    });
-                    if self.error_action == ErrorAction::Halt {
-                        break 'records;
-                    }
-                }
-            }
-
-            // Send the processed record to the main thread.
-            if tx.send(PipelineEvent::Data(data)).is_err() {
-                return; // receiver gone — stop silently
-            }
-            items_processed += 1;
-        }
-
-        // Finalize analyzers (aggregate / cross-record findings).
-        for analyzer in &mut self.analyzers {
-            let mut new_findings = Vec::new();
-            let outcome = analyzer.finalize(&context, &mut new_findings);
-            for f in new_findings {
-                findings_count += 1;
-                if tx.send(PipelineEvent::Finding(f)).is_err() {
-                    return;
-                }
-            }
-            if let Err(e) = outcome {
-                let finding = Finding::from_error(format!("analyzer '{}' finalize", analyzer.name()), &e);
-                if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                    return;
-                }
-                findings_count += 1;
-                let _ = tx.send(PipelineEvent::TaskError {
-                    task: task_name.clone(),
-                    error: e,
-                });
             }
         }
 
-        // Flush this task's anomaly tally into aggregate findings — one per
-        // flag observed, not one per anomalous record.
-        for finding in anomaly_tally.into_findings() {
-            findings_count += 1;
-            if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                return;
-            }
+        // Halt or not, finalize still runs — this task has only ever had
+        // one parser, so there is nothing left to skip either way.
+        proc.finalize_analyzers();
+        proc.flush_tally();
+        let outcome = proc.finish();
+
+        for error in outcome.errors {
+            let _ = tx.send(PipelineEvent::TaskError {
+                task: task_name.clone(),
+                error,
+            });
         }
 
         let _ = tx.send(PipelineEvent::TaskDone {
             task: task_name,
-            items_processed,
-            findings_count,
+            items_processed: outcome.items,
+            findings_count: outcome.findings,
         });
+    }
+
+    fn adopt_shared_context(&mut self, ctx: &TriageContext) {
+        if self.context.is_none() {
+            self.context = Some(ctx.clone());
+        }
     }
 }
 
@@ -386,7 +328,7 @@ impl ParallelPipelineTask for StandardParallelTask {
 /// # Example
 /// ```rust,ignore
 /// let task = StandardParallelTaskBuilder::new("mft_parser")
-///     .parser(Box::new(MftParser::new()))
+///     .parser(Arc::new(MftParserFactory::new()))
 ///     .analyzer(Box::new(MftGapAnalyzer::new()))
 ///     .sources(|| TriageSources::builder()
 ///         .vfs(Box::new(ZipVirtualFS::open("triage.zip").unwrap()))
@@ -396,7 +338,7 @@ impl ParallelPipelineTask for StandardParallelTask {
 /// ```
 pub struct StandardParallelTaskBuilder {
     name: String,
-    parser: Option<Box<dyn ArtifactParser + Send + 'static>>,
+    parser: Option<Arc<dyn ArtifactParserFactory>>,
     enrichers: Vec<Box<dyn Enricher + Send + 'static>>,
     analyzers: Vec<Box<dyn Analyzer + Send + 'static>>,
     sources_factory: Option<Box<dyn FnOnce() -> TriageSources + Send + 'static>>,
@@ -418,7 +360,7 @@ impl StandardParallelTaskBuilder {
     }
 
     /// Set the parser for this task. **Required.**
-    pub fn parser(mut self, parser: Box<dyn ArtifactParser + Send + 'static>) -> Self {
+    pub fn parser(mut self, parser: Arc<dyn ArtifactParserFactory>) -> Self {
         self.parser = Some(parser);
         self
     }
@@ -482,7 +424,7 @@ impl StandardParallelTaskBuilder {
         };
         Ok(StandardParallelTask {
             name: self.name,
-            parser,
+            factory: parser,
             enrichers: self.enrichers,
             analyzers: self.analyzers,
             sources_factory,
@@ -496,25 +438,6 @@ impl StandardParallelTaskBuilder {
 // AnalysisModule  (analyzer-centric parallel task)
 // ============================================================
 
-/// A factory that creates a new parser instance on demand.
-///
-/// Used by [`ParallelPipelineBuilder::parser_factory`] to auto-match parsers
-/// to [`AnalysisModule`]s at pipeline build time.  The factory is called once
-/// per module that needs that parser type, so the same factory can serve
-/// multiple modules without cloning the parser itself. When construction is
-/// expensive, prefer [`ParallelPipelineBuilder::parser_factory_with_artifacts`]
-/// so unmatched modules do not construct a temporary parser for metadata.
-///
-/// ```rust,ignore
-/// builder.parser_factory(Box::new(|| Box::new(MftParser::new())))
-/// ```
-pub type ParserFactory = Box<dyn Fn() -> Box<dyn ArtifactParser + Send + 'static> + Send + Sync>;
-
-struct RegisteredParserFactory {
-    artifacts: Option<Vec<crate::artifact::Artifact>>,
-    create: ParserFactory,
-}
-
 /// An analyzer-centric parallel task.
 ///
 /// `AnalysisModule` inverts the ownership model compared to
@@ -526,9 +449,11 @@ struct RegisteredParserFactory {
 /// - **Explicit**: add parsers directly via
 ///   [`AnalysisModuleBuilder::parser`].  Auto-match is skipped.
 /// - **Auto-match**: leave the parser list empty and register factories on
-///   [`ParallelPipelineBuilder::parser_factory`].  At `build()` time the
-///   pipeline intersects the analyzer's supported artifacts with each
-///   factory's output and injects matching parsers.
+///   [`ParallelPipelineBuilder::parser`].  At `build()` time the pipeline
+///   intersects the analyzer's supported artifacts with each factory's
+///   [`ParserDescriptor::artifacts`](crate::traits::forensic::ParserDescriptor)
+///   and injects matching parsers — sharing the same `Arc`, never
+///   constructing anything.
 ///
 /// All parsers share the same [`TriageSources`] instance (created once per
 /// task on the worker thread).  The analyzer's `finalize()` is called once
@@ -538,7 +463,7 @@ struct RegisteredParserFactory {
 pub struct AnalysisModule {
     name: String,
     analyzer: Box<dyn Analyzer + Send + 'static>,
-    parsers: Vec<Box<dyn ArtifactParser + Send + 'static>>,
+    parsers: Vec<Arc<dyn ArtifactParserFactory>>,
     enrichers: Vec<Box<dyn Enricher + Send + 'static>>,
     sources_factory: Box<dyn FnOnce() -> TriageSources + Send + 'static>,
     context: Option<TriageContext>,
@@ -575,29 +500,33 @@ impl ParallelPipelineTask for AnalysisModule {
 
         // All parsers for this module share one TriageSources instance,
         // created on the worker thread via the factory.
-        let mut sources = (self.sources_factory)();
-        let analyzer_artifacts = self.analyzer.supported_artifacts();
+        let sources = (self.sources_factory)();
+        // One analyzer, so this is a length-1 slice — `RecordProcessor` is
+        // generic over the analyzer count to share its logic with
+        // `StandardParallelTask`'s N-analyzer shape.
+        let analyzer_artifacts = vec![self.analyzer.supported_artifacts()];
 
         let mut total_items: u64 = 0;
         let mut total_findings: u64 = 0;
-        let mut anomaly_tally = AnomalyTally::new();
+        let mut all_errors: Vec<ForensicError> = Vec::new();
+        // Shared across every parser in this module — flushed once, after
+        // all parsers, into aggregate cross-parser findings.
+        let mut tally = AnomalyTally::new();
 
-        'parsers: for parser in &mut self.parsers {
+        'parsers: for factory in &self.parsers {
             if cancellation.is_cancelled() {
                 break 'parsers;
             }
-            if !parser.can_parse(&sources) {
+            let ctx = ParseContext::new(&sources, &context, &cancellation);
+            if !factory.can_parse(&ctx) {
                 continue 'parsers;
             }
 
-            // Captured before `parse()` borrows `parser` mutably for the
-            // lifetime of the returned iterator.
-            let parser_label = format!("parser '{}'", parser.name());
-
-            let iter = match parser.parse(&mut sources) {
-                Ok(iter) => iter,
+            let parser_id = factory.descriptor().id.to_string();
+            let run = match factory.open(&ctx) {
+                Ok(run) => run,
                 Err(e) => {
-                    let finding = Finding::from_error(parser_label.clone(), &e);
+                    let finding = Finding::from_error(format!("parser '{parser_id}'"), &e);
                     if tx.send(PipelineEvent::Finding(finding)).is_err() {
                         return;
                     }
@@ -613,120 +542,70 @@ impl ParallelPipelineTask for AnalysisModule {
                 }
             };
 
-            'records: for item_result in iter {
-                if cancellation.is_cancelled() {
-                    break 'parsers;
-                }
+            let mut dest = ChannelDestination::new(tx.clone());
+            let mut proc = RecordProcessor::new(
+                &mut dest,
+                &mut self.enrichers,
+                std::slice::from_mut(&mut self.analyzer),
+                &analyzer_artifacts,
+                &mut context,
+                &mut tally,
+                &cancellation,
+                self.error_action,
+                true,
+                &parser_id,
+            );
 
-                let mut data = match item_result {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let finding = Finding::from_error(parser_label.clone(), &e);
-                        if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                            return;
-                        }
-                        total_findings += 1;
-                        let _ = tx.send(PipelineEvent::TaskError {
-                            task: task_name.clone(),
-                            error: e,
-                        });
-                        match self.error_action {
-                            ErrorAction::Continue => continue 'records,
-                            ErrorAction::Halt => break 'parsers,
-                        }
-                    }
-                };
-                let artifact = data.artifact().clone();
-
-                for enricher in &mut self.enrichers {
-                    if cancellation.is_cancelled() {
-                        break 'parsers;
-                    }
-                    if let Err(e) = enricher.enrich(&mut data, &mut context) {
-                        let finding = Finding::from_error(format!("enricher '{}'", enricher.name()), &e)
-                            .with_artifact(artifact.clone());
-                        if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                            return;
-                        }
-                        total_findings += 1;
-                        let _ = tx.send(PipelineEvent::TaskError {
-                            task: task_name.clone(),
-                            error: e,
-                        });
-                        if self.error_action == ErrorAction::Halt {
-                            break 'parsers;
-                        }
+            match run {
+                ParserRun::Pull(stream) => proc.drive_pull(stream),
+                ParserRun::Push(drive) => {
+                    if let Err(e) = drive(&mut proc) {
+                        proc.parser_error(e);
                     }
                 }
+            }
 
-                // Anomalies observed while parsing/enriching this record feed
-                // the task-wide tally instead of becoming one finding each.
-                anomaly_tally.record(data.anomalies());
-
-                if cancellation.is_cancelled() {
-                    break 'parsers;
-                }
-                if analyzer_artifacts.is_empty() || analyzer_artifacts.contains(&artifact) {
-                    let mut new_findings = Vec::new();
-                    let outcome = self.analyzer.analyze(&data, &context, &mut new_findings);
-                    for f in new_findings {
-                        total_findings += 1;
-                        if tx.send(PipelineEvent::Finding(f)).is_err() {
-                            return;
-                        }
-                    }
-                    if let Err(e) = outcome {
-                        let finding = Finding::from_error(format!("analyzer '{}'", self.analyzer.name()), &e)
-                            .with_artifact(artifact.clone());
-                        if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                            return;
-                        }
-                        total_findings += 1;
-                        let _ = tx.send(PipelineEvent::TaskError {
-                            task: task_name.clone(),
-                            error: e,
-                        });
-                        if self.error_action == ErrorAction::Halt {
-                            break 'parsers;
-                        }
-                    }
-                }
-
-                if tx.send(PipelineEvent::Data(data)).is_err() {
-                    return;
-                }
-                total_items += 1;
+            // `is_stopped` also covers the channel's receiver having been
+            // dropped mid-parse — not just an `ErrorAction::Halt` — so a
+            // closed channel stops the whole module instead of wastefully
+            // opening every remaining parser.
+            let stop = proc.is_stopped();
+            let outcome = proc.finish();
+            total_items += outcome.items;
+            total_findings += outcome.findings;
+            all_errors.extend(outcome.errors);
+            if stop {
+                break 'parsers;
             }
         }
 
-        // Finalize once after all parsers — enables cross-parser analysis.
-        let mut finalize_findings = Vec::new();
-        let outcome = self.analyzer.finalize(&context, &mut finalize_findings);
-        for f in finalize_findings {
-            total_findings += 1;
-            if tx.send(PipelineEvent::Finding(f)).is_err() {
-                return;
-            }
-        }
-        if let Err(e) = outcome {
-            let finding = Finding::from_error(format!("analyzer '{}' finalize", self.analyzer.name()), &e);
-            if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                return;
-            }
-            total_findings += 1;
+        // Finalize once after all parsers — enables cross-parser analysis —
+        // and flush the module-wide tally, regardless of whether the loop
+        // above ended naturally or via `ErrorAction::Halt`.
+        let mut dest = ChannelDestination::new(tx.clone());
+        let mut final_proc = RecordProcessor::new(
+            &mut dest,
+            &mut self.enrichers,
+            std::slice::from_mut(&mut self.analyzer),
+            &analyzer_artifacts,
+            &mut context,
+            &mut tally,
+            &cancellation,
+            self.error_action,
+            true,
+            "",
+        );
+        final_proc.finalize_analyzers();
+        final_proc.flush_tally();
+        let final_outcome = final_proc.finish();
+        total_findings += final_outcome.findings;
+        all_errors.extend(final_outcome.errors);
+
+        for error in all_errors {
             let _ = tx.send(PipelineEvent::TaskError {
                 task: task_name.clone(),
-                error: e,
+                error,
             });
-        }
-
-        // Flush the tally into aggregate findings — one per flag observed,
-        // not one per anomalous record.
-        for finding in anomaly_tally.into_findings() {
-            total_findings += 1;
-            if tx.send(PipelineEvent::Finding(finding)).is_err() {
-                return;
-            }
         }
 
         let _ = tx.send(PipelineEvent::TaskDone {
@@ -734,6 +613,12 @@ impl ParallelPipelineTask for AnalysisModule {
             items_processed: total_items,
             findings_count: total_findings,
         });
+    }
+
+    fn adopt_shared_context(&mut self, ctx: &TriageContext) {
+        if self.context.is_none() {
+            self.context = Some(ctx.clone());
+        }
     }
 }
 
@@ -747,7 +632,7 @@ impl ParallelPipelineTask for AnalysisModule {
 /// ```rust,ignore
 /// let module = AnalysisModuleBuilder::new("mft_gap_analysis")
 ///     .analyzer(Box::new(MftGapAnalyzer::new()))
-///     .parser(Box::new(MftParser::new()))           // explicit — overrides auto-match
+///     .parser(Arc::new(MftParserFactory::new()))    // explicit — overrides auto-match
 ///     .sources(|| TriageSources::builder()
 ///         .vfs(Box::new(ZipVfs::open("triage.zip")?))
 ///         .build())
@@ -757,7 +642,7 @@ impl ParallelPipelineTask for AnalysisModule {
 pub struct AnalysisModuleBuilder {
     name: String,
     analyzer: Option<Box<dyn Analyzer + Send + 'static>>,
-    parsers: Vec<Box<dyn ArtifactParser + Send + 'static>>,
+    parsers: Vec<Arc<dyn ArtifactParserFactory>>,
     enrichers: Vec<Box<dyn Enricher + Send + 'static>>,
     sources_factory: Option<Box<dyn FnOnce() -> TriageSources + Send + 'static>>,
     context: Option<TriageContext>,
@@ -790,7 +675,7 @@ impl AnalysisModuleBuilder {
     ///
     /// Calling this at least once disables auto-matching — the module will
     /// only use the parsers you provide.
-    pub fn parser(mut self, parser: Box<dyn ArtifactParser + Send + 'static>) -> Self {
+    pub fn parser(mut self, parser: Arc<dyn ArtifactParserFactory>) -> Self {
         self.parsers.push(parser);
         self
     }
@@ -824,7 +709,7 @@ impl AnalysisModuleBuilder {
     ///
     /// Returns an error if no analyzer or no sources factory was provided.
     /// If no parsers were added, auto-matching will be performed by
-    /// [`ParallelPipelineBuilder::build`] if parser factories are registered.
+    /// [`ParallelPipelineBuilder::build`] if any parsers are registered.
     pub fn build(self) -> ForensicResult<AnalysisModule> {
         let analyzer = match self.analyzer {
             Some(a) => a,
@@ -873,6 +758,7 @@ pub struct ParallelPipeline {
     channel_capacity: usize,
     tasks: Vec<Box<dyn ParallelPipelineTask>>,
     sinks: Vec<Box<dyn TriageSink>>,
+    provenance_store: Option<crate::provenance::ProvenanceStore>,
 }
 
 impl ParallelPipeline {
@@ -900,7 +786,10 @@ impl ParallelPipeline {
         &mut self,
         cancellation: CancellationToken,
     ) -> ForensicResult<ParallelPipelineResult> {
-        let mut result = ParallelPipelineResult::default();
+        let mut result = ParallelPipelineResult {
+            provenance_store: self.provenance_store.clone(),
+            ..Default::default()
+        };
 
         if self.tasks.is_empty() {
             for sink in &mut self.sinks {
@@ -1030,6 +919,15 @@ impl ParallelPipeline {
     pub fn channel_capacity(&self) -> usize {
         self.channel_capacity
     }
+
+    /// The shared [`crate::provenance::ProvenanceStore`] configured via
+    /// [`ParallelPipelineBuilder::context`], if any — available before
+    /// [`Self::run`] returns, so a caller can start resolving confidence on
+    /// records a sink collects as the run progresses rather than only
+    /// after it completes. Also returned on [`ParallelPipelineResult`].
+    pub fn provenance_store(&self) -> Option<&crate::provenance::ProvenanceStore> {
+        self.provenance_store.as_ref()
+    }
 }
 
 // ============================================================
@@ -1042,8 +940,12 @@ pub struct ParallelPipelineBuilder {
     channel_capacity: Option<usize>,
     tasks: Vec<Box<dyn ParallelPipelineTask>>,
     pending_modules: Vec<AnalysisModule>,
-    parser_factories: Vec<RegisteredParserFactory>,
+    /// Pool of parsers available for auto-matching into `pending_modules`.
+    /// Each is an `Arc`, so a single instance can be shared into any number
+    /// of matching modules with no construction at match time.
+    parsers: Vec<Arc<dyn ArtifactParserFactory>>,
     sinks: Vec<Box<dyn TriageSink>>,
+    context: Option<TriageContext>,
 }
 
 impl ParallelPipelineBuilder {
@@ -1056,9 +958,34 @@ impl ParallelPipelineBuilder {
             channel_capacity: None,
             tasks: Vec::new(),
             pending_modules: Vec::new(),
-            parser_factories: Vec::new(),
+            parsers: Vec::new(),
             sinks: Vec::new(),
+            context: None,
         }
+    }
+
+    /// Set a pipeline-wide default [`TriageContext`], propagated to every
+    /// task/module that doesn't set its own explicit context via its own
+    /// builder's `.context()`.
+    ///
+    /// Without this, each task/module that doesn't set its own context
+    /// falls back to `TriageContext::default()` independently — a
+    /// *different* default instance per task, and therefore a different,
+    /// unshared [`crate::provenance::ProvenanceStore`] per task. A record
+    /// reaching a sink on the main thread then carries a `ProvenanceId`
+    /// that resolves only against the one store its own task happened to
+    /// use, which the main thread has no handle to — `data.confidence(&store)`
+    /// is effectively unavailable. Setting a shared context here — and
+    /// keeping a `.provenance_store()` handle to it, or reading
+    /// [`ParallelPipelineResult::provenance_store`] after the run — closes
+    /// that gap: every task/module clones the same context, which clones
+    /// the same underlying store (see [`TriageContext`]'s `Clone` docs).
+    ///
+    /// A task/module with its own explicit `.context(...)` is left alone —
+    /// this only fills in tasks/modules that didn't set one.
+    pub fn context(mut self, ctx: TriageContext) -> Self {
+        self.context = Some(ctx);
+        self
     }
 
     /// Number of worker threads.
@@ -1092,51 +1019,35 @@ impl ParallelPipelineBuilder {
     /// Add an [`AnalysisModule`].
     ///
     /// If the module was built without explicit parsers, parser auto-matching
-    /// is performed at [`build`](Self::build) time using the factories
-    /// registered via [`parser_factory`](Self::parser_factory).
+    /// is performed at [`build`](Self::build) time using the parsers
+    /// registered via [`Self::parser`].
     pub fn module(mut self, module: AnalysisModule) -> Self {
         self.pending_modules.push(module);
         self
     }
 
-    /// Register a parser factory for auto-matching.
+    /// Register a parser for auto-matching.
     ///
-    /// At [`build`](Self::build) time the pipeline intersects each factory's
-    /// output artifact types with each [`AnalysisModule`]'s
-    /// [`Analyzer::supported_artifacts`].  When the sets overlap the factory
-    /// is called and the resulting parser is injected into that module.
+    /// At [`build`](Self::build) time the pipeline intersects each parser's
+    /// [`ParserDescriptor::artifacts`](crate::traits::forensic::ParserDescriptor)
+    /// with each [`AnalysisModule`]'s [`Analyzer::supported_artifacts`]. When
+    /// the sets overlap, the same `Arc` is cloned into that module — no
+    /// construction happens at match time, so registering a parser here
+    /// costs nothing for a module it doesn't end up matching.
     ///
-    /// This compatibility API constructs a temporary parser to inspect its
-    /// metadata. Prefer [`Self::parser_factory_with_artifacts`] when supported
-    /// artifact metadata is available without parser construction.
-    ///
-    /// A factory registered here is **never** added to modules that already
-    /// have explicit parsers — explicit always wins.
-    ///
-    /// If an analyzer's `supported_artifacts()` is empty (the "accept all"
-    /// default) it receives parsers from **every** registered factory.
-    pub fn parser_factory(mut self, factory: ParserFactory) -> Self {
-        self.parser_factories.push(RegisteredParserFactory {
-            artifacts: None,
-            create: factory,
-        });
+    /// A parser registered here is **never** added to modules that already
+    /// have explicit parsers — explicit always wins. If an analyzer's
+    /// `supported_artifacts()` is empty (the "accept all" default) it
+    /// receives every registered parser.
+    pub fn parser(mut self, parser: Arc<dyn ArtifactParserFactory>) -> Self {
+        self.parsers.push(parser);
         self
     }
 
-    /// Register a parser factory with its supported artifact metadata.
-    ///
-    /// Unlike [`Self::parser_factory`], this avoids constructing parsers that
-    /// do not match an analysis module. Use it when parser construction opens
-    /// files, loads indexes, or otherwise performs meaningful work.
-    pub fn parser_factory_with_artifacts(
-        mut self,
-        artifacts: Vec<crate::artifact::Artifact>,
-        factory: ParserFactory,
-    ) -> Self {
-        self.parser_factories.push(RegisteredParserFactory {
-            artifacts: Some(artifacts),
-            create: factory,
-        });
+    /// Registers every factory currently in `registry` for auto-matching.
+    pub fn parsers_from(mut self, registry: &super::registry::ParserRegistry) -> Self {
+        self.parsers
+            .extend(registry.ids().filter_map(|id| registry.get(id)).cloned());
         self
     }
 
@@ -1150,35 +1061,31 @@ impl ParallelPipelineBuilder {
     pub fn build(mut self) -> ForensicResult<ParallelPipeline> {
         let capacity = self.channel_capacity.unwrap_or(self.workers * 64);
 
-        // Auto-match: inject parsers into modules that have none.
+        // Auto-match: inject parsers into modules that have none. Matching
+        // never constructs anything — it only clones an `Arc`.
         for module in &mut self.pending_modules {
-            if module.parsers.is_empty() && !self.parser_factories.is_empty() {
+            if module.parsers.is_empty() && !self.parsers.is_empty() {
                 let analyzer_artifacts = module.analyzer.supported_artifacts();
-                for factory in &self.parser_factories {
-                    if let Some(parser_artifacts) = &factory.artifacts {
-                        let matches = analyzer_artifacts.is_empty()
-                            || parser_artifacts.is_empty()
-                            || analyzer_artifacts
-                                .iter()
-                                .any(|a| parser_artifacts.contains(a));
-                        if matches {
-                            module.parsers.push((factory.create)());
-                        }
-                    } else {
-                        // Preserve the legacy factory behavior: inspect the
-                        // constructed parser and retain that same instance.
-                        let parser = (factory.create)();
-                        let parser_artifacts = parser.supported_artifacts();
-                        let matches = analyzer_artifacts.is_empty()
-                            || parser_artifacts.is_empty()
-                            || analyzer_artifacts
-                                .iter()
-                                .any(|a| parser_artifacts.contains(a));
-                        if matches {
-                            module.parsers.push(parser);
-                        }
+                for parser in &self.parsers {
+                    let descriptor = parser.descriptor();
+                    let matches = analyzer_artifacts.is_empty()
+                        || analyzer_artifacts.iter().any(|a| descriptor.handles(a));
+                    if matches {
+                        module.parsers.push(Arc::clone(parser));
                     }
                 }
+            }
+        }
+
+        // Propagate the pipeline-wide default context to every task/module
+        // that doesn't already have its own — see `Self::context`'s docs.
+        // Modules first, while still the concrete type; already-boxed tasks
+        // (added via `.task()`) go through the trait method below, since a
+        // `Box<dyn ParallelPipelineTask>` can't be unwrapped back to its
+        // concrete fields.
+        if let Some(shared) = &self.context {
+            for module in &mut self.pending_modules {
+                module.adopt_shared_context(shared);
             }
         }
 
@@ -1187,12 +1094,20 @@ impl ParallelPipelineBuilder {
         for module in self.pending_modules {
             tasks.push(Box::new(module));
         }
+        if let Some(shared) = &self.context {
+            for task in &mut tasks {
+                task.adopt_shared_context(shared);
+            }
+        }
+
+        let provenance_store = self.context.as_ref().map(|ctx| ctx.provenance_store());
 
         Ok(ParallelPipeline {
             workers: self.workers,
             channel_capacity: capacity,
             tasks,
             sinks: self.sinks,
+            provenance_store,
         })
     }
 }
@@ -1215,21 +1130,28 @@ mod tests {
         data::ForensicData,
         err::ForensicResult,
         pipeline::{
-            finding::Finding, sinks::FindingCollector, sources::TriageSources, traits::TriageSink,
+            context::ParseContext,
+            finding::Finding,
+            sinks::FindingCollector,
+            sources::TriageSources,
+            traits::TriageSink,
         },
-        utils::testing::TestParserBuilder,
+        traits::forensic::{ArtifactParserFactory, ParserDescriptor, ParserRun},
+        utils::testing::TestParserFactoryBuilder,
     };
 
     // -------------------------------------------------------------------
     // Mini mock parser
     // -------------------------------------------------------------------
 
-    fn mock_parser_with_records(n: usize, host: &str) -> crate::utils::testing::TestParser {
-        TestParserBuilder::new("mock_parser")
-            .description("mock")
-            .version("0.1")
-            .with_records(n, host, Artifact::Unknown)
-            .build()
+    fn mock_parser_with_records(n: usize, host: &str) -> Arc<dyn ArtifactParserFactory> {
+        Arc::new(
+            TestParserFactoryBuilder::new("mock_parser")
+                .description("mock")
+                .version("0.1")
+                .with_records(n, host, Artifact::Unknown)
+                .build(),
+        )
     }
 
     // -------------------------------------------------------------------
@@ -1275,13 +1197,13 @@ mod tests {
     #[test]
     fn two_tasks_run_and_both_reach_sink() {
         let task_a = StandardParallelTaskBuilder::new("task_a")
-            .parser(Box::new(mock_parser_with_records(5, "host-a")))
+            .parser(mock_parser_with_records(5, "host-a"))
             .sources(empty_sources)
             .build()
             .unwrap();
 
         let task_b = StandardParallelTaskBuilder::new("task_b")
-            .parser(Box::new(mock_parser_with_records(3, "host-b")))
+            .parser(mock_parser_with_records(3, "host-b"))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1311,7 +1233,7 @@ mod tests {
             .map(|i| -> Box<dyn ParallelPipelineTask> {
                 Box::new(
                     StandardParallelTaskBuilder::new(format!("task_{}", i))
-                        .parser(Box::new(mock_parser_with_records(2, "h")))
+                        .parser(mock_parser_with_records(2, "h"))
                         .sources(empty_sources)
                         .build()
                         .unwrap(),
@@ -1332,46 +1254,48 @@ mod tests {
         assert_eq!(result.tasks_run.len(), 4);
     }
 
-    #[test]
-    fn task_error_does_not_block_other_tasks() {
-        // A parser that immediately fails.
-        struct FailParser;
-        impl crate::traits::forensic::ArtifactParser for FailParser {
-            fn name(&self) -> &str {
-                "fail_parser"
-            }
-            fn description(&self) -> &str {
-                "always fails"
-            }
-            fn version(&self) -> &str {
-                "0.1"
-            }
-            fn supported_artifacts(&self) -> Vec<Artifact> {
-                vec![]
-            }
-            fn can_parse(&self, _: &TriageSources) -> bool {
-                true
-            }
-            fn parse<'a>(
-                &'a mut self,
-                _sources: &'a mut TriageSources,
-            ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>>
-            {
+    /// A parser factory whose `open()` always fails. `push_mode` selects
+    /// whether the failure is reported synchronously by `open()` itself, or
+    /// (when `true`) from inside a `ParserRun::Push` closure — exercising
+    /// [`RecordProcessor::parser_error`](crate::pipeline::processor::RecordProcessor).
+    struct FailParser {
+        descriptor: ParserDescriptor,
+        push_mode: bool,
+    }
+    impl ArtifactParserFactory for FailParser {
+        fn descriptor(&self) -> &ParserDescriptor {
+            &self.descriptor
+        }
+        fn open(&self, _ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+            if self.push_mode {
+                Ok(ParserRun::push(|_out| {
+                    Err(ForensicError::missing_data(
+                        "test",
+                        CompactString::const_new("intentional failure"),
+                    ))
+                }))
+            } else {
                 Err(ForensicError::missing_data(
                     "test",
                     CompactString::const_new("intentional failure"),
                 ))
             }
         }
+    }
 
+    #[test]
+    fn task_error_does_not_block_other_tasks() {
         let failing_task = StandardParallelTaskBuilder::new("failing")
-            .parser(Box::new(FailParser))
+            .parser(Arc::new(FailParser {
+                descriptor: ParserDescriptor::new("fail_parser", "fail_parser", "always fails", "0.1"),
+                push_mode: false,
+            }))
             .sources(empty_sources)
             .build()
             .unwrap();
 
         let good_task = StandardParallelTaskBuilder::new("good")
-            .parser(Box::new(mock_parser_with_records(4, "h")))
+            .parser(mock_parser_with_records(4, "h"))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1395,9 +1319,36 @@ mod tests {
     }
 
     #[test]
+    fn push_mode_parser_error_is_reported_like_a_pull_error() {
+        // Same failure, but surfaced from inside a `ParserRun::Push` closure
+        // instead of `open()` itself — exercises `RecordProcessor::parser_error`.
+        let failing_task = StandardParallelTaskBuilder::new("failing_push")
+            .parser(Arc::new(FailParser {
+                descriptor: ParserDescriptor::new("fail_parser", "fail_parser", "always fails", "0.1"),
+                push_mode: true,
+            }))
+            .sources(empty_sources)
+            .build()
+            .unwrap();
+
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(1)
+            .task(Box::new(failing_task))
+            .sink(Box::new(FindingCollector::new()))
+            .build()
+            .unwrap();
+
+        let result = pipeline.run().unwrap();
+
+        assert_eq!(result.items_processed, 0);
+        assert!(!result.errors.is_empty());
+        assert_eq!(result.tasks_run, vec!["failing_push"]);
+    }
+
+    #[test]
     fn pre_cancelled_pipeline_skips_builtin_task_work() {
         let task = StandardParallelTaskBuilder::new("cancelled")
-            .parser(Box::new(mock_parser_with_records(4, "h")))
+            .parser(mock_parser_with_records(4, "h"))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1441,7 +1392,7 @@ mod tests {
 
         let cancellation = CancellationToken::new();
         let task = StandardParallelTaskBuilder::new("cancelled_in_flight")
-            .parser(Box::new(mock_parser_with_records(4, "h")))
+            .parser(mock_parser_with_records(4, "h"))
             .analyzer(Box::new(CancellingAnalyzer {
                 cancellation: cancellation.clone(),
             }))
@@ -1476,7 +1427,7 @@ mod tests {
         }
 
         let healthy_task = StandardParallelTaskBuilder::new("healthy")
-            .parser(Box::new(mock_parser_with_records(2, "h")))
+            .parser(mock_parser_with_records(2, "h"))
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1544,27 +1495,23 @@ mod tests {
         n: usize,
         host: &str,
         artifact: crate::artifact::Artifact,
-    ) -> crate::utils::testing::TestParser {
-        TestParserBuilder::new("typed_mock_parser")
-            .description("typed mock")
-            .version("0.1")
-            .with_records(n, host, artifact.clone())
-            .with_artifact(artifact)
-            .build()
+    ) -> Arc<dyn ArtifactParserFactory> {
+        Arc::new(
+            TestParserFactoryBuilder::new("typed_mock_parser")
+                .description("typed mock")
+                .version("0.1")
+                .with_records(n, host, artifact.clone())
+                .with_artifact(artifact)
+                .build(),
+        )
     }
 
     #[test]
     fn analysis_module_explicit_parser_skips_auto_match() {
-        // Module has an explicit parser → factory should NOT be called.
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
-
-        let factory_call_count = Arc::new(AtomicU64::new(0));
-        let counter_clone = Arc::clone(&factory_call_count);
-
+        // Module has an explicit parser → the pool parser below must be ignored.
         let module = AnalysisModuleBuilder::new("mod")
             .analyzer(Box::new(CountingAnalyzer::new()))
-            .parser(Box::new(mock_parser_with_records(4, "h"))) // explicit
+            .parser(mock_parser_with_records(4, "h")) // explicit
             .sources(empty_sources)
             .build()
             .unwrap();
@@ -1572,25 +1519,21 @@ mod tests {
         let mut pipeline = ParallelPipeline::builder()
             .workers(1)
             .module(module)
-            .parser_factory(Box::new(move || {
-                counter_clone.fetch_add(1, Ordering::SeqCst);
-                Box::new(mock_parser_with_records(0, "h"))
-            }))
+            .parser(mock_parser_with_records(99, "h")) // pool — must not be used
             .sink(Box::new(CountingSink::new()))
             .build()
             .unwrap();
 
         let result = pipeline.run().unwrap();
 
+        // Only the explicit parser's records arrive, not the pool's 99.
         assert_eq!(result.items_processed, 4);
-        // Factory must not have been called because explicit parsers were provided.
-        assert_eq!(factory_call_count.load(Ordering::SeqCst), 0);
     }
 
     #[test]
     fn analysis_module_auto_matches_parser_by_artifact() {
-        // Analyzer declares Artifact::Unknown; factory produces a parser that
-        // also declares Artifact::Unknown → should be auto-matched.
+        // Analyzer declares Artifact::Unknown; the pool parser also declares
+        // Artifact::Unknown → should be auto-matched.
         let module = AnalysisModuleBuilder::new("mod")
             .analyzer(Box::new(CountingAnalyzer::with_artifact(Artifact::Unknown)))
             .sources(empty_sources)
@@ -1600,9 +1543,7 @@ mod tests {
         let mut pipeline = ParallelPipeline::builder()
             .workers(1)
             .module(module)
-            .parser_factory(Box::new(|| {
-                Box::new(typed_mock_parser(5, "h", Artifact::Unknown))
-            }))
+            .parser(typed_mock_parser(5, "h", Artifact::Unknown))
             .sink(Box::new(CountingSink::new()))
             .build()
             .unwrap();
@@ -1627,18 +1568,13 @@ mod tests {
             .build()
             .unwrap();
 
-        // One factory produces a registry parser, one produces Unknown — only
-        // the registry parser should be injected.
+        // One pool parser declares the registry artifact, one declares
+        // Unknown — only the registry parser should be injected.
         let mut pipeline = ParallelPipeline::builder()
             .workers(1)
             .module(module)
-            .parser_factory(Box::new(move || {
-                Box::new(typed_mock_parser(3, "h", registry_artifact.clone()))
-            }))
-            .parser_factory(Box::new(|| {
-                // Artifact::Unknown does NOT overlap with Registry::AutoRuns
-                Box::new(typed_mock_parser(99, "h", Artifact::Unknown))
-            }))
+            .parser(typed_mock_parser(3, "h", registry_artifact))
+            .parser(typed_mock_parser(99, "h", Artifact::Unknown))
             .sink(Box::new(CountingSink::new()))
             .build()
             .unwrap();
@@ -1649,12 +1585,34 @@ mod tests {
     }
 
     #[test]
-    fn metadata_aware_factory_is_not_constructed_when_unmatched() {
+    fn descriptor_based_matching_never_calls_open_on_unmatched_parsers() {
         use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
 
-        let construction_count = Arc::new(AtomicU64::new(0));
-        let counter = Arc::clone(&construction_count);
+        struct CountingOpenParser {
+            descriptor: ParserDescriptor,
+            opens: Arc<AtomicU64>,
+        }
+        impl ArtifactParserFactory for CountingOpenParser {
+            fn descriptor(&self) -> &ParserDescriptor {
+                &self.descriptor
+            }
+            fn open(&self, _ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                Ok(ParserRun::pull(std::iter::empty()))
+            }
+        }
+
+        let opens = Arc::new(AtomicU64::new(0));
+        let non_matching: Arc<dyn ArtifactParserFactory> = Arc::new(CountingOpenParser {
+            descriptor: ParserDescriptor::new("non_matching", "non_matching", "d", "0.1")
+                .with_artifacts(vec![Artifact::Windows(
+                    crate::artifact::WindowsArtifacts::Registry(
+                        crate::artifact::RegistryArtifacts::AutoRuns,
+                    ),
+                )]),
+            opens: Arc::clone(&opens),
+        });
+
         let module = AnalysisModuleBuilder::new("mod")
             .analyzer(Box::new(CountingAnalyzer::with_artifact(Artifact::Unknown)))
             .sources(empty_sources)
@@ -1664,54 +1622,220 @@ mod tests {
         let mut pipeline = ParallelPipeline::builder()
             .workers(1)
             .module(module)
-            .parser_factory_with_artifacts(
-                vec![Artifact::Windows(
-                    crate::artifact::WindowsArtifacts::Registry(
-                        crate::artifact::RegistryArtifacts::AutoRuns,
-                    ),
-                )],
-                Box::new(move || {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    Box::new(mock_parser_with_records(1, "h"))
-                }),
-            )
+            .parser(non_matching)
             .sink(Box::new(CountingSink::new()))
             .build()
             .unwrap();
 
         let result = pipeline.run().unwrap();
 
-        assert_eq!(construction_count.load(Ordering::SeqCst), 0);
+        // Matching is descriptor-based — a non-matching parser is never
+        // even asked to open, let alone parse.
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
         assert_eq!(result.items_processed, 0);
     }
 
     #[test]
-    fn legacy_factory_constructs_one_parser_for_a_matching_module() {
+    fn one_arc_parser_serves_two_modules() {
         use std::sync::atomic::{AtomicU64, Ordering};
-        use std::sync::Arc;
 
-        let construction_count = Arc::new(AtomicU64::new(0));
-        let counter = Arc::clone(&construction_count);
-        let module = AnalysisModuleBuilder::new("mod")
+        // A single factory instance, shared into two modules via `Arc::clone`
+        // rather than being reconstructed per module (there is no
+        // reconstruction path left to fall back to — the old per-module
+        // `ParserFactory` closure is gone).
+        struct CountingOpenParser {
+            descriptor: ParserDescriptor,
+            opens: Arc<AtomicU64>,
+        }
+        impl ArtifactParserFactory for CountingOpenParser {
+            fn descriptor(&self) -> &ParserDescriptor {
+                &self.descriptor
+            }
+            fn open(&self, _ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                Ok(ParserRun::pull((0..2).map(|_| {
+                    Ok(ForensicData::new("h", Artifact::Unknown, crate::utils::testing::test_provenance_id()))
+                })))
+            }
+        }
+
+        let opens = Arc::new(AtomicU64::new(0));
+        let shared: Arc<dyn ArtifactParserFactory> = Arc::new(CountingOpenParser {
+            descriptor: ParserDescriptor::new("shared", "shared", "d", "0.1")
+                .with_artifacts(vec![Artifact::Unknown]),
+            opens: Arc::clone(&opens),
+        });
+
+        let module_a = AnalysisModuleBuilder::new("mod_a")
+            .analyzer(Box::new(CountingAnalyzer::with_artifact(Artifact::Unknown)))
+            .sources(empty_sources)
+            .build()
+            .unwrap();
+        let module_b = AnalysisModuleBuilder::new("mod_b")
             .analyzer(Box::new(CountingAnalyzer::with_artifact(Artifact::Unknown)))
             .sources(empty_sources)
             .build()
             .unwrap();
 
         let mut pipeline = ParallelPipeline::builder()
-            .workers(1)
-            .module(module)
-            .parser_factory(Box::new(move || {
-                counter.fetch_add(1, Ordering::SeqCst);
-                Box::new(typed_mock_parser(1, "h", Artifact::Unknown))
-            }))
+            .workers(2)
+            .module(module_a)
+            .module(module_b)
+            .parser(shared)
             .sink(Box::new(CountingSink::new()))
             .build()
             .unwrap();
 
         let result = pipeline.run().unwrap();
 
-        assert_eq!(construction_count.load(Ordering::SeqCst), 1);
-        assert_eq!(result.items_processed, 1);
+        // Auto-matched into both modules from the same registered `Arc`, so
+        // `open()` runs once per module — 2 calls, 4 records total (2 per
+        // module) — never a factory reconstructed once per module.
+        assert_eq!(opens.load(Ordering::SeqCst), 2);
+        assert_eq!(result.items_processed, 4);
+    }
+
+    // -------------------------------------------------------------------
+    // C-8: shared, investigation-scoped ProvenanceStore
+    // -------------------------------------------------------------------
+
+    /// A parser that mints its records' provenance from the run's *own*
+    /// `ParseContext`-provided store — unlike `TestParserFactoryBuilder`,
+    /// whose `with_records` bakes in a throwaway store at construction
+    /// time and so can never prove cross-task store sharing.
+    struct MintingParser {
+        descriptor: ParserDescriptor,
+        host: &'static str,
+        count: usize,
+    }
+    impl ArtifactParserFactory for MintingParser {
+        fn descriptor(&self) -> &ParserDescriptor {
+            &self.descriptor
+        }
+        fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+            let host = self.host;
+            let mut records = Vec::with_capacity(self.count);
+            for i in 0..self.count {
+                let source = ctx.register_source(crate::provenance::SourceKey::Synthetic(
+                    format!("{host}-{i}"),
+                ));
+                let id = source.mint(
+                    crate::provenance::Acquisition::LiveApi,
+                    crate::provenance::Recovery::Allocated,
+                );
+                records.push(Ok(ForensicData::new(host, Artifact::Unknown, id)));
+            }
+            Ok(ParserRun::pull(records.into_iter()))
+        }
+    }
+
+    fn minting_task(name: &str, host: &'static str, count: usize) -> StandardParallelTask {
+        StandardParallelTaskBuilder::new(name)
+            .parser(Arc::new(MintingParser {
+                descriptor: ParserDescriptor::new(name.to_string(), name.to_string(), "mints provenance", "0.1"),
+                host,
+                count,
+            }))
+            .sources(empty_sources)
+            .build()
+            .unwrap()
+    }
+
+    /// A sink that retains every record it sees, for post-run provenance
+    /// inspection. `Arc<Mutex<..>>`-backed so a clone of the collected
+    /// `Vec` stays reachable after `run()` moves the sink into the
+    /// pipeline.
+    #[derive(Clone)]
+    struct CollectingSink {
+        collected: Arc<Mutex<Vec<ForensicData>>>,
+    }
+    impl CollectingSink {
+        fn new() -> Self {
+            Self {
+                collected: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+    impl TriageSink for CollectingSink {
+        fn name(&self) -> &str {
+            "collecting_sink"
+        }
+        fn on_data(&mut self, data: &ForensicData) -> ForensicResult<()> {
+            self.collected.lock().unwrap().push(data.clone());
+            Ok(())
+        }
+        fn on_finding(&mut self, _f: &Finding) -> ForensicResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn without_a_shared_context_the_result_carries_no_provenance_store() {
+        let task = minting_task("solo", "host-a", 2);
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(1)
+            .task(Box::new(task))
+            .sink(Box::new(CountingSink::new()))
+            .build()
+            .unwrap();
+        let result = pipeline.run().unwrap();
+        assert!(result.provenance_store.is_none());
+    }
+
+    #[test]
+    fn records_from_both_tasks_resolve_against_the_one_shared_store() {
+        // Two tasks, each on its own worker thread, minting from what would
+        // — without the fix — be two independent stores. With one shared
+        // `TriageContext` set on the pipeline builder, both tasks' records
+        // must resolve against the *one* store the pipeline/result hand
+        // back, proving the store is genuinely shared across threads, not
+        // just present.
+        let shared_context = TriageContext::new("WORKSTATION01", "case-42");
+        // Keep an independent handle to the same underlying store, exactly
+        // as a caller would: grab it before handing the context into the
+        // builder (`TriageContext::clone` shares the store, so this handle
+        // stays valid regardless of what the builder does with its clone).
+        let store_handle = shared_context.provenance_store();
+
+        let task_a = minting_task("mint_a", "host-a", 3);
+        let task_b = minting_task("mint_b", "host-b", 2);
+        let sink = CollectingSink::new();
+        let collected = Arc::clone(&sink.collected);
+
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(2)
+            .context(shared_context)
+            .task(Box::new(task_a))
+            .task(Box::new(task_b))
+            .sink(Box::new(sink))
+            .build()
+            .unwrap();
+
+        assert!(
+            pipeline.provenance_store().is_some(),
+            "the shared store must be visible before run() completes, not only after"
+        );
+
+        let result = pipeline.run().unwrap();
+        assert_eq!(result.items_processed, 5);
+        let result_store = result
+            .provenance_store
+            .expect("a shared context was configured, so a store must come back");
+
+        let records = collected.lock().unwrap();
+        assert_eq!(records.len(), 5);
+        // Records minted on two different worker threads all resolve
+        // against both the pre-run handle and the post-run result handle —
+        // the same underlying store, reached three different ways.
+        for record in records.iter() {
+            assert!(
+                store_handle.get(record.provenance()).is_some(),
+                "record did not resolve against the pre-run store handle"
+            );
+            assert!(
+                result_store.get(record.provenance()).is_some(),
+                "record did not resolve against the post-run result store"
+            );
+        }
     }
 }

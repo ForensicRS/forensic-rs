@@ -123,4 +123,18 @@ pub trait ResourceProvider: Send + Sync {
         path: &str,
         cancellation: &CancellationToken,
     ) -> CapabilityResult<ResourceMetadata>;
+
+    /// List command/tool IDs applicable to this node. Default: none.
+    ///
+    /// This is a *discovery* link to already-registered [`super::ForensicTool`]
+    /// IDs, surfaced to callers via `ScopedCapabilityRegistry::list_node_actions`
+    /// — it does not invoke anything itself.
+    #[allow(unused_variables)]
+    fn actions(
+        &self,
+        path: &str,
+        cancellation: &CancellationToken,
+    ) -> CapabilityResult<Vec<String>> {
+        Ok(Vec::new())
+    }
 }

@@ -5,14 +5,14 @@
 //!
 //! Scenario: a triage ZIP from a Windows machine contains MFT records, Windows
 //! Event Log entries, and autorun registry keys. Each artifact type has its own
-//! parser and analyzer. By registering parser factories on the parallel pipeline,
+//! parser and analyzer. By registering parsers on the parallel pipeline's pool,
 //! the framework automatically wires each analyzer to the parsers it needs
 //! based on their declared [`Artifact`] types — no manual per-module wiring.
 //!
 //! Key concepts shown:
 //! - [`AnalysisModule`] / [`AnalysisModuleBuilder`] — analyzer-first task
-//! - [`ParserFactory`] — factory registered once, cloned into N matching modules
-//! - Auto-matching via `Analyzer::supported_artifacts` ∩ `ArtifactParser::supported_artifacts`
+//! - `Arc<dyn ArtifactParserFactory>` — registered once, `Arc::clone`d into N matching modules
+//! - Auto-matching via `Analyzer::supported_artifacts` ∩ `ParserDescriptor::artifacts`
 //! - [`StandardParallelTask`] as a lower-level escape hatch (explicit parser)
 //! - Pipeline-level sinks shared across all parallel tasks
 //! - Bounded channel backpressure via [`ParallelPipelineBuilder::channel_capacity`]
@@ -45,14 +45,15 @@ fn autorun_artifact() -> Artifact {
 
 /// Simulates an MFT parser that emits file-creation records.
 struct MockMftParser {
+    descriptor: ParserDescriptor,
     records: Vec<(&'static str, u64)>, // (path, inode)
-    source: SourceHandle,
 }
 
 impl MockMftParser {
-    fn new(source: SourceHandle) -> Self {
+    fn new() -> Self {
         Self {
-            source,
+            descriptor: ParserDescriptor::new("mft_parser", "mft_parser", "Mock MFT parser", "0.1.0")
+                .with_artifacts(vec![mft_artifact()]),
             records: vec![
                 (r"C:\Windows\System32\cmd.exe",            1001),
                 (r"C:\Windows\Temp\suspicious.ps1",         1002),
@@ -63,41 +64,40 @@ impl MockMftParser {
     }
 }
 
-impl ArtifactParser for MockMftParser {
-    fn name(&self) -> &str { "mft_parser" }
-    fn description(&self) -> &str { "Mock MFT parser" }
-    fn version(&self) -> &str { "0.1.0" }
-    fn supported_artifacts(&self) -> Vec<Artifact> { vec![mft_artifact()] }
+impl ArtifactParserFactory for MockMftParser {
+    fn descriptor(&self) -> &ParserDescriptor {
+        &self.descriptor
+    }
 
-    fn parse<'a>(
-        &'a mut self,
-        _sources: &'a mut TriageSources,
-    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
-        let items: Vec<ForensicResult<ForensicData>> = self.records.iter().map(|(path, inode)| {
-            let provenance = self.source.mint(Acquisition::ImageRead, Recovery::Allocated);
+    fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+        let source = ctx.register_source(SourceKey::Path(r"C:\$MFT".to_string()));
+        let records = self.records.clone();
+        let items: Vec<ForensicResult<ForensicData>> = records.into_iter().map(|(path, inode)| {
+            let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
             let mut d = ForensicData::new("WORKSTATION01", mft_artifact(), provenance);
             d.insert(Text::Borrowed("file.path"),  Field::Text(Text::Owned(path.to_string())));
-            d.insert(Text::Borrowed("file.inode"), Field::U64(*inode));
+            d.insert(Text::Borrowed("file.inode"), Field::U64(inode));
             d.insert(Text::Borrowed("@timestamp"),
                 Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
-        Ok(Box::new(items.into_iter()))
+        Ok(ParserRun::pull(items.into_iter()))
     }
 }
 
 /// Simulates a Windows Event Log parser.
 struct MockEvtxParser {
+    descriptor: ParserDescriptor,
     channel: &'static str,
     events: Vec<(u64, u64)>, // (record_id, event_id)
-    source: SourceHandle,
 }
 
 impl MockEvtxParser {
-    fn security(source: SourceHandle) -> Self {
+    fn security() -> Self {
         Self {
+            descriptor: ParserDescriptor::new("Security", "Security", "Mock EVTX parser", "0.1.0")
+                .with_artifacts(vec![evt_artifact()]),
             channel: "Security",
-            source,
             events: vec![
                 (1001, 4624), // Logon success
                 (1002, 4625), // Logon failure
@@ -110,19 +110,17 @@ impl MockEvtxParser {
     }
 }
 
-impl ArtifactParser for MockEvtxParser {
-    fn name(&self) -> &str { self.channel }
-    fn description(&self) -> &str { "Mock EVTX parser" }
-    fn version(&self) -> &str { "0.1.0" }
-    fn supported_artifacts(&self) -> Vec<Artifact> { vec![evt_artifact()] }
+impl ArtifactParserFactory for MockEvtxParser {
+    fn descriptor(&self) -> &ParserDescriptor {
+        &self.descriptor
+    }
 
-    fn parse<'a>(
-        &'a mut self,
-        _sources: &'a mut TriageSources,
-    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
+    fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
         let channel = self.channel;
-        let items: Vec<ForensicResult<ForensicData>> = self.events.iter().map(|&(record_id, event_id)| {
-            let provenance = self.source.mint(Acquisition::ImageRead, Recovery::Allocated);
+        let source = ctx.register_source(SourceKey::Path(format!("{channel}.evtx")));
+        let events = self.events.clone();
+        let items: Vec<ForensicResult<ForensicData>> = events.into_iter().map(|(record_id, event_id)| {
+            let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
             let mut d = ForensicData::new("WORKSTATION01", evt_artifact(), provenance);
             d.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
             d.insert(Text::Borrowed("event.code"),      Field::U64(event_id));
@@ -131,23 +129,29 @@ impl ArtifactParser for MockEvtxParser {
                 Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
-        Ok(Box::new(items.into_iter()))
+        Ok(ParserRun::pull(items.into_iter()))
     }
 }
 
 /// Emits hardcoded autorun entries (simulating a registry parser output).
 ///
-/// In production this would read from `sources.registry()`. Here we use
-/// static data so the parser is `Send + 'static` without any real registry.
+/// In production this would read from `ctx.registry()`. Here we use
+/// static data so the parser is `Send + Sync` without any real registry.
 struct MockAutorunParser {
+    descriptor: ParserDescriptor,
     entries: Vec<(&'static str, &'static str)>, // (name, command)
-    source: SourceHandle,
 }
 
 impl MockAutorunParser {
-    fn new(source: SourceHandle) -> Self {
+    fn new() -> Self {
         Self {
-            source,
+            descriptor: ParserDescriptor::new(
+                "autorun_parser",
+                "autorun_parser",
+                "Mock autorun registry parser",
+                "0.1.0",
+            )
+            .with_artifacts(vec![autorun_artifact()]),
             entries: vec![
                 ("Malware",  r"powershell.exe -ep bypass C:\temp\malware.ps1"),
                 ("OneDrive", r"C:\Users\Alice\AppData\Local\Microsoft\OneDrive\OneDrive.exe"),
@@ -157,19 +161,20 @@ impl MockAutorunParser {
     }
 }
 
-impl ArtifactParser for MockAutorunParser {
-    fn name(&self) -> &str { "autorun_parser" }
-    fn description(&self) -> &str { "Mock autorun registry parser" }
-    fn version(&self) -> &str { "0.1.0" }
-    fn supported_artifacts(&self) -> Vec<Artifact> { vec![autorun_artifact()] }
+impl ArtifactParserFactory for MockAutorunParser {
+    fn descriptor(&self) -> &ParserDescriptor {
+        &self.descriptor
+    }
 
-    fn parse<'a>(
-        &'a mut self,
-        _sources: &'a mut TriageSources,
-    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
+    fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+        let source = ctx.register_source(SourceKey::Live {
+            host: ctx.host().to_string(),
+            api: "RegistryReader".to_string(),
+        });
         let sid = "S-1-5-21-1366093794-4292800403-1155380978-513";
-        let items: Vec<ForensicResult<ForensicData>> = self.entries.iter().map(|&(name, cmd)| {
-            let provenance = self.source.mint(Acquisition::LiveApi, Recovery::Allocated);
+        let entries = self.entries.clone();
+        let items: Vec<ForensicResult<ForensicData>> = entries.into_iter().map(|(name, cmd)| {
+            let provenance = source.mint(Acquisition::LiveApi, Recovery::Allocated);
             let mut d = ForensicData::new("WORKSTATION01", autorun_artifact(), provenance);
             d.insert(Text::Borrowed("autorun.name"),  Field::Text(Text::Borrowed(name)));
             d.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Borrowed(cmd)));
@@ -178,7 +183,7 @@ impl ArtifactParser for MockAutorunParser {
                 Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
-        Ok(Box::new(items.into_iter()))
+        Ok(ParserRun::pull(items.into_iter()))
     }
 }
 
@@ -364,36 +369,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     // AnalysisModules — no explicit parsers; auto-matching injects them.
     //
-    // At build() time the pipeline calls each registered factory and compares
-    // supported_artifacts() sets. Matching parsers are injected into the module.
+    // At build() time the pipeline compares each registered parser's
+    // descriptor artifacts against each module's analyzer. Matching parsers
+    // are injected into the module by cloning their `Arc` — no construction.
     // -----------------------------------------------------------------------
-
-    // Each module/task below gets its own TriageContext, so each gets its own
-    // ProvenanceStore too — register that module's source(s) against its own
-    // context before building it, then move the resulting SourceHandle into
-    // the matching parser factory (or explicit parser, for the task below).
-    let mft_context = TriageContext::new("WORKSTATION01", "ACME-Corp");
-    let mft_source = mft_context
-        .provenance_store()
-        .register_source(SourceKey::Path(r"C:\$MFT".to_string()));
-
-    let evt_context = TriageContext::new("WORKSTATION01", "ACME-Corp");
-    let evt_source = evt_context
-        .provenance_store()
-        .register_source(SourceKey::Path("Security.evtx".to_string()));
 
     let mft_module = AnalysisModuleBuilder::new("mft_analysis")
         .analyzer(Box::new(TempWriteAnalyzer))
         // No .parser() → auto-match injects MockMftParser (artifacts overlap: MFT)
         .sources(|| TriageSources::builder().build())
-        .context(mft_context)
+        // No .context() here — it adopts the pipeline-wide one set below,
+        // via ParallelPipelineBuilder::context(). Set one explicitly only
+        // when a module genuinely needs to diverge from the run's shared
+        // identity/provenance store (see that method's docs).
         .build()?;
 
     let evt_module = AnalysisModuleBuilder::new("evt_gap_analysis")
         .analyzer(Box::new(EventGapAnalyzer::new()))
         // No .parser() → auto-match injects MockEvtxParser (artifacts overlap: WinEvt)
         .sources(|| TriageSources::builder().build())
-        .context(evt_context)
         .build()?;
 
     // -----------------------------------------------------------------------
@@ -403,38 +397,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // but here we use StandardParallelTask so the parser is always explicit.
     // -----------------------------------------------------------------------
 
-    let autorun_context = TriageContext::new("WORKSTATION01", "ACME-Corp");
-    let autorun_source = autorun_context.provenance_store().register_source(SourceKey::Live {
-        host: "WORKSTATION01".to_string(),
-        api: "RegistryReader".to_string(),
-    });
-
     let autorun_task = StandardParallelTaskBuilder::new("registry_autoruns")
-        .parser(Box::new(MockAutorunParser::new(autorun_source)))
+        .parser(std::sync::Arc::new(MockAutorunParser::new()))
         .analyzer(Box::new(SuspiciousAutorunAnalyzer))
         .sources(|| TriageSources::builder().build())
-        .context(autorun_context)
         .build()?;
 
     // -----------------------------------------------------------------------
     // Build the parallel pipeline.
     //
-    // Factories are registered once. build() calls each factory and compares
-    // artifacts with pending AnalysisModules. Matching parsers are cloned into
-    // the module; non-matching ones are dropped. StandardParallelTask gets no
-    // factories — it already has an explicit parser.
+    // Parsers are registered once in the pool. build() compares descriptor
+    // artifacts against pending AnalysisModules; matching parsers are cloned
+    // (as `Arc`s) into the module, non-matching ones are skipped.
+    // StandardParallelTask bypasses the pool — it already has an explicit
+    // parser.
+    //
+    // `.context(...)` here is what makes this one investigation rather than
+    // three unrelated ones: every module/task above left its own `.context()`
+    // unset, so each adopts a clone of this single `TriageContext` — and a
+    // clone shares its `ProvenanceStore` (an `Arc` handle) with every other
+    // clone. Without this, each of the three tasks above would default to
+    // its own independent `TriageContext`/store, and a record reaching a
+    // sink on the main thread would carry a `ProvenanceId` no single store
+    // handle here could resolve — `data.confidence(&store)` would be
+    // unavailable. See `ParallelPipelineBuilder::context`'s docs.
     // -----------------------------------------------------------------------
 
     let mut pipeline = ParallelPipeline::builder()
         .workers(3)
         .channel_capacity(128)
-        // Factory pool — matched to modules by supported_artifacts() overlap.
-        .parser_factory(Box::new(move || Box::new(MockMftParser::new(mft_source.clone()))))
-        .parser_factory(Box::new(move || Box::new(MockEvtxParser::security(evt_source.clone()))))
+        .context(TriageContext::new("WORKSTATION01", "ACME-Corp"))
+        // Parser pool — matched to modules by descriptor artifact overlap.
+        .parser(std::sync::Arc::new(MockMftParser::new()))
+        .parser(std::sync::Arc::new(MockEvtxParser::security()))
         // Modules — receive auto-matched parsers at build() time.
         .module(mft_module)
         .module(evt_module)
-        // Low-level task — has explicit parser, bypasses factory matching.
+        // Low-level task — has explicit parser, bypasses the pool.
         .task(Box::new(autorun_task))
         // Shared sinks — called on the main thread for all tasks.
         .sink(Box::new(TimelineSink::new("@timestamp")))
@@ -443,6 +442,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let result = pipeline.run()?;
+
+    // The one store every task above minted into — reachable here because
+    // `.context()` was set on the pipeline builder, not per-module/task.
+    if let Some(store) = &result.provenance_store {
+        println!(
+            "\nShared provenance store: {} interned source(s) across all 3 tasks",
+            store.source_count()
+        );
+    }
 
     // -----------------------------------------------------------------------
     // Pipeline-level summary and per-task breakdown.

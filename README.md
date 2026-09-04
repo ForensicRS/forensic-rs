@@ -24,9 +24,9 @@ In this way, the same tools can be used if we want to make a triage processor li
 ### Supported artifacts
 
 * **Windows Registry**: See [`Registry`/`RegistryExt`](./src/traits/registry/mod.rs) traits. `RegistryExt::key()` opens a single hive-prefixed path (e.g. `r"HKLM\SOFTWARE\..."`) into a lifetime-tied `RegKey` handle that closes automatically on drop and also supports explicit `close()`. Windows-specific semantics (`system_root()`, `users()`, `build()`) live as free functions over `&dyn Registry` in [`traits::registry::windows`](./src/traits/registry/windows.rs).
-* **SQL databases**: See [`SqlStatement`](./src/traits/sql.rs) trait and the richer [`ForensicDb`](./src/traits/db.rs) abstraction. Parsers discover database files through a VFS and use `ForensicDbFactory` to open each database without losing access to companion files such as SQLite WAL files. A basic sqlite wrapper example is included in the SQL trait tests.
-* **File Systems**: Read files and directories with support for stacked virtual filesystems (e.g., a file inside a ZIP inside another ZIP), composed via `MountTable`/`OverlayFs` or mounted on demand through a `FileSystemFactory`. `FileSystemExt::walk()` returns a lazy, streaming iterator driven by `WalkOptions` (`skip_errors` tolerates unreadable descendants instead of aborting the walk, `max_depth` bounds recursion); `FileSystemExt::glob()`/`glob_iter()` match paths against a pattern. See [`FileSystem`/`FileSystemExt`](./src/traits/vfs.rs) and the standard library implementation [`StdVirtualFS`](./src/core/fs/stdfs.rs).
-* **Windows Event Logs**: Abstract `EventLogReader` trait for querying event log records with filtering by event ID, time range, provider, severity, and channel. File-backed logs are discovered through a VFS and opened with `EventLogReaderFactory`. Includes a fallible `EventLogIterator` and `EventLogQuery` builder. See [`src/traits/events.rs`](./src/traits/events.rs).
+* **SQL databases**: See [`SqlStatement`](./src/traits/sql.rs) trait and the richer [`ForensicDb`](./src/traits/db.rs) abstraction. Parsers discover database files through a VFS and mount each one with a [`FormatFactory`](./src/traits/format.rs) without losing access to companion files such as SQLite WAL files. A basic sqlite wrapper example is included in the SQL trait tests.
+* **File Systems**: Read files and directories with support for stacked virtual filesystems (e.g., a file inside a ZIP inside another ZIP), composed via `MountTable`/`OverlayFs` or mounted on demand through a [`FormatFactory`](./src/traits/format.rs)/[`MountResolver`](./src/core/resolver.rs), addressed by a structured [`EvidenceLocator`](./src/core/locator.rs) rather than a string path. `FileSystemExt::walk()` returns a lazy, streaming iterator driven by `WalkOptions` (`skip_errors` tolerates unreadable descendants instead of aborting the walk, `max_depth` bounds recursion); `FileSystemExt::glob()`/`glob_iter()` match paths against a pattern. See [`FileSystem`/`FileSystemExt`](./src/traits/vfs.rs) and the standard library implementation [`StdVirtualFS`](./src/core/fs/stdfs.rs).
+* **Windows Event Logs**: Abstract `EventLogReader` trait for querying event log records with filtering by event ID, time range, provider, severity, and channel. File-backed logs are discovered through a VFS and opened by mounting them with a [`FormatFactory`](./src/traits/format.rs). Includes a fallible `EventLogIterator` and `EventLogQuery` builder. See [`src/traits/events.rs`](./src/traits/events.rs).
 * **Timestamps**: `ForensicTimestamp` — a 16-byte, 16-byte-aligned UTC timestamp with nanosecond precision, optional source offset, and precision/provenance flags. `Timestamp128` is an alias for the same type. Constructors cover Windows FILETIME, Unix secs/millis/micros/nanos, OLE Automation dates, WebKit/Chrome, macOS HFS+, Cocoa/Core Data, and `SystemTime`.
 * **Windows Decompression**: LZNT1, LZ77 and LZ77+Huffman algorithms per the MS-XCA specification. See [`decompress()`](./src/utils/win/decompress/mod.rs).
 * **Windows Utilities**: SID-to-string conversion, well-known shell folder ID constants (60+), and registry-based user environment variable resolution. See [`src/utils/win/`](./src/utils/win/).
@@ -324,7 +324,9 @@ impl ProviderHook for ShellbagHook {
     }
 
     fn virtual_children(&self, parent_path: &str, parent_value: &BridgeValue,
-                         offset: u64, limit: u64) -> ForensicResult<(Vec<NodeEntry>, u64)> {
+                         virtual_path: &str, offset: u64, limit: u64) -> ForensicResult<(Vec<NodeEntry>, u64)> {
+        // `virtual_path` is "" for this hook's own root, or a nested sub-path
+        // (e.g. "Desktop") for a deeper listing within `[shellbag]`.
         // parse `parent_value` binary data and return decoded folder entries
         // virtual child paths: `{parent_path}\[shellbag]\Desktop` etc.
         todo!()
@@ -382,6 +384,10 @@ fn analyze(&mut self, data: &ForensicData, context: &TriageContext, out: &mut Ve
     Ok(())
 }
 ```
+
+## Building Your Own Tool
+
+Building a tool that implements one or more of these traits? [`docs/agent-guide/`](./docs/agent-guide/README.md) has scaffolding guidance (what a new repo needs: README, CHANGELOG, AGENTS.md, CI) and a Claude Code review skill covering both code quality and forensic soundness for tools built on this framework.
 
 ## List of libraries
 * **frnsc-liveregistry-rs**: Implements *Registry* using the Windows API to access the registry of a live system. https://github.com/ForensicRS/frnsc-liveregistry-rs

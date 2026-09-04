@@ -111,6 +111,20 @@ impl ResourceProvider for BridgeResourceProvider {
             values,
         })
     }
+
+    fn actions(
+        &self,
+        path: &str,
+        cancellation: &CancellationToken,
+    ) -> CapabilityResult<Vec<String>> {
+        ensure_not_cancelled(cancellation)?;
+        let provider = self.inner.lock().map_err(|_| bridge_operation_error())?;
+        let actions = provider
+            .actions(path, cancellation)
+            .map_err(|_| bridge_operation_error())?;
+        ensure_not_cancelled(cancellation)?;
+        Ok(actions)
+    }
 }
 
 fn ensure_not_cancelled(cancellation: &CancellationToken) -> CapabilityResult<()> {

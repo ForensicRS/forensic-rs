@@ -138,6 +138,28 @@ impl ForensicBridge {
                         },
                     },
                 },
+
+                BridgeRequest::Actions {
+                    provider,
+                    path,
+                    cancel,
+                } => match name_map.get(&provider) {
+                    None => BridgeResponse::Error {
+                        message: format!("provider '{}' not found", provider),
+                    },
+                    Some(&idx) => match self.providers[idx].actions(&path, &cancel) {
+                        Ok(actions) => BridgeResponse::Actions {
+                            origin: DataOrigin {
+                                provider: Text::Owned(provider),
+                                path: Text::Owned(path),
+                            },
+                            actions,
+                        },
+                        Err(e) => BridgeResponse::Error {
+                            message: e.to_string(),
+                        },
+                    },
+                },
             };
 
             // Best-effort send — client may have timed out

@@ -40,6 +40,13 @@ pub enum BridgeRequest {
         cancel: CancellationToken,
     },
 
+    /// List command/tool IDs applicable to a node.
+    Actions {
+        provider: String,
+        path: String,
+        cancel: CancellationToken,
+    },
+
     /// Shut down the bridge worker thread.
     Shutdown,
 }

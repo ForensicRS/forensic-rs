@@ -11,7 +11,7 @@ use super::model::{
     Acquisition, DerivedFrom, MergeReason, Provenance, ProvenanceSnapshot, Recovery, SourceKey,
 };
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct ProvenanceStoreInner {
     // Arenas, indexed by raw id. `Vec` (not `HashMap`) is what makes
     // side-table serialization deterministic: it's walked in insertion
@@ -30,7 +30,7 @@ pub(super) struct ProvenanceStoreInner {
 /// ArtifactParser + Send + 'static>` closure for the parallel pipeline
 /// without any extra plumbing. Owned by [`crate::pipeline::context::TriageContext`]
 /// — never a global.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ProvenanceStore(Arc<Mutex<ProvenanceStoreInner>>);
 
 impl Default for ProvenanceStore {

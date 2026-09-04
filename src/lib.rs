@@ -3,16 +3,24 @@ pub mod artifact;
 pub mod bridge;
 pub mod capabilities;
 pub mod channel;
+pub mod collection;
 pub mod context;
 pub mod core;
+pub mod coverage;
 pub mod data;
 pub mod dictionary;
+pub mod entity;
 pub mod err;
+pub mod evidence;
+pub mod fact_store;
 pub mod field;
+pub mod host_profile;
+pub mod investigation;
 pub mod logging;
 pub mod parsing;
 pub mod pipeline;
 pub mod provenance;
+pub mod secrets;
 pub mod traits;
 pub mod utils;
 
@@ -20,7 +28,10 @@ pub mod prelude {
     pub use crate::artifact::*;
     pub use crate::context::initialize_context;
     pub use crate::core::fs::{ChRootFileSystem, MountTable, OverlayFs, StdVirtualFS, StdVirtualFile};
+    pub use crate::core::limits::{LimitExceeded, Limits, MemorySpillStore, SpillStore};
+    pub use crate::core::locator::{EvidenceLocator, LocatorSegment};
     pub use crate::core::path::{FPath, FPathBuf};
+    pub use crate::core::resolver::{MountResolver, MountResolverBuilder};
     pub use crate::data::*;
     pub use crate::dictionary::*;
     pub use crate::err::*;
@@ -32,16 +43,18 @@ pub mod prelude {
     #[cfg(feature = "serde")]
     pub use crate::pipeline::sinks::{JsonlFindingSink, JsonlTimelineSink};
     pub use crate::pipeline::{
-        context::TriageContext,
+        context::{ParseContext, TriageContext},
         finding::{Finding, FindingCategory, FindingSeverity},
         parallel::{
             AnalysisModule, AnalysisModuleBuilder, ParallelPipeline, ParallelPipelineBuilder,
-            ParallelPipelineResult, ParallelPipelineTask, ParserFactory, PipelineEvent,
-            StandardParallelTask, StandardParallelTaskBuilder, TaskStats,
+            ParallelPipelineResult, ParallelPipelineTask, PipelineEvent, StandardParallelTask,
+            StandardParallelTaskBuilder, TaskStats,
         },
+        registry::ParserRegistry,
         sinks::{FindingCollector, TimelineSink},
         sources::TriageSources,
         sources::TriageSourcesBuilder,
+        timeline::{EventId, InMemoryTimelineStore, InsertOutcome, TimelineRecordSink, TimelineStore},
         traits::{Analyzer, Enricher, TriageSink},
         ErrorAction, PipelineResult, TriagePipeline, TriagePipelineBuilder,
     };
@@ -50,16 +63,21 @@ pub mod prelude {
         ForensicColumnDef, ForensicColumnType, ForensicDb, ForensicRow, ForensicRows,
         ForensicTable, ForensicValue, ForensicValueRef, RowIterator, SqlCapable,
     };
-    pub use crate::traits::factories::{
-        EventLogReaderFactory, ForensicDbFactory, RegistryReaderFactory,
+    pub use crate::traits::digest::{ContentAddress, Digest, DigestAlgorithm};
+    pub use crate::traits::format::{
+        FormatFactory, MountContext, MountKind, Mounted, ProbeScore, StructuredObject,
     };
-    pub use crate::traits::forensic::ArtifactParser;
+    pub use crate::traits::forensic::{
+        ArtifactParserFactory, ArtifactStream, ChannelSpec, IntoActivity, IntoTimeline, KeySpec,
+        OutputFlow, ParserDescriptor, ParserOutput, ParserRun, PushDriver, Requirement, Resolution,
+        SchemaFingerprint, TargetSpec, TimeContext, TimelineData, UnavailableReason,
+    };
     pub use crate::traits::registry::*;
     pub use crate::traits::registry::windows;
     pub use crate::traits::vfs::{
         AlternateStreams, CaseSensitivity, DirEntry, FileAttributes, FileId, FileSystem,
-        FileSystemExt, FileSystemFactory, MacbTimes, Region, SourceKind, StreamInfo, Unallocated,
-        VFileType, VirtualFile,
+        FileSystemExt, MacbTimes, Region, SourceKind, StreamInfo, Unallocated, VFileType,
+        VirtualFile,
     };
     pub use crate::utils::time::{
         filetime_to_unix_timestamp, Filetime, ForensicTimestamp, Timestamp128, TimestampFlags,
@@ -88,6 +106,14 @@ pub mod prelude {
     };
     #[cfg(feature = "serde")]
     pub use crate::provenance::{expand, ExpandedDerivedFrom, ExpandedProvenance, ProvenanceSideTable};
+    pub use crate::secrets::{Secret, SecretKind, SecretProvider, SecretRequest};
+    pub use crate::collection::{CollectionError, CollectionManifest, StaticCollectionManifest, ToolIdentity};
+    pub use crate::coverage::{CoverageGap, CoverageGapReason, CoverageReport};
+    pub use crate::entity::{EntityId, EntityKind};
+    pub use crate::evidence::{EvidenceItem, EvidenceItemId, EvidenceSet};
+    pub use crate::fact_store::{FactObservation, FactRecord, FactStore, InMemoryFactStore, ObservationOutcome};
+    pub use crate::host_profile::HostProfile;
+    pub use crate::investigation::{Investigation, InvestigationId, TenantId};
     /// Test-double implementations of this crate's traits (`TestingRegistry`,
     /// `InMemoryVirtualFileSystem`, `TestParserBuilder`, `InMemoryForensicDb`,
     /// `TestingProviderHook`, factory wrappers, ...) for downstream crates

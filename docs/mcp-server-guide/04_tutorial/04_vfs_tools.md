@@ -53,7 +53,7 @@ can stop early without enumerating a huge directory.
 **Implementations:**
 - `StdVirtualFS` - Real filesystem access
 - `ChRootFileSystem` - Path remapping/chroot (wraps an `Arc<dyn FileSystem>`)
-- ZIP/E01/OLE-contained filesystems - Via `FileSystemFactory`, which sniffs and mounts a nested filesystem from an opened file
+- ZIP/E01/OLE-contained filesystems - Via `FormatFactory`, which sniffs and mounts a nested filesystem from an opened file, driven by `MountResolver`
 
 ## What We're Building
 

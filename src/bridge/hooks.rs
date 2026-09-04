@@ -33,6 +33,17 @@ use super::{BridgeValue, NodeEntry, NodeType};
 /// `Children` request on a path containing `[hookname]`, the provider delegates to
 /// `hook.virtual_children()`, and `Read` requests delegate to `hook.read_virtual()`.
 ///
+/// # Multi-level nesting
+///
+/// A hook's virtual namespace is not limited to one level. `virtual_children`'s
+/// `virtual_path` parameter and `read_virtual`'s `virtual_child` parameter both carry
+/// the *entire* remaining path below the `[hookname]` segment, and the hook is
+/// responsible for self-routing arbitrary depth from that string — e.g. listing
+/// `[shellbag]` itself uses `virtual_path == ""` (the hook's own root), while listing
+/// `[shellbag]\Desktop` uses `virtual_path == "Desktop"`, and a hook that wants a
+/// third level (`[shellbag]\Desktop\SubFolder`) parses `"Desktop\SubFolder"` itself
+/// the same way `read_virtual` implementors already do for arbitrary-depth reads.
+///
 /// # Object safety
 ///
 /// The trait is object-safe — all methods take `&self` with concrete argument types.
@@ -62,11 +73,16 @@ pub trait ProviderHook: Send + Sync {
     ///
     /// `parent_path` is the original path (e.g., the registry key).
     /// `parent_value` is the raw value for this node.
+    /// `virtual_path` is the sub-path within the hook's own namespace being
+    /// listed — `""` for the hook's root (e.g. `[shellbag]`), or a nested path
+    /// (e.g. `"Desktop"`) for a deeper listing. The hook self-routes on this
+    /// value the same way `read_virtual` already self-routes on `virtual_child`.
     /// Returns `(entries, total_count)` — supports pagination.
     fn virtual_children(
         &self,
         parent_path: &str,
         parent_value: &BridgeValue,
+        virtual_path: &str,
         offset: u64,
         limit: u64,
     ) -> ForensicResult<(Vec<NodeEntry>, u64)>;
@@ -87,6 +103,25 @@ pub trait ProviderHook: Send + Sync {
         virtual_child: &str,
     ) -> ForensicResult<BTreeMap<Text, BridgeValue>> {
         Ok(BTreeMap::new())
+    }
+
+    /// Command/tool IDs this hook makes available for a matched *real* node.
+    ///
+    /// Gated the same way virtual children are — only called when
+    /// `matches_path`/`matches_value` both hold for `path`/`value`. Default: no
+    /// actions.
+    #[allow(unused_variables)]
+    fn action_ids(&self, path: &str, value: &BridgeValue) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Command/tool IDs available for a node *within* this hook's own virtual
+    /// namespace. `parent_path`/`virtual_path` have the same meaning as in
+    /// [`ProviderHook::virtual_children`]/[`ProviderHook::read_virtual`].
+    /// Default: no actions.
+    #[allow(unused_variables)]
+    fn virtual_action_ids(&self, parent_path: &str, virtual_path: &str) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -164,6 +199,24 @@ pub fn inject_hook_children(
     }
 }
 
+/// Collect command/tool IDs from all hooks matching a *real* node's `path`/`value`.
+///
+/// Mirrors [`inject_hook_children`]'s two-stage gate but collects
+/// [`ProviderHook::action_ids`] instead of injecting virtual children.
+pub fn collect_hook_actions(
+    hooks: &[Box<dyn ProviderHook>],
+    path: &str,
+    value: &BridgeValue,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    for hook in hooks {
+        if hook.matches_path(path) && hook.matches_value(path, value) {
+            ids.extend(hook.action_ids(path, value));
+        }
+    }
+    ids
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -210,6 +263,7 @@ mod tests {
             &self,
             _parent_path: &str,
             _parent_value: &BridgeValue,
+            _virtual_path: &str,
             offset: u64,
             limit: u64,
         ) -> ForensicResult<(Vec<NodeEntry>, u64)> {
@@ -246,6 +300,18 @@ mod tests {
             );
             Ok(BridgeValue::Map(map))
         }
+
+        fn action_ids(&self, _path: &str, _value: &BridgeValue) -> Vec<String> {
+            vec!["shellbag.explain".to_string()]
+        }
+
+        fn virtual_action_ids(&self, _parent_path: &str, virtual_path: &str) -> Vec<String> {
+            if virtual_path == "Desktop" {
+                vec!["shellbag.explain_child".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
     }
 
     #[test]
@@ -262,5 +328,41 @@ mod tests {
         assert_eq!(children.len(), 2);
         assert_eq!(children[1].name.as_ref(), "[shellbag]");
         assert_eq!(children[1].node_type, NodeType::Virtual);
+    }
+
+    #[test]
+    fn virtual_children_receives_nested_virtual_path() {
+        let hook = MockShellbagHook;
+        let (entries, total) = hook
+            .virtual_children("parent", &BridgeValue::Null, "Desktop", 0, 10)
+            .unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn collect_hook_actions_gates_on_matches_path_and_value() {
+        let hooks: Vec<Box<dyn ProviderHook>> = vec![Box::new(MockShellbagHook)];
+        let matching_path = r"HKCU\Shell\BagMRU\0";
+        let matching_value = BridgeValue::Binary(vec![0xDE, 0xAD]);
+        assert_eq!(
+            collect_hook_actions(&hooks, matching_path, &matching_value),
+            vec!["shellbag.explain".to_string()]
+        );
+
+        // matches_path fails
+        assert!(collect_hook_actions(&hooks, "HKCU\\Other", &matching_value).is_empty());
+        // matches_value fails (not Binary)
+        assert!(collect_hook_actions(&hooks, matching_path, &BridgeValue::Null).is_empty());
+    }
+
+    #[test]
+    fn virtual_action_ids_is_gated_by_the_provider_dispatching_it() {
+        let hook = MockShellbagHook;
+        assert_eq!(
+            hook.virtual_action_ids("parent", "Desktop"),
+            vec!["shellbag.explain_child".to_string()]
+        );
+        assert!(hook.virtual_action_ids("parent", "Downloads").is_empty());
     }
 }

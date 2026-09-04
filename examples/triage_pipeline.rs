@@ -20,30 +20,39 @@ use forensic_rs::utils::testing::TestingRegistry;
 // ---------------------------------------------------------------------------
 
 struct AutorunParser {
-    source: SourceHandle,
+    descriptor: ParserDescriptor,
 }
 
 impl AutorunParser {
-    fn new(source: SourceHandle) -> Self {
-        Self { source }
+    fn new() -> Self {
+        Self {
+            descriptor: ParserDescriptor::new(
+                "autoruns",
+                "autoruns",
+                "Reads Run/RunOnce registry keys for all users",
+                "0.1.0",
+            )
+            .with_artifacts(vec![Artifact::Windows(WindowsArtifacts::Registry(
+                RegistryArtifacts::AutoRuns,
+            ))]),
+        }
     }
 }
 
-impl ArtifactParser for AutorunParser {
-    fn name(&self) -> &str { "autoruns" }
-    fn description(&self) -> &str { "Reads Run/RunOnce registry keys for all users" }
-    fn version(&self) -> &str { "0.1.0" }
-
-    fn supported_artifacts(&self) -> Vec<Artifact> {
-        vec![Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns))]
+impl ArtifactParserFactory for AutorunParser {
+    fn descriptor(&self) -> &ParserDescriptor {
+        &self.descriptor
     }
 
-    fn parse<'a>(
-        &'a mut self,
-        sources: &'a mut TriageSources,
-    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<ForensicData>> + 'a>> {
-        let registry = sources.registry()
-            .ok_or(ForensicError::missing_data("Registry source required", CompactString::const_new("AutorunParser")))?;
+    fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
+        let registry = ctx.registry()
+            .ok_or_else(|| ForensicError::missing_data("Registry source required", CompactString::const_new("AutorunParser")))?;
+        // Registered here, not injected at construction — the parser is the
+        // only thing that knows what its own source key should be.
+        let source = ctx.register_source(SourceKey::Live {
+            host: ctx.host().to_string(),
+            api: "RegistryReader".to_string(),
+        });
         let users = windows::users(registry.as_ref())?;
         let mut records = Vec::new();
 
@@ -63,7 +72,7 @@ impl ArtifactParser for AutorunParser {
                 // Read through the Registry trait, live-API semantics:
                 // allocated (the key/value exists as read), but not
                 // reproducible byte-for-byte the way an image read would be.
-                let provenance = self.source.mint(Acquisition::LiveApi, Recovery::Allocated);
+                let provenance = source.mint(Acquisition::LiveApi, Recovery::Allocated);
                 let mut data = ForensicData::new("WORKSTATION01",
                     Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)), provenance);
                 data.insert(Text::Borrowed("autorun.name"), Field::Text(Text::Owned(value_name.clone())));
@@ -76,7 +85,7 @@ impl ArtifactParser for AutorunParser {
             }
         }
 
-        Ok(Box::new(records.into_iter()))
+        Ok(ParserRun::pull(records.into_iter()))
     }
 }
 
@@ -248,19 +257,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let vfs = StdVirtualFS::new();
 
-    let mut sources = TriageSources::new(std::sync::Arc::new(vfs), std::sync::Arc::new(registry));
+    let sources = TriageSources::new(std::sync::Arc::new(vfs), std::sync::Arc::new(registry));
 
-    // Register the registry as a source before building the parser, so every
-    // autorun record it emits mints a real ProvenanceId against it.
-    let context = TriageContext::new("WORKSTATION01", "ACME-Corp");
-    let registry_source = context
-        .provenance_store()
-        .register_source(SourceKey::Live { host: "WORKSTATION01".to_string(), api: "RegistryReader".to_string() });
-
-    // Build the pipeline
+    // Build the pipeline. Unlike the old `ArtifactParser` shape, nothing
+    // needs to be registered against the provenance store up front — the
+    // parser registers its own `SourceKey` from inside `open()`.
     let mut pipeline = TriagePipeline::builder()
-        .context(context)
-        .parser(Box::new(AutorunParser::new(registry_source)))
+        .context(TriageContext::new("WORKSTATION01", "ACME-Corp"))
+        .parser(std::sync::Arc::new(AutorunParser::new()))
         .enricher(Box::new(UserProfileEnricher::new()))
         .analyzer(Box::new(SuspiciousAutorunAnalyzer))
         .sink(Box::new(ReportSink::new()))
@@ -271,7 +275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run the pipeline
     println!("=== Triage Pipeline Execution ===\n");
-    let result = pipeline.run(&mut sources)?;
+    let result = pipeline.run(&sources)?;
 
     // Print pipeline summary
     println!("\n=== Pipeline Result ===");

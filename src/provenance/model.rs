@@ -31,6 +31,27 @@ pub enum Acquisition {
     RemoteCollection,
 }
 
+/// Conservative default mapping from a [`crate::traits::vfs::SourceKind`] to
+/// an [`Acquisition`]. Never overstates: a parser that knows more (e.g. it
+/// resolved a VSS-mounted path) should say so explicitly rather than rely on
+/// this default.
+///
+/// `SourceKind::Triage` has no exact counterpart — a KAPE/CyLR-style targeted
+/// collection was mediated by a collection tool, so it maps to
+/// [`Acquisition::RemoteCollection`] (which grades to `Medium`, not the
+/// `High` a raw image read would). This is a known lossy mapping.
+impl From<crate::traits::vfs::SourceKind> for Acquisition {
+    fn from(kind: crate::traits::vfs::SourceKind) -> Self {
+        use crate::traits::vfs::SourceKind;
+        match kind {
+            SourceKind::Image => Acquisition::ImageRead,
+            SourceKind::Live => Acquisition::LiveApi,
+            SourceKind::Memory => Acquisition::Memory,
+            SourceKind::Triage => Acquisition::RemoteCollection,
+        }
+    }
+}
+
 /// How the structure was located within the acquired bytes.
 ///
 /// Orthogonal to [`Acquisition`] — see that type's documentation for why the

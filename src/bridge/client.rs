@@ -159,6 +159,15 @@ impl BridgeClient {
         })
     }
 
+    /// List command/tool IDs applicable to a node.
+    pub fn actions(&self, provider: &str, path: &str) -> ForensicResult<BridgeResponse> {
+        self.request(BridgeRequest::Actions {
+            provider: provider.to_string(),
+            path: path.to_string(),
+            cancel: CancellationToken::new(),
+        })
+    }
+
     // ------------------------------------------------------------------ shutdown
 
     /// Request the bridge worker to shut down. Subsequent requests will error.
