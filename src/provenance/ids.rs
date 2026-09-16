@@ -40,7 +40,16 @@ impl ProvenanceId {
         Self(raw)
     }
 
-    pub(super) const fn raw(self) -> u32 {
+    /// `pub(crate)`, not `pub`: the whole point of this module is that a
+    /// bare id cannot escape the crate without the store that resolves it
+    /// (there is deliberately no `Serialize` -- see
+    /// `tests/compile_fail/serialize_without_store.rs`). Sibling modules
+    /// that already hold a [`super::ProvenanceStore`] and emit the matching
+    /// side table alongside -- currently
+    /// [`ProvenanceJsonlSink`](crate::pipeline::sinks::ProvenanceJsonlSink) --
+    /// need the raw index to join the two, and cannot reach a `pub(super)`
+    /// accessor.
+    pub(crate) const fn raw(self) -> u32 {
         self.0
     }
 }

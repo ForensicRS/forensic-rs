@@ -14,6 +14,7 @@
 
 use super::RegValue;
 use crate::err::ForensicResult;
+use crate::recovery::Recovered;
 use crate::utils::time::ForensicTimestamp;
 use std::marker::PhantomData;
 
@@ -475,11 +476,21 @@ fn resolve_hive(name: &str) -> ForensicResult<PredefinedHive> {
 }
 
 /// Deleted-cell recovery capability, discovered via [`Registry::as_recovery`].
-/// No backend implements this yet — pure plumbing so a future hive-slack
-/// parser can opt in without another core-trait change.
+///
+/// Returns [`Recovered`]`<RecoveredKey>`/`<RecoveredValue>`, not the
+/// bare structs: a carved cell has no allocation marking it live, so
+/// checklist rule 4 applies here exactly as it does to
+/// [`RecoverRows`](crate::traits::db::RecoverRows) on the
+/// database side — an unlabelled recovery is a false claim of confidence.
+/// [`Recovered::locus`](crate::recovery::Recovered::locus) is `Locus::Hive { cell, value_index }` for a carved
+/// value, or `Locus::Hive { cell, value_index: 0 }` for a key (a key has no
+/// value index of its own; callers reading this back should treat a key's
+/// `value_index` as meaningless rather than as a real zero-th value).
+/// `parent_hint`/`key_hint` stay on the inner structs — those are *name*
+/// hints, not addresses, and `Locus` does not replace them.
 pub trait RecoverDeleted: Registry {
-    fn deleted_keys(&self) -> ForensicResult<Vec<RecoveredKey>>;
-    fn deleted_values(&self) -> ForensicResult<Vec<RecoveredValue>>;
+    fn deleted_keys(&self) -> ForensicResult<Vec<Recovered<RecoveredKey>>>;
+    fn deleted_values(&self) -> ForensicResult<Vec<Recovered<RecoveredValue>>>;
 }
 
 #[derive(Debug, Clone)]
@@ -641,6 +652,61 @@ mod tests {
                 None => Box::new(std::iter::empty()),
             })
         }
+
+        fn as_recovery(&self) -> Option<&dyn RecoverDeleted> {
+            Some(self)
+        }
+    }
+
+    impl RecoverDeleted for MiniRegistry {
+        fn deleted_keys(&self) -> ForensicResult<Vec<Recovered<RecoveredKey>>> {
+            Ok(vec![Recovered::new(
+                RecoveredKey {
+                    name: "OldUpdater".to_string(),
+                    last_write: None,
+                    parent_hint: Some("Software\\Run".to_string()),
+                },
+                crate::provenance::Recovery::DeletedMetadata,
+                crate::provenance::Locus::Hive { cell: 0x2C10, value_index: 0 },
+            )])
+        }
+
+        fn deleted_values(&self) -> ForensicResult<Vec<Recovered<RecoveredValue>>> {
+            Ok(vec![Recovered::new(
+                RecoveredValue {
+                    key_hint: Some("Software\\Run".to_string()),
+                    name: "Beacon".to_string(),
+                    value: RegValue::SZ("beacon.exe".to_string()),
+                },
+                crate::provenance::Recovery::DeletedMetadata,
+                crate::provenance::Locus::Hive { cell: 0x2C40, value_index: 1 },
+            )])
+        }
+    }
+
+    /// A backend implementing [`RecoverDeleted`] must hand back values that
+    /// self-report as recovered, not as trustworthy as a live read — the
+    /// exact false-confidence claim checklist rule 4 warns about, and the
+    /// reason `deleted_keys`/`deleted_values` return `Recovered<T>` rather
+    /// than the bare structs.
+    #[test]
+    fn recovered_registry_values_carry_their_own_recovery_and_locus() {
+        let reg = MiniRegistry::new();
+        let recovery = Registry::as_recovery(&reg).expect("MiniRegistry advertises recovery");
+
+        let keys = recovery.deleted_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].recovery(), crate::provenance::Recovery::DeletedMetadata);
+        assert_ne!(keys[0].locus(), crate::provenance::Locus::Api);
+        assert_eq!(keys[0].value().name, "OldUpdater");
+
+        let values = recovery.deleted_values().unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].recovery(), crate::provenance::Recovery::DeletedMetadata);
+        assert_eq!(
+            values[0].locus(),
+            crate::provenance::Locus::Hive { cell: 0x2C40, value_index: 1 }
+        );
     }
 
     fn accepts_dyn_registry(_r: &dyn Registry) {}

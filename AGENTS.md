@@ -31,10 +31,10 @@ src/
   traits/             — Core abstraction traits (the "interfaces" of the framework)
     vfs.rs            — FileSystem, FileSystemExt, VirtualFile, VMetadata, DirEntry, VFileType, SourceKind, CaseSensitivity
     forensic.rs       — ArtifactParserFactory, ParserDescriptor, ParserRun, ParserOutput, OutputFlow, ArtifactStream, PushDriver, IntoTimeline, IntoActivity, Requirement, Resolution, UnavailableReason, SchemaFingerprint, TargetSpec, KeySpec, ChannelSpec
-    format.rs         — FormatFactory, Mounted, MountKind, ProbeScore, MountContext, StructuredObject (unified sniff-and-mount contract, replacing the old vfs.rs FileSystemFactory and traits/factories.rs)
+    format.rs         — FormatFactory, Mounted, MountKind, ProbeScore, MountContext, StructuredObject, FileSet/FileSetMember/FileSetRole (unified sniff-and-mount contract, replacing the old vfs.rs FileSystemFactory and traits/factories.rs)
     digest.rs         — Digest, DigestAlgorithm, ContentAddress (content-hashing contract, no hashing dependency taken)
     sql.rs            — SqlStatement, SqlDb, ColumnValue
-    db.rs             — ForensicDb, ForensicRows, ForensicValue, ForensicRow, RowIterator
+    db.rs             — ForensicDb, ForensicRows, ForensicValue, ForensicRow, RowIterator, RecoverRows, EmptyRows (ForensicDb::as_recovery() capability probe; allocated()/recovery()/locus()/scan_report() on a row cursor)
     events.rs         — EventLogReader, EventLogIterator, EventLogQuery, EventRecord, EventLevel
     registry/         — mod.rs: RegValue (13 variants), RegValueRef, RegistryBuffer; raw.rs: Registry, RegistryExt, RegKey, RawKey, PredefinedHive; windows.rs: system_root(), users(), build() free functions
       extra/          — Registry helpers (e.g., get_env_vars_of_users())
@@ -57,7 +57,7 @@ src/
     context.rs        — TriageContext (shared run context: host/tenant/artifact metadata, shared KV store, ProvenanceStore), ParseContext (what one ArtifactParserFactory::open() call sees: sources, host, acquisition, cancellation, register_source())
     registry.rs       — ParserRegistry (ID-keyed store of ArtifactParserFactory instances, backing AccessRequirements::parser(id))
     sources.rs        — TriageSources, TriageSourcesBuilder (VFS/registry evidence sources available to parsers, plus optional MountResolver/SecretProvider attachments)
-    sinks.rs          — TimelineSink, FindingCollector, JsonlTimelineSink, JsonlFindingSink
+    sinks.rs          — TimelineSink, FindingCollector, JsonlTimelineSink, JsonlFindingSink, ProvenanceJsonlSink (the only sink whose output keeps provenance)
     timeline.rs       — EventId, TimelineStore, InMemoryTimelineStore, TimelineRecordSink: an ordered, deduped timeline (TimelineSink is stats-only; this is the "implement a custom TriageSink" it points to)
   provenance/         — Where a value came from and how much to trust it — tracked separately from the value itself
     model.rs          — Acquisition, Recovery, Locus, SourceKey, MergeReason, DerivedFrom, Provenance, ProvenanceSnapshot
@@ -68,6 +68,8 @@ src/
     store.rs           — ProvenanceStore, SourceHandle (interning arena; mint/derive/merge API)
     ids.rs             — ProvenanceId, SourceId (opaque 4-byte interned handles into a ProvenanceStore)
     serde_support.rs   — ProvenanceSideTable, ExpandedProvenance, expand() (serde-feature-gated provenance-aware serialization)
+  recovery/           — Format-agnostic scaffolding for deleted/slack/carved records, and the soundness checklist as module docs
+    mod.rs            — Recovered<T>, slack_regions(), looks_like_padding()
   secrets.rs          — Secret, SecretKind, SecretRequest, SecretProvider (externally supplied key material; Secret has no Debug/Serialize/Clone and zeroizes on drop)
   parsing/            — Byte-level parsing helpers shared by binary artifact parsers
     reader.rs         — ByteReader (zero-copy, position-tracking cursor over &[u8])
@@ -143,7 +145,7 @@ Key prelude exports:
 - `FPath`, `FPathBuf` — evidence path types (replace `std::path::Path`/`PathBuf` in filesystem/registry APIs)
 - `Registry`, `RegistryExt`, `RegKey`, `RawKey`, `RegValue`, `PredefinedHive` — registry (path-based `key()`/`value()`, RAII `RegKey`)
 - `windows` — free functions (`system_root()`, `users()`, `build()`) for Windows-specific registry semantics
-- `FormatFactory`, `Mounted`, `MountKind`, `ProbeScore`, `MountContext`, `StructuredObject` — unified sniff-and-mount contract that opens a derived reader (or a nested filesystem, or a structured object's children) from evidence discovered through a filesystem
+- `FormatFactory`, `Mounted`, `MountKind`, `ProbeScore`, `MountContext`, `StructuredObject`, `FileSet`, `FileSetMember`, `FileSetRole` — unified sniff-and-mount contract that opens a derived reader (or a nested filesystem, or a structured object's children) from evidence discovered through a filesystem
 - `EvidenceLocator`, `LocatorSegment` — structured, typed addressing through nested containers (no `FromStr`, by design)
 - `MountResolver`, `MountResolverBuilder` — drives `FormatFactory` probing/mounting, caches by `EvidenceLocator`, enforces `Limits`
 - `Limits`, `LimitExceeded`, `SpillStore`, `MemorySpillStore` — resource budgets for hostile/untrusted evidence containers
@@ -158,7 +160,7 @@ Key prelude exports:
 - `EventId`, `TimelineStore`, `InMemoryTimelineStore`, `TimelineRecordSink`, `InsertOutcome` — a stable-identity, ordered, deduped timeline; `TimelineData`/`TimeContext`/`IntoTimeline`/`IntoActivity` (`src/traits/forensic.rs`) are what a timeline event actually holds
 - `EntityId`, `EntityKind` — content-derived, stable-across-runs identity for correlation subjects
 - `FactStore`, `InMemoryFactStore`, `ObservationOutcome`, `FactRecord`, `FactObservation` — cross-artifact corroboration: append-only observations about an `EntityId`, agreement merges provenance, disagreement is retained not overwritten
-- `ForensicDb`, `ForensicTable`, `ForensicRows`, `ForensicValue`, `ForensicRow`, `RowIterator` — database
+- `ForensicDb`, `ForensicTable`, `ForensicRows`, `ForensicValue`, `ForensicRow`, `RowIterator`, `RecoverRows`, `EmptyRows` — database, including the `as_recovery()` capability probe for deleted/slack/history rows and `scan_report()` diagnostics
 - `EventLogReader`, `EventLogIterator`, `EventLogQuery`, `EventRecord`, `EventLevel` — event logs
 - `BridgeClient`, `ForensicBridge`, `ForensicBridgeBuilder` — bridge server/client
 - `ForensicProvider`, `BridgeValue`, `BridgeResponse`, `CancellationToken`, `DataOrigin`, `NodeEntry`, `NodeType` — bridge types
@@ -171,6 +173,7 @@ Key prelude exports:
 - `TriagePipeline`, `TriagePipelineBuilder`, `ParallelPipeline`, `ArtifactParserFactory`, `ParserDescriptor`, `ParserRun`, `ParseContext`, `ParserRegistry`, `Analyzer`, `Enricher`, `TriageSink`, `TriageContext`, `TriageSources` — pipeline orchestration (`src/pipeline/`): run `ArtifactParserFactory`s/`Analyzer`s/`Enricher`s over `TriageSources`, route `Finding`s to `TriageSink`s
 - `Anomalies`, `AnomalyFlags`, `AnomalyDetail`, `Parsed<T>` — cheap, value-carried divergence tracking for parsers (`src/provenance/`; "divergence is evidence, not error")
 - `ProvenanceStore`, `ProvenanceId`, `Provenance`, `Confidence`, `Tracked<T>` — provenance/lineage tracking (`src/provenance/`): where a value came from and how much to trust it
+- `Recovered<T>`, `slack_regions()`, `looks_like_padding()` — recovery scaffolding (`src/recovery/`); read that module's checklist before writing any deleted/slack/carved-record parser
 - `ForensicTool`, `CapabilityRegistry`, `ResourceProvider`, `AccessPolicy`, `ValueSchema`, `CapabilityValue`, `AuthorizedVirtualFileSystem`, `AuthorizedRegistryReader` — MCP capability layer (`src/capabilities/`): authorization, and exposing sources as discoverable tools/resources
 - `FromBytes`, `ByteReader`, `read_to_reader()` — zero-copy byte-cursor parsing helpers for binary artifact formats (`src/parsing/`)
 
@@ -416,6 +419,122 @@ mod tests {
 ```
 
 Integration tests (those requiring multiple modules) belong in `tests/`.
+
+---
+
+## Recovery, File Sets, and Provenance-Preserving Export
+
+Three seams a downstream artifact parser reaches for, added together because
+the same ESE-parser retrospective surfaced all three, and two of them were
+already being reinvented per crate.
+
+### Capability probes are how optional power is discovered
+
+The framework has one shape for "this backend can do more than the base
+trait," and it is now uniform across all three domains:
+
+```rust
+fn as_unallocated(&self) -> Option<&dyn Unallocated>   // FileSystem
+fn as_recovery(&self)    -> Option<&dyn RecoverDeleted> // Registry
+fn as_recovery(&self)    -> Option<&dyn RecoverRows>    // ForensicDb
+```
+
+Always add optional capability this way, never as an inherent method on the
+concrete backend. An inherent method is invisible to a caller holding
+`dyn ForensicDb` — which is every generic triage tool — so the feature might
+as well not exist for them.
+
+### A recovered row must say so
+
+`ForensicRows` has three defaulted methods; override them together:
+
+```rust
+fn allocated(&self) -> bool                 // false for deleted/slack rows
+fn recovery(&self)  -> Recovery             // defaults consistently with allocated()
+fn locus(&self)     -> Option<Locus>        // Locus::Record { page, slot } for paged formats
+```
+
+`recovery()` is what a caller feeds to `SourceHandle::mint`/
+`ProvenanceStore::derive`. An unreported recovery is not a missing detail —
+`Confidence` is computed from the provenance chain, so a recovered row that
+travels unlabelled makes a *false claim* of allocated-read confidence.
+`locus()` is what gives it a timeline identity distinct from the allocated
+read of the same structure; without it, every row collapses onto `Locus::Api`
+and the two dedupe into one event.
+
+### `RecoverDeleted` follows the same rule, one level up
+
+The registry side cannot attach `recovery()`/`locus()` to a cursor the way
+`ForensicRows` does — `deleted_keys()`/`deleted_values()` return a `Vec` up
+front, not a lazily-advanced cursor — so the label goes on the *value*
+instead: both return `Vec<Recovered<T>>`, not the bare `RecoveredKey`/
+`RecoveredValue`. Same rule, different attachment point, because the shapes
+differ. `Recovered::locus()` for a hive backend is `Locus::Hive { cell,
+value_index }`; a recovered key has no value index of its own; document
+what you put there rather than leaving a reader to guess.
+
+### Read `src/recovery/`'s checklist before writing a carver
+
+`forensic_rs::recovery`'s module docs carry the soundness rules, and they
+exist because two crates independently learned them the hard way. The one
+that bites hardest: **"not `Nil`" is not an admission bar.** A decoder
+succeeding proves the bytes were *parseable*, never that a record *was there*
+— a run of zeros decodes to a perfectly valid zero. Gate on content with
+`looks_like_padding`, not on decode success. `slack_regions(total, used)`
+does the used-vs-total complement so you do not re-derive that arithmetic.
+Return your own scan's counters as a `RecoveryReport` from
+`ForensicRows::scan_report()` rather than logging them and moving on — "how
+hard did the scan look" is case-relevant, and this is the one place every
+backend's counters end up shaped the same way. If a candidate has a page but
+no governing slot or tag, that is `Locus::PageOffset { page, offset }`, not
+`Locus::Record` with a fabricated `slot`.
+
+### An artifact is often a file set, not a file
+
+An ESE database is `.dat` + `.log`×N + `.chk`; a hive is the hive +
+`.LOG1`/`.LOG2`; SQLite is `.db` + `-wal` + `-shm`. Reading only the primary
+silently discards the most recent transactions, so which companions exist —
+and which are missing — is itself evidence.
+
+Report the group as `Mounted::FileSet(FileSet)` with a `FileSetRole` on each
+member, and discover it with the `MountContext` helpers rather than by hand:
+
+```rust
+fn mount(&self, _f: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    let mut set = FileSet::new(ctx.locator().clone());
+    for entry in ctx.siblings()? {                    // lists the target's own directory
+        let Some(name) = entry.file_name() else { continue };
+        if name.ends_with(".log") {
+            if let Some(loc) = ctx.sibling_locator(name) {
+                set.push_mut(FileSetRole::Log, loc);  // addresses, not open handles
+            }
+        }
+    }
+    Ok(Mounted::FileSet(set))
+}
+```
+
+Write only the naming rule — the format-specific part. `parent_dir()`,
+`siblings()` and `sibling_locator()` all decline (`None`/empty) when the
+target is not a filesystem path, because substituting an enclosing
+container's directory would point discovery at the wrong evidence.
+
+### Exporting: `ForensicData`'s `Serialize` is lossy by design
+
+It emits only the field map. `provenance` and `anomalies` are dropped, and
+therefore so is `confidence` — silently, with nothing failing at compile time
+or run time. That is fine for a scratch field dump and wrong for output an
+examiner keeps.
+
+| Goal | Use |
+|---|---|
+| Output an examiner keeps | `ProvenanceJsonlSink` (records + `ProvenanceSideTable` sidecar) |
+| Scratch field dump | `JsonlTimelineSink` (logs a one-time warning) |
+| Whole-store export | `ProvenanceStore::to_side_table()` |
+
+An id without its side table is meaningless — which is exactly why
+`ProvenanceId` has no `Serialize` of its own — so `ProvenanceJsonlSink` takes
+both writers and emits the table at `finalize()`.
 
 ---
 
@@ -683,3 +802,6 @@ These changes affect downstream code:
 1. **Parser factories replace parsers**: `ArtifactParser` (`&mut self`, one `parse<'a>(&'a mut self, sources: &'a mut TriageSources)` tying the parser's lifetime to `TriageSources`') is removed entirely. `ArtifactParserFactory` (`&self`, `Send + Sync`, one `open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun>`) replaces it: `ParserRun::Pull(ArtifactStream)` for the common owned-iterator case, `ParserRun::Push(PushDriver)` for a reader that returns borrowed cursors (registry key, db row cursor, event-log iterator) and must drive its own loop instead of handing back a self-referential stream. `name()`/`description()`/`version()`/`supported_artifacts()` fold into one `ParserDescriptor`; a caller-injected `SourceHandle`/`Acquisition` is replaced by `ParseContext::register_source()`/`acquisition()`, called from inside `open()` against the pipeline's own `ProvenanceStore`. Every builder (`TriagePipelineBuilder::parser`, `StandardParallelTaskBuilder::parser`, `AnalysisModuleBuilder::parser`, `ParallelPipelineBuilder::parser`) now takes `Arc<dyn ArtifactParserFactory>` instead of `Box<dyn ArtifactParser>`. `IntoTimeline` and `IntoActivity` still wrap items in `ForensicResult`.
 2. **Field TryInto errors**: `TryInto` impls on `&Field` now return `ForensicError` instead of `&'static str`.
 3. **VMetadata timestamps**: `created`/`accessed`/`modified` changed from `Option<usize>` to `Option<ForensicTimestamp>`. Accessor methods return `ForensicTimestamp` instead of `usize`.
+4. **`Mounted`/`MountKind` are `#[non_exhaustive]`**: both gained a `FileSet` variant, and both are now `#[non_exhaustive]` so future mount kinds are not semver-breaking. Any exhaustive `match` on either outside this crate needs a wildcard arm.
+5. **`MemorySpillStore::default()` changed value**: it was a derived `Default` over a lone byte budget, so `limit` was `0` and the store silently refused every non-empty stream. It now returns `Limits::default().materialize_in_memory_limit` (32 MiB). Compilation is unaffected; a caller that genuinely wanted a refusing store must now say `MemorySpillStore::new(0)`.
+6. **New defaulted trait methods**: `ForensicDb::as_recovery()` and `ForensicRows::allocated()`/`recovery()`/`locus()`. All have defaults, so existing backends keep compiling — but a *wrapper* that delegates to an inner `ForensicRows` must forward the three row methods explicitly, or it will silently relabel a recovered row as allocated (this is why `AuthorizedForensicRows` forwards them).

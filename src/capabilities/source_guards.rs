@@ -492,6 +492,15 @@ impl ForensicDb for AuthorizedForensicDb {
             .collect())
     }
 
+    fn as_recovery(&self) -> Option<&dyn crate::traits::db::RecoverRows> {
+        // Not threaded through the authorization boundary yet, for the same
+        // reason as `as_streams`/`as_unallocated` above: recovered rows
+        // bypass the per-table `ensure_table` gate, so exposing them would
+        // need their own grant. Deferred until a backend implements
+        // `RecoverRows`.
+        None
+    }
+
     fn table(&self, name: &str) -> ForensicResult<Box<dyn ForensicTable + '_>> {
         self.ensure_table(name)?;
         let inner = self.inner.table(name)?;
@@ -594,6 +603,24 @@ impl ForensicRows for AuthorizedForensicRows<'_> {
             return Err(ForensicError::no_more_data());
         }
         self.inner.read_ref(index)
+    }
+
+    // Forwarded, not inherited. These three are defaulted on `ForensicRows`,
+    // and the defaults claim "live, allocated read" - so leaving them out
+    // would make every wrapped recovered row silently grade as trustworthy
+    // as an allocated one, inflating its `Confidence` at the authorization
+    // boundary. Authorization filters which rows are visible; it must not
+    // relabel where the visible ones came from.
+    fn allocated(&self) -> bool {
+        self.inner.allocated()
+    }
+
+    fn recovery(&self) -> crate::provenance::Recovery {
+        self.inner.recovery()
+    }
+
+    fn locus(&self) -> Option<crate::provenance::Locus> {
+        self.inner.locus()
     }
 }
 

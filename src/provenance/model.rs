@@ -94,6 +94,7 @@ pub enum Recovery {
 /// interned record itself.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Locus {
     Ntfs {
         entry: u64,
@@ -111,6 +112,29 @@ pub enum Locus {
     },
     Usn {
         usn: u64,
+    },
+    /// A record inside a paged, slotted container — an ESE page + tag, a
+    /// SQLite page + cell index, a B-tree page + slot. Deliberately generic:
+    /// any paged, record-oriented format addresses a row with it, so core
+    /// does not grow one variant per database format.
+    Record {
+        page: u64,
+        slot: u32,
+    },
+    /// A byte offset inside a paged container's unallocated space, where no
+    /// slot or tag governs the record — page-slack carving, a SQLite
+    /// freeblock. Distinct from [`Locus::Record`]: that variant's `slot` is
+    /// mandatory because a live record always has one; a carved candidate
+    /// found by structural plausibility alone has none, and fabricating a
+    /// slot for it would misdirect a reader who tries to seek to it. Distinct
+    /// from [`Locus::RawOffset`] too: that variant has no page at all (a
+    /// flat file/volume offset), while this one names the page a container
+    /// format still organizes itself around, plus the position of the
+    /// candidate inside it — both real facts a carver has in hand and a
+    /// second examiner needs to re-locate the bytes.
+    PageOffset {
+        page: u64,
+        offset: u32,
     },
     RawOffset {
         offset: u64,
@@ -197,7 +221,10 @@ pub struct ProvenanceSnapshot {
     pub derived_from: DerivedFrom,
 }
 
-const _: [(); std::mem::size_of::<Locus>()] = [(); std::mem::size_of::<Locus>()];
+// `Locus` is embedded by value in downstream records, so its size is part of
+// its contract (see the type's doc comment). Pin it: a variant carrying
+// anything heavier than plain integers or interned handles trips this.
+const _: () = assert!(std::mem::size_of::<Locus>() <= 32);
 
 #[cfg(test)]
 mod tests {

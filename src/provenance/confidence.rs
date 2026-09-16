@@ -18,7 +18,15 @@ const MAX_CHAIN_NODES: usize = 4096;
 /// specific instance being asked about).
 ///
 /// Ordered `Unknown < Low < Medium < High` so folding a chain is a `min()`.
+///
+/// `Serialize` but deliberately **not** `Deserialize`: a confidence is
+/// always computed from a provenance chain, never stored, so it may travel
+/// outward into a report — but reading one back in would let a wire format
+/// assert a trust level that no chain supports. Reconstruct it by resolving
+/// the chain instead, via
+/// [`ProvenanceStore::confidence`](super::ProvenanceStore::confidence).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[repr(u8)]
 pub enum Confidence {
     /// A cycle, a dangling reference, or a pathologically long chain was

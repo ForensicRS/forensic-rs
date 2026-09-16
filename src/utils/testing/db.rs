@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::err::{ForensicError, ForensicResult};
+use crate::provenance::{Locus, Recovery};
 use crate::traits::db::{
-    ForensicColumnDef, ForensicColumnType, ForensicDb, ForensicRows, ForensicTable, ForensicValue,
-    ForensicValueRef,
+    EmptyRows, ForensicColumnDef, ForensicColumnType, ForensicDb, ForensicRows, ForensicTable,
+    ForensicValue, ForensicValueRef, RecoverRows,
 };
 
 /// In-memory, multi-table mock of [`ForensicDb`].
@@ -40,6 +41,31 @@ impl ForensicDb for InMemoryForensicDb {
                 ForensicError::missing_data("table", format!("table '{name}' not found").into())
             })
     }
+
+    /// Advertises recovery only when some table actually holds deleted rows,
+    /// so a plain `InMemoryForensicDb` still exercises the `None` default
+    /// that most backends will report.
+    fn as_recovery(&self) -> Option<&dyn RecoverRows> {
+        self.tables
+            .values()
+            .any(|t| !t.deleted.is_empty())
+            .then_some(self as &dyn RecoverRows)
+    }
+}
+
+impl RecoverRows for InMemoryForensicDb {
+    fn recovered_rows(&self, table: &str) -> ForensicResult<Box<dyn ForensicRows + '_>> {
+        match self.tables.get(&table.to_ascii_lowercase()) {
+            Some(t) => Ok(Box::new(InMemoryRows {
+                columns: &t.columns,
+                rows: &t.deleted_rows,
+                loci: &t.deleted,
+                recovery: Recovery::DeletedMetadata,
+                position: -1,
+            })),
+            None => Ok(Box::new(EmptyRows)),
+        }
+    }
 }
 
 /// A single in-memory table: a name, column definitions, and rows.
@@ -48,6 +74,11 @@ pub struct InMemoryTable {
     name: String,
     columns: Vec<ForensicColumnDef>,
     rows: Vec<Vec<ForensicValue>>,
+    // Deleted rows are kept out of `rows` so `iter_rows` stays the
+    // allocated-only view: a recovered row must never leak into an ordinary
+    // table scan just because the backend can recover it.
+    deleted_rows: Vec<Vec<ForensicValue>>,
+    deleted: Vec<Locus>,
 }
 
 impl InMemoryTable {
@@ -56,6 +87,8 @@ impl InMemoryTable {
             name: name.into(),
             columns: Vec::new(),
             rows: Vec::new(),
+            deleted_rows: Vec::new(),
+            deleted: Vec::new(),
         }
     }
 
@@ -81,6 +114,20 @@ impl InMemoryTable {
     pub fn add_row(&mut self, row: Vec<ForensicValue>) {
         self.rows.push(row);
     }
+
+    /// Adds a row reachable only through
+    /// [`RecoverRows::recovered_rows`](crate::traits::db::RecoverRows::recovered_rows),
+    /// addressed at `page`/`slot`. It is deliberately invisible to
+    /// [`ForensicTable::iter_rows`].
+    pub fn with_deleted_row(mut self, row: Vec<ForensicValue>, page: u64, slot: u32) -> Self {
+        self.add_deleted_row(row, page, slot);
+        self
+    }
+
+    pub fn add_deleted_row(&mut self, row: Vec<ForensicValue>, page: u64, slot: u32) {
+        self.deleted_rows.push(row);
+        self.deleted.push(Locus::Record { page, slot });
+    }
 }
 
 impl ForensicTable for InMemoryTable {
@@ -96,6 +143,8 @@ impl ForensicTable for InMemoryTable {
         Ok(Box::new(InMemoryRows {
             columns: &self.columns,
             rows: &self.rows,
+            loci: &[],
+            recovery: Recovery::Allocated,
             position: -1,
         }))
     }
@@ -108,6 +157,10 @@ impl ForensicTable for InMemoryTable {
 struct InMemoryRows<'a> {
     columns: &'a [ForensicColumnDef],
     rows: &'a [Vec<ForensicValue>],
+    /// Parallel to `rows`; empty for an allocated scan, which has no
+    /// per-row address to report.
+    loci: &'a [Locus],
+    recovery: Recovery,
     position: isize,
 }
 
@@ -149,6 +202,21 @@ impl<'a> ForensicRows for InMemoryRows<'a> {
             )
         })?;
         Ok(val.as_ref())
+    }
+
+    fn allocated(&self) -> bool {
+        self.recovery == Recovery::Allocated
+    }
+
+    fn recovery(&self) -> Recovery {
+        self.recovery
+    }
+
+    fn locus(&self) -> Option<Locus> {
+        usize::try_from(self.position)
+            .ok()
+            .and_then(|i| self.loci.get(i))
+            .copied()
     }
 }
 

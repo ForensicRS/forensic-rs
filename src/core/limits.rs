@@ -104,9 +104,25 @@ pub trait SpillStore: Send + Sync {
 
 /// The only [`SpillStore`] core ships: materializes into memory up to
 /// [`Limits::materialize_in_memory_limit`] and refuses past it.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct MemorySpillStore {
     pub limit: usize,
+}
+
+/// Matches [`Limits::default()`]'s `materialize_in_memory_limit`, so a
+/// defaulted store agrees with a defaulted budget.
+///
+/// Deliberately hand-written rather than derived: `#[derive(Default)]` over a
+/// single byte budget yields `limit: 0`, and a zero-limit store silently
+/// refuses every non-empty stream. A store that refuses on purpose is
+/// [`MemorySpillStore::new(0)`](MemorySpillStore::new), spelled out at the
+/// call site.
+impl Default for MemorySpillStore {
+    fn default() -> Self {
+        Self {
+            limit: Limits::default().materialize_in_memory_limit,
+        }
+    }
 }
 
 impl MemorySpillStore {
@@ -210,6 +226,26 @@ mod tests {
     fn spill_rejects_actual_content_over_limit_even_with_no_hint() {
         let store = MemorySpillStore::new(4);
         let mut src: &[u8] = b"way too big for this";
+        assert!(store.spill(&mut src, None).is_err());
+    }
+
+    #[test]
+    fn default_store_accepts_a_spill_instead_of_refusing_everything() {
+        // Regression: a derived `Default` gave `limit: 0`, so the default
+        // store rejected every non-empty stream.
+        let store = MemorySpillStore::default();
+        assert_eq!(store.limit, Limits::default().materialize_in_memory_limit);
+        let mut src: &[u8] = b"hello world";
+        let mut file = store.spill(&mut src, Some(11)).unwrap();
+        let mut out = Vec::new();
+        file.read_to_end(&mut out).unwrap();
+        assert_eq!(out, b"hello world");
+    }
+
+    #[test]
+    fn an_explicit_zero_limit_still_refuses() {
+        let store = MemorySpillStore::new(0);
+        let mut src: &[u8] = b"anything";
         assert!(store.spill(&mut src, None).is_err());
     }
 

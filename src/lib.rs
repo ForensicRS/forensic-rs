@@ -20,6 +20,7 @@ pub mod logging;
 pub mod parsing;
 pub mod pipeline;
 pub mod provenance;
+pub mod recovery;
 pub mod secrets;
 pub mod traits;
 pub mod utils;
@@ -41,7 +42,7 @@ pub mod prelude {
     };
     pub use crate::parsing::{read_to_reader, ByteReader, FromBytes};
     #[cfg(feature = "serde")]
-    pub use crate::pipeline::sinks::{JsonlFindingSink, JsonlTimelineSink};
+    pub use crate::pipeline::sinks::{JsonlFindingSink, JsonlTimelineSink, ProvenanceJsonlSink};
     pub use crate::pipeline::{
         context::{ParseContext, TriageContext},
         finding::{Finding, FindingCategory, FindingSeverity},
@@ -60,12 +61,13 @@ pub mod prelude {
     };
     pub use compact_str::CompactString;
     pub use crate::traits::db::{
-        ForensicColumnDef, ForensicColumnType, ForensicDb, ForensicRow, ForensicRows,
-        ForensicTable, ForensicValue, ForensicValueRef, RowIterator, SqlCapable,
+        EmptyRows, ForensicColumnDef, ForensicColumnType, ForensicDb, ForensicRow, ForensicRows,
+        ForensicTable, ForensicValue, ForensicValueRef, RecoverRows, RowIterator, SqlCapable,
     };
     pub use crate::traits::digest::{ContentAddress, Digest, DigestAlgorithm};
     pub use crate::traits::format::{
-        FormatFactory, MountContext, MountKind, Mounted, ProbeScore, StructuredObject,
+        FileSet, FileSetMember, FileSetRole, FormatFactory, MountContext, MountKind, Mounted,
+        ProbeScore, StructuredObject,
     };
     pub use crate::traits::forensic::{
         ArtifactParserFactory, ArtifactStream, ChannelSpec, IntoActivity, IntoTimeline, KeySpec,
@@ -106,6 +108,7 @@ pub mod prelude {
     };
     #[cfg(feature = "serde")]
     pub use crate::provenance::{expand, ExpandedDerivedFrom, ExpandedProvenance, ProvenanceSideTable};
+    pub use crate::recovery::{looks_like_padding, slack_regions, Recovered, RecoveryReport};
     pub use crate::secrets::{Secret, SecretKind, SecretProvider, SecretRequest};
     pub use crate::collection::{CollectionError, CollectionManifest, StaticCollectionManifest, ToolIdentity};
     pub use crate::coverage::{CoverageGap, CoverageGapReason, CoverageReport};

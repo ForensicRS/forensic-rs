@@ -20,9 +20,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use compact_str::CompactString;
+
 use crate::bridge::CancellationToken;
 use crate::core::limits::{Limits, SpillStore};
 use crate::core::locator::{EvidenceLocator, LocatorSegment};
+use crate::core::path::FPathBuf;
 use crate::err::ForensicResult;
 use crate::field::{Field, Text};
 use crate::traits::db::ForensicDb;
@@ -33,6 +36,7 @@ use crate::traits::vfs::{FileSystem, VirtualFile};
 
 /// What kind of thing a [`FormatFactory`] produces, or a resolved
 /// [`Requirement`](crate::traits::forensic::Requirement) points at.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MountKind {
     FileSystem,
@@ -42,9 +46,12 @@ pub enum MountKind {
     Object,
     /// A located companion file (no interpretation applied).
     File,
+    /// A group of files that together make up one artifact.
+    FileSet,
 }
 
 /// The result of mounting one container/interpretation/embedding hop.
+#[non_exhaustive]
 pub enum Mounted {
     /// Containment: a new addressable filesystem (a ZIP, an E01 volume, a
     /// triage tree).
@@ -64,6 +71,13 @@ pub enum Mounted {
     /// (which contains a whole new addressable tree): this result means
     /// only "here is where it is."
     File(EvidenceLocator),
+    /// A group of files that together make up one artifact (an ESE database
+    /// and its logs, a hive and its `.LOG1`/`.LOG2`). Like
+    /// `Mounted::File` this reports addresses, not open handles, and is
+    /// terminal -- the resolver does not recurse into a set. A caller feeds
+    /// the primary back through the resolver to interpret it, with the
+    /// companions in hand.
+    FileSet(FileSet),
 }
 
 impl Mounted {
@@ -75,6 +89,7 @@ impl Mounted {
             Mounted::EventLog(_) => MountKind::EventLog,
             Mounted::Object(_) => MountKind::Object,
             Mounted::File(_) => MountKind::File,
+            Mounted::FileSet(_) => MountKind::FileSet,
         }
     }
 
@@ -119,6 +134,13 @@ impl Mounted {
             _ => None,
         }
     }
+
+    pub fn as_file_set(&self) -> Option<&FileSet> {
+        match self {
+            Mounted::FileSet(set) => Some(set),
+            _ => None,
+        }
+    }
 }
 
 impl Clone for Mounted {
@@ -130,8 +152,108 @@ impl Clone for Mounted {
             Mounted::EventLog(reader) => Mounted::EventLog(Arc::clone(reader)),
             Mounted::Object(object) => Mounted::Object(Arc::clone(object)),
             Mounted::File(locator) => Mounted::File(locator.clone()),
+            Mounted::FileSet(set) => Mounted::FileSet(set.clone()),
         }
     }
+}
+
+/// The files that together make up one artifact, discovered as a group.
+///
+/// A forensic "file" is often a file *set*: an ESE database is `.dat` plus
+/// its `.log` generations, `.chk` checkpoint and `.jfm`; a registry hive is
+/// the hive plus `.LOG1`/`.LOG2`; a SQLite database is the `.db` plus `-wal`
+/// and `-shm`. Reading only the primary silently discards the most recent
+/// transactions, so which companions exist - and which are missing - is
+/// itself evidence.
+///
+/// Members carry a [`FileSetRole`] rather than being a bare
+/// `Vec<EvidenceLocator>`: without roles a consumer has to re-derive "which
+/// one is the database and which are logs" from filenames, which is exactly
+/// the per-crate work this type exists to remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSet {
+    primary: EvidenceLocator,
+    members: Vec<FileSetMember>,
+}
+
+impl FileSet {
+    /// Starts a set from its primary member - the file that was probed, and
+    /// the one an interpretation factory will actually mount. It is included
+    /// in [`members`](FileSet::members) as [`FileSetRole::Primary`].
+    pub fn new(primary: EvidenceLocator) -> Self {
+        Self {
+            members: vec![FileSetMember {
+                role: FileSetRole::Primary,
+                locator: primary.clone(),
+            }],
+            primary,
+        }
+    }
+
+    /// Adds a companion. Order is preserved, which matters for log
+    /// generations: a caller replaying them must see them in the order the
+    /// factory determined, not sorted by filename.
+    #[must_use]
+    pub fn push(mut self, role: FileSetRole, locator: EvidenceLocator) -> Self {
+        self.push_mut(role, locator);
+        self
+    }
+
+    pub fn push_mut(&mut self, role: FileSetRole, locator: EvidenceLocator) {
+        self.members.push(FileSetMember { role, locator });
+    }
+
+    /// The file the set was probed from.
+    pub fn primary(&self) -> &EvidenceLocator {
+        &self.primary
+    }
+
+    /// Every member, primary first, companions in insertion order.
+    pub fn members(&self) -> &[FileSetMember] {
+        &self.members
+    }
+
+    /// The members holding one role, in insertion order.
+    pub fn by_role<'a>(&'a self, role: &'a FileSetRole) -> impl Iterator<Item = &'a FileSetMember> {
+        self.members.iter().filter(move |m| &m.role == role)
+    }
+
+    pub fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    /// Always `false` - a set always contains at least its primary.
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+}
+
+/// One file within a [`FileSet`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSetMember {
+    pub role: FileSetRole,
+    pub locator: EvidenceLocator,
+}
+
+/// What one [`FileSetMember`] contributes to its artifact.
+///
+/// Roles name the *relationship*, never the file extension: an ESE `.log`,
+/// a hive `.LOG1` and a SQLite `-wal` are all [`FileSetRole::Log`], because a
+/// consumer treats all three the same way - replay them onto the primary.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FileSetRole {
+    /// The file the set was probed from and that gets interpreted.
+    Primary,
+    /// A transaction/redo log to replay onto the primary.
+    Log,
+    /// A checkpoint recording how far the logs have already been applied.
+    Checkpoint,
+    /// A companion carrying metadata about the primary, not its contents.
+    Sidecar,
+    /// A role core does not model. Prefer one of the variants above where it
+    /// honestly fits - `Other` is opaque to every generic consumer.
+    Other(CompactString),
 }
 
 /// How strongly a [`FormatFactory`] claims a byte stream is its format.
@@ -232,6 +354,53 @@ impl<'a> MountContext<'a> {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
+    }
+
+    // --- companion-file discovery ---
+    //
+    // A forensic "file" is often a file set (see [`FileSet`]), and locating
+    // its companions is the same three steps every time: take the target's
+    // directory, list it, and match names against a format-specific rule.
+    // These turn that into one call so each factory writes only the rule,
+    // which is the part that is genuinely format-specific.
+
+    /// The directory holding the target file, when this hop addresses a real
+    /// path.
+    ///
+    /// `None` when the target is not a filesystem path -- an archive entry,
+    /// a stream, or a carved offset has no sibling directory to list, and
+    /// silently substituting the enclosing container's directory would point
+    /// discovery at the wrong evidence.
+    pub fn parent_dir(&self) -> Option<FPathBuf> {
+        match self.locator.last()? {
+            LocatorSegment::Path(path) => Some(path.as_path().parent()?.to_owned()),
+            _ => None,
+        }
+    }
+
+    /// Every entry beside the target file, the target itself included.
+    ///
+    /// Returns an empty vec when [`parent_dir`](MountContext::parent_dir) is
+    /// `None`. Errors from the underlying `read_dir` are propagated rather
+    /// than swallowed: "the directory could not be listed" and "the
+    /// directory holds no companions" lead to different conclusions about
+    /// an incomplete artifact.
+    pub fn siblings(&self) -> ForensicResult<Vec<crate::traits::vfs::DirEntry>> {
+        let Some(dir) = self.parent_dir() else {
+            return Ok(Vec::new());
+        };
+        self.fs.read_dir(dir.as_path())?.collect()
+    }
+
+    /// The locator a companion named `name` would have, in the target's own
+    /// directory. Does not check that it exists.
+    ///
+    /// Use it to turn a name a discovery rule produced into an address the
+    /// resolver and [`FileSet`] can carry.
+    pub fn sibling_locator(&self, name: &str) -> Option<EvidenceLocator> {
+        let dir = self.parent_dir()?;
+        let parent = self.locator.parent().unwrap_or_default();
+        Some(parent.push(LocatorSegment::Path(dir.join(name))))
     }
 }
 

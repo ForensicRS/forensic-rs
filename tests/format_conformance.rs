@@ -228,3 +228,204 @@ fn format_factory_and_mount_resolver_trait_objects_are_send_and_sync() {
     assert_send_sync::<Arc<MountResolver>>();
     assert_send_sync::<Arc<dyn StructuredObject>>();
 }
+
+/// A factory whose job is grouping, not interpreting: it probes the primary
+/// and reports the whole artifact's file set. Discovery goes entirely
+/// through `MountContext`'s companion helpers, which is the boilerplate two
+/// downstream crates previously wrote by hand.
+struct LogSetFactory;
+
+impl FormatFactory for LogSetFactory {
+    fn name(&self) -> &'static str {
+        "log-set"
+    }
+    fn yields(&self) -> MountKind {
+        MountKind::FileSet
+    }
+    fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+        let start = file.stream_position()?;
+        let mut buf = [0u8; 4];
+        let matched = file.read_exact(&mut buf).is_ok() && &buf == b"EDB0";
+        file.seek(SeekFrom::Start(start))?;
+        Ok(if matched { ProbeScore::Exact } else { ProbeScore::No })
+    }
+    fn mount(&self, _file: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+        let mut set = FileSet::new(ctx.locator().clone());
+        // The format-specific part is only the naming rule; listing the
+        // directory and building locators is the framework's job now.
+        let mut names: Vec<String> = ctx
+            .siblings()?
+            .into_iter()
+            .filter_map(|e| e.file_name().map(str::to_string))
+            .collect();
+        names.sort();
+        for name in names {
+            let role = if name.ends_with(".log") {
+                FileSetRole::Log
+            } else if name.ends_with(".chk") {
+                FileSetRole::Checkpoint
+            } else {
+                continue;
+            };
+            if let Some(locator) = ctx.sibling_locator(&name) {
+                set.push_mut(role, locator);
+            }
+        }
+        Ok(Mounted::FileSet(set))
+    }
+}
+
+fn ese_evidence_fs() -> Arc<dyn FileSystem> {
+    Arc::new(
+        InMemoryVirtualFileSystem::new()
+            .with_file("/evidence/db.dat", b"EDB0payload".to_vec())
+            .with_file("/evidence/gen1.log", b"log".to_vec())
+            .with_file("/evidence/gen2.log", b"log".to_vec())
+            .with_file("/evidence/db.chk", b"chk".to_vec())
+            .with_file("/evidence/unrelated.txt", b"no".to_vec()),
+    )
+}
+
+#[test]
+fn a_file_set_mount_reports_every_member_with_its_role() {
+    let resolver = MountResolver::builder().factory(Arc::new(LogSetFactory)).build();
+    let fs = ese_evidence_fs();
+    let cancel = CancellationToken::new();
+    let mounted = resolver
+        .resolve(
+            &fs,
+            &locator("/evidence/db.dat"),
+            bytes_file(b"EDB0payload"),
+            Some(MountKind::FileSet),
+            &cancel,
+        )
+        .expect("the file-set factory should claim the primary");
+
+    assert_eq!(mounted.kind(), MountKind::FileSet);
+    let set = mounted.as_file_set().expect("must expose the set");
+
+    // The primary is a member, and it is first.
+    assert_eq!(set.primary(), &locator("/evidence/db.dat"));
+    assert_eq!(set.members()[0].role, FileSetRole::Primary);
+
+    // Roles survive, so a consumer never has to re-derive them from names.
+    assert_eq!(set.by_role(&FileSetRole::Log).count(), 2);
+    assert_eq!(set.by_role(&FileSetRole::Checkpoint).count(), 1);
+    assert_eq!(set.len(), 4, "the unrelated file must not join the set");
+}
+
+#[test]
+fn a_file_set_factory_is_filtered_out_by_a_mismatched_want() {
+    let resolver = MountResolver::builder().factory(Arc::new(LogSetFactory)).build();
+    let fs = ese_evidence_fs();
+    let cancel = CancellationToken::new();
+    let result = resolver.resolve(
+        &fs,
+        &locator("/evidence/db.dat"),
+        bytes_file(b"EDB0payload"),
+        Some(MountKind::Database),
+        &cancel,
+    );
+    assert!(
+        result.is_err(),
+        "a set is not a database; the mismatch must be reported, not silently mounted"
+    );
+    assert!(resolver.supports(MountKind::FileSet));
+    assert!(!resolver.supports(MountKind::Database));
+}
+
+#[test]
+fn a_file_set_is_cached_by_locator_like_any_other_mount() {
+    let resolver = MountResolver::builder().factory(Arc::new(LogSetFactory)).build();
+    let fs = ese_evidence_fs();
+    let cancel = CancellationToken::new();
+    let first = resolver
+        .resolve(&fs, &locator("/evidence/db.dat"), bytes_file(b"EDB0payload"), None, &cancel)
+        .unwrap();
+    let second = resolver
+        .resolve(&fs, &locator("/evidence/db.dat"), bytes_file(b"EDB0payload"), None, &cancel)
+        .unwrap();
+    assert_eq!(
+        first.as_file_set().unwrap(),
+        second.as_file_set().unwrap(),
+        "the second resolve must come back from the cache unchanged"
+    );
+}
+
+/// The first test in this suite to exercise `ctx.fs()`/`ctx.locator()`, the
+/// two fields `MountContext` carries specifically so a factory can reach
+/// companion files.
+#[test]
+fn companion_discovery_helpers_resolve_against_the_targets_own_directory() {
+    struct AssertingFactory;
+    impl FormatFactory for AssertingFactory {
+        fn name(&self) -> &'static str {
+            "asserting"
+        }
+        fn yields(&self) -> MountKind {
+            MountKind::FileSet
+        }
+        fn probe(&self, _f: &mut dyn VirtualFile, _c: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+            Ok(ProbeScore::Exact)
+        }
+        fn mount(&self, _f: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+            assert_eq!(ctx.parent_dir().unwrap().as_path(), FPath::new("/evidence"));
+            assert_eq!(ctx.siblings()?.len(), 5);
+            assert_eq!(
+                ctx.sibling_locator("db.chk").unwrap(),
+                locator("/evidence/db.chk")
+            );
+            Ok(Mounted::FileSet(FileSet::new(ctx.locator().clone())))
+        }
+    }
+
+    let resolver = MountResolver::builder().factory(Arc::new(AssertingFactory)).build();
+    let cancel = CancellationToken::new();
+    resolver
+        .resolve(
+            &ese_evidence_fs(),
+            &locator("/evidence/db.dat"),
+            bytes_file(b"x"),
+            None,
+            &cancel,
+        )
+        .unwrap();
+}
+
+/// A non-path hop has no sibling directory. Substituting the enclosing
+/// container's directory would point discovery at the wrong evidence, so the
+/// helpers must decline rather than guess.
+#[test]
+fn companion_discovery_declines_for_a_target_that_is_not_a_path() {
+    struct NonPathFactory;
+    impl FormatFactory for NonPathFactory {
+        fn name(&self) -> &'static str {
+            "non-path"
+        }
+        fn yields(&self) -> MountKind {
+            MountKind::FileSet
+        }
+        fn probe(&self, _f: &mut dyn VirtualFile, _c: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+            Ok(ProbeScore::Exact)
+        }
+        fn mount(&self, _f: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+            assert!(ctx.parent_dir().is_none());
+            assert!(ctx.siblings()?.is_empty());
+            assert!(ctx.sibling_locator("anything").is_none());
+            Ok(Mounted::FileSet(FileSet::new(ctx.locator().clone())))
+        }
+    }
+
+    let inside_zip = EvidenceLocator::root()
+        .push(LocatorSegment::Path(FPathBuf::from("/evidence/a.zip")))
+        .push(LocatorSegment::ArchiveEntry {
+            index: 0,
+            name: "inner.dat".into(),
+        });
+
+    let resolver = MountResolver::builder().factory(Arc::new(NonPathFactory)).build();
+    let cancel = CancellationToken::new();
+    resolver
+        .resolve(&ese_evidence_fs(), &inside_zip, bytes_file(b"x"), None, &cancel)
+        .unwrap();
+}

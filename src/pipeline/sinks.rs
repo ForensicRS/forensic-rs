@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use crate::{
     data::ForensicData, err::ForensicResult, field::Field, utils::time::ForensicTimestamp,
 };
+#[cfg(feature = "serde")]
+use crate::provenance::{Confidence, ProvenanceStore};
 
 use super::{
     finding::{Finding, FindingSeverity},
@@ -161,12 +163,25 @@ use std::io::Write;
 /// Uses constant memory regardless of dataset size. Records appear in parser
 /// emission order — sorting is left to downstream tools or databases.
 ///
+/// # Warning: this output carries no provenance
+///
+/// `ForensicData`'s `Serialize` emits only its field map. Each record's
+/// `ProvenanceId`, its `Anomalies`, and therefore its `Confidence` are
+/// dropped — silently, with nothing failing at compile time or run time. The
+/// result is a file whose rows cannot be traced back to how they were
+/// acquired or recovered.
+///
+/// That is fine for a scratch field dump. For output an examiner keeps, use
+/// [`ProvenanceJsonlSink`], which writes the same records paired with the
+/// [`ProvenanceStore`] that resolves them.
+///
 /// Requires the `serde` feature (enabled by default).
 #[cfg(feature = "serde")]
 pub struct JsonlTimelineSink<W: Write> {
     writer: W,
     record_count: u64,
     errors: u64,
+    warned_about_provenance: bool,
 }
 
 #[cfg(feature = "serde")]
@@ -176,6 +191,7 @@ impl<W: Write> JsonlTimelineSink<W> {
             writer,
             record_count: 0,
             errors: 0,
+            warned_about_provenance: false,
         }
     }
 
@@ -202,6 +218,16 @@ impl<W: Write + 'static> TriageSink for JsonlTimelineSink<W> {
     }
 
     fn on_data(&mut self, data: &ForensicData) -> ForensicResult<()> {
+        if !self.warned_about_provenance {
+            self.warned_about_provenance = true;
+            // Once per sink, not once per record. Engineer-facing
+            // diagnostic, not a `Finding`: nothing about the evidence is
+            // wrong, the chosen export format simply cannot carry
+            // provenance, and nothing else says so at run time.
+            crate::warn!(
+                "jsonl_timeline_sink drops provenance, anomalies and confidence; use ProvenanceJsonlSink for output an examiner keeps"
+            );
+        }
         match serde_json::to_writer(&mut self.writer, data) {
             Ok(()) => {
                 let _ = self.writer.write_all(b"\n");
@@ -301,6 +327,154 @@ impl<W: Write + 'static> TriageSink for JsonlFindingSink<W> {
 
     fn finalize(&mut self) -> ForensicResult<()> {
         self.writer.flush()?;
+        Ok(())
+    }
+}
+
+/// A streaming sink that writes each record *with* its provenance, and the
+/// [`ProvenanceStore`] that resolves it, as a paired export.
+///
+/// This is the sink to reach for when an examiner keeps the output.
+/// [`JsonlTimelineSink`] writes `ForensicData`'s own `Serialize`, which is a
+/// flat field map: the record's `ProvenanceId`, its `Anomalies`, and
+/// therefore its `Confidence` are all dropped, silently and with no error to
+/// notice. That is fine for a scratch field dump and wrong for anything an
+/// examiner will later have to defend.
+///
+/// Two outputs, because they have different shapes and lifetimes:
+///
+/// - the **records** writer gets one JSON line per record:
+///   `{"record": {...fields...}, "provenance": 41, "confidence": "High",
+///   "anomalies": ["checksum_mismatch"]}`.
+/// - the **sidecar** writer gets one [`ProvenanceSideTable`] document at
+///   [`finalize`](TriageSink::finalize), interning every source and
+///   provenance record the run produced. `provenance` on each record line is
+///   an index into its `records` array.
+///
+/// Both halves are needed: an id without its table is meaningless (which is
+/// exactly why [`ProvenanceId`] has no `Serialize` of its own), and the
+/// table without the records has nothing to attach to. The side table is
+/// deterministic by construction, so re-running the same input produces
+/// byte-identical output.
+///
+/// [`ProvenanceSideTable`]: crate::provenance::ProvenanceSideTable
+/// [`ProvenanceId`]: crate::provenance::ProvenanceId
+///
+/// Requires the `serde` feature (enabled by default).
+#[cfg(feature = "serde")]
+pub struct ProvenanceJsonlSink<W: Write, S: Write> {
+    records: W,
+    sidecar: S,
+    store: ProvenanceStore,
+    tool_version: String,
+    model_version: u32,
+    record_count: u64,
+    errors: u64,
+}
+
+#[cfg(feature = "serde")]
+impl<W: Write, S: Write> ProvenanceJsonlSink<W, S> {
+    /// `store` must be the same store the records' `ProvenanceId`s were
+    /// minted from -- in a pipeline, the one owned by `TriageContext`. Ids
+    /// minted elsewhere resolve to `Confidence::Unknown` rather than
+    /// silently claiming a level nothing backs.
+    pub fn new(records: W, sidecar: S, store: ProvenanceStore) -> Self {
+        Self {
+            records,
+            sidecar,
+            store,
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            model_version: 1,
+            record_count: 0,
+            errors: 0,
+        }
+    }
+
+    /// Stamps the exported side table with the tool that produced it.
+    /// Defaults to this crate's version; set it to the *downstream* tool's
+    /// version, since diffing a re-run months later is only meaningful if
+    /// you know what changed about the tool.
+    #[must_use]
+    pub fn with_tool_version(mut self, tool_version: impl Into<String>) -> Self {
+        self.tool_version = tool_version.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_version(mut self, model_version: u32) -> Self {
+        self.model_version = model_version;
+        self
+    }
+
+    /// Total records successfully written.
+    pub fn record_count(&self) -> u64 {
+        self.record_count
+    }
+
+    /// Number of serialization errors encountered.
+    pub fn error_count(&self) -> u64 {
+        self.errors
+    }
+
+    /// Consume the sink and return both writers, records first.
+    pub fn into_inner(self) -> (W, S) {
+        (self.records, self.sidecar)
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize)]
+struct ProvenanceRecordLine<'a> {
+    record: &'a ForensicData,
+    provenance: u32,
+    confidence: Confidence,
+    /// Omitted entirely when clean, so a clean export stays visually clean
+    /// and an anomaly is conspicuous rather than one empty array among
+    /// thousands.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    anomalies: Vec<&'static str>,
+}
+
+#[cfg(feature = "serde")]
+impl<W: Write + 'static, S: Write + 'static> TriageSink for ProvenanceJsonlSink<W, S> {
+    fn name(&self) -> &str {
+        "provenance_jsonl_sink"
+    }
+
+    fn on_data(&mut self, data: &ForensicData) -> ForensicResult<()> {
+        let line = ProvenanceRecordLine {
+            record: data,
+            provenance: data.provenance().raw(),
+            confidence: data.confidence(&self.store),
+            anomalies: data.anomalies().flags().names().collect(),
+        };
+        match serde_json::to_writer(&mut self.records, &line) {
+            Ok(()) => {
+                let _ = self.records.write_all(b"\n");
+                self.record_count += 1;
+            }
+            Err(_) => {
+                self.errors += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn on_finding(&mut self, _finding: &Finding) -> ForensicResult<()> {
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> ForensicResult<()> {
+        let table = self
+            .store
+            .to_side_table(self.tool_version.clone(), self.model_version);
+        // Unlike a single dropped record, a missing side table makes every
+        // record line unreadable, so this one is an error, not a counter.
+        serde_json::to_writer(&mut self.sidecar, &table)
+            .map_err(|e| crate::err::ForensicError::other("ProvenanceJsonlSink", e.to_string()))?;
+        self.sidecar.write_all(b"\n")?;
+        self.records.flush()?;
+        self.sidecar.flush()?;
         Ok(())
     }
 }
@@ -428,5 +602,104 @@ mod tests {
         let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("high"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn provenance_jsonl_keeps_what_the_plain_jsonl_sink_drops() {
+        use crate::provenance::{Acquisition, Recovery, SourceKey};
+
+        let store = ProvenanceStore::new();
+        let source = store.register_source(SourceKey::Path("C:/db.dat".to_string()));
+        let carved = source.mint(Acquisition::ImageRead, Recovery::Carved);
+
+        let mut data = ForensicData::new("h", Artifact::Unknown, carved);
+        data.add_field("row", Field::U64(7));
+
+        let mut sink = ProvenanceJsonlSink::new(Vec::new(), Vec::new(), store.clone());
+        sink.on_data(&data).unwrap();
+        sink.finalize().unwrap();
+        assert_eq!(sink.record_count(), 1);
+        assert_eq!(sink.error_count(), 0);
+
+        let (records, sidecar) = sink.into_inner();
+        let line: serde_json::Value =
+            serde_json::from_str(String::from_utf8(records).unwrap().trim()).unwrap();
+
+        // The field map still round-trips...
+        assert_eq!(line["record"]["row"], 7);
+        // ...and so does everything ForensicData's own Serialize drops.
+        assert_eq!(line["provenance"], 0);
+        // Carved from an image grades Low, not High.
+        assert_eq!(line["confidence"], "Low");
+
+        // The side table resolves the id the record line carries.
+        let table: serde_json::Value =
+            serde_json::from_str(String::from_utf8(sidecar).unwrap().trim()).unwrap();
+        let idx = line["provenance"].as_u64().unwrap() as usize;
+        assert_eq!(table["records"][idx]["recovery"], "Carved");
+        assert_eq!(table["records"][idx]["acquisition"], "ImageRead");
+        assert_eq!(table["sources"][0]["Path"], "C:/db.dat");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn provenance_jsonl_emits_anomaly_names_and_omits_them_when_clean() {
+        use crate::provenance::{Acquisition, AnomalyFlags, Parsed, Recovery, SourceKey};
+
+        let store = ProvenanceStore::new();
+        let source = store.register_source(SourceKey::Synthetic("t".to_string()));
+        let id = source.mint(Acquisition::ImageRead, Recovery::Allocated);
+
+        let clean = ForensicData::new("h", Artifact::Unknown, id);
+
+        let mut anomalies = crate::provenance::Anomalies::empty();
+        anomalies.add(AnomalyFlags::CHECKSUM_MISMATCH);
+        let mut dirty = ForensicData::new("h", Artifact::Unknown, id);
+        dirty.set_parsed("v", Parsed::with_anomalies(Field::U64(1), anomalies, id));
+
+        let mut sink = ProvenanceJsonlSink::new(Vec::new(), Vec::new(), store);
+        sink.on_data(&clean).unwrap();
+        sink.on_data(&dirty).unwrap();
+        sink.finalize().unwrap();
+
+        let (records, _) = sink.into_inner();
+        let out = String::from_utf8(records).unwrap();
+        let mut lines = out.lines();
+
+        let clean_line: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert!(clean_line.get("anomalies").is_none());
+        assert_eq!(clean_line["confidence"], "High");
+
+        let dirty_line: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(dirty_line["anomalies"][0], "checksum_mismatch");
+        // A checksum mismatch caps confidence below the clean record's.
+        assert_ne!(dirty_line["confidence"], "High");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn provenance_jsonl_export_is_byte_identical_across_runs() {
+        use crate::provenance::{Acquisition, Recovery, SourceKey};
+
+        let store = ProvenanceStore::new();
+        let source = store.register_source(SourceKey::Path("C:/a.dat".to_string()));
+        let ids: Vec<_> = (0..8)
+            .map(|_| source.mint(Acquisition::ImageRead, Recovery::DeletedMetadata))
+            .collect();
+
+        let export = || {
+            let mut sink = ProvenanceJsonlSink::new(Vec::new(), Vec::new(), store.clone())
+                .with_tool_version("pinned-for-determinism");
+            for (i, id) in ids.iter().enumerate() {
+                let mut d = ForensicData::new("h", Artifact::Unknown, *id);
+                d.add_field("i", Field::U64(i as u64));
+                sink.on_data(&d).unwrap();
+            }
+            sink.finalize().unwrap();
+            sink.into_inner()
+        };
+
+        assert_eq!(export(), export());
     }
 }

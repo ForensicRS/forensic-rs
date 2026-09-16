@@ -55,6 +55,26 @@ impl AnomalyFlags {
         self.0 & other.0 == other.0
     }
 
+    /// The set flags, as stable, machine-readable names, in bit order.
+    ///
+    /// For reporting boundaries that need to say *which* anomalies fired
+    /// without the caller pattern-matching every constant. Names are part of
+    /// the wire contract -- they may be added to, never renamed.
+    pub fn names(self) -> impl Iterator<Item = &'static str> {
+        const NAMED: [(AnomalyFlags, &str); 7] = [
+            (AnomalyFlags::CHECKSUM_MISMATCH, "checksum_mismatch"),
+            (AnomalyFlags::STALE_REFERENCE, "stale_reference"),
+            (AnomalyFlags::REFERENCE_CYCLE, "reference_cycle"),
+            (AnomalyFlags::ALLOCATION_CONFLICT, "allocation_conflict"),
+            (AnomalyFlags::TIMESTAMP_DIVERGENCE, "timestamp_divergence"),
+            (AnomalyFlags::TRUNCATED, "truncated"),
+            (AnomalyFlags::SOURCE_DIVERGENCE, "source_divergence"),
+        ];
+        NAMED
+            .into_iter()
+            .filter_map(move |(flag, name)| self.contains(flag).then_some(name))
+    }
+
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }

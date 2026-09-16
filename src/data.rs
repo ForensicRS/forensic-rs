@@ -427,6 +427,28 @@ impl<'de> Deserialize<'de> for ForensicData {
         deserializer.deserialize_any(DataVisitor)
     }
 }
+/// # Warning: lossy — provenance and anomalies are dropped
+///
+/// This emits only the field map. [`ForensicData::provenance`] and
+/// [`ForensicData::anomalies`] are **not** encoded and cannot be recovered
+/// from the output, so neither can [`ForensicData::confidence`]; `artifact`
+/// survives only because [`ForensicData::new`] also stores it as an ordinary
+/// field. Nothing fails at compile time or run time to tell you, which makes
+/// a naive `serde_json::to_writer(w, &data)` export a file whose rows have no
+/// traceable origin.
+///
+/// The impl deliberately cannot refuse: a `Serialize` impl has no way to know
+/// whether the caller is exporting an evidentiary record or dumping fields for
+/// a debug log, and both are legitimate. Choose explicitly instead:
+///
+/// - keeping the output → [`ProvenanceJsonlSink`],
+///   which pairs each record with the [`ProvenanceStore`]
+///   that resolves it;
+/// - a scratch field dump → this impl, or
+///   [`JsonlTimelineSink`].
+///
+/// See also [`ProvenanceStore::to_side_table`](crate::provenance::ProvenanceStore::to_side_table),
+/// the format that does encode provenance.
 #[cfg(feature = "serde")]
 impl Serialize for ForensicData {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

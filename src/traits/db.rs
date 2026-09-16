@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::fmt;
 
 use crate::err::{ForensicError, ForensicResult};
+use crate::provenance::{Locus, Recovery};
+use crate::recovery::RecoveryReport;
 use crate::utils::time::{Filetime, ForensicTimestamp};
 
 // ============================================================================
@@ -465,6 +467,91 @@ pub trait ForensicDb: Send + Sync {
 
     /// Open a table by name (ASCII case-insensitive recommended).
     fn table(&self, name: &str) -> ForensicResult<Box<dyn ForensicTable + '_>>;
+
+    // --- defaulted: override only if applicable ---
+
+    /// Capability probe for deleted/slack/historical row recovery. `None` by
+    /// default.
+    ///
+    /// Mirrors [`Registry::as_recovery`](crate::traits::registry::Registry::as_recovery)
+    /// and [`FileSystem::as_unallocated`](crate::traits::vfs::FileSystem::as_unallocated):
+    /// without a probe on the base trait a backend's recovery support is
+    /// invisible to triage code holding only a `dyn ForensicDb`, reachable
+    /// only by knowing the concrete type.
+    fn as_recovery(&self) -> Option<&dyn RecoverRows> {
+        None
+    }
+}
+
+/// Deleted-, slack-, and history-row recovery, discovered via
+/// [`ForensicDb::as_recovery`].
+///
+/// No backend in this crate implements this yet - pure plumbing, so a
+/// recovery-capable backend (an ESE or SQLite freelist reader) can opt in
+/// without another core-trait change. Rows come back through the ordinary
+/// [`ForensicRows`] cursor rather than a parallel type, so every existing
+/// consumer keeps working; what sets them apart is
+/// [`allocated`](ForensicRows::allocated)/[`recovery`](ForensicRows::recovery)/[`locus`](ForensicRows::locus)
+/// on the cursor itself.
+///
+/// Implementers: see [`crate::recovery`] for the soundness rules these
+/// methods are expected to have applied before admitting a row - in
+/// particular that a decoded zero is indistinguishable from unwritten
+/// padding, so "it parsed" is not an admission bar.
+pub trait RecoverRows: ForensicDb {
+    /// Rows whose metadata marks them deleted but which still decode against
+    /// the table's schema.
+    fn recovered_rows(&self, table: &str) -> ForensicResult<Box<dyn ForensicRows + '_>>;
+
+    /// Rows carved from the slack between a page's used space and its end.
+    ///
+    /// Defaults to none: a backend that cannot distinguish slack from
+    /// deleted metadata should report everything through
+    /// [`recovered_rows`](RecoverRows::recovered_rows) rather than claim a
+    /// [`Recovery::Slack`] it cannot substantiate.
+    fn slack_rows(&self, table: &str) -> ForensicResult<Box<dyn ForensicRows + '_>> {
+        let _ = table;
+        Ok(Box::new(EmptyRows))
+    }
+
+    /// Prior versions of rows, recovered by replaying a transaction log
+    /// against the base structure. Defaults to none.
+    fn row_history(&self, table: &str) -> ForensicResult<Box<dyn ForensicRows + '_>> {
+        let _ = table;
+        Ok(Box::new(EmptyRows))
+    }
+}
+
+/// A cursor over no rows at all.
+///
+/// The return value for a [`RecoverRows`] capability a backend does not
+/// support, and a trivial stand-in in tests. Reports zero columns and
+/// terminates on the first [`next`](ForensicRows::next).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmptyRows;
+
+impl ForensicRows for EmptyRows {
+    fn column_count(&self) -> usize {
+        0
+    }
+    fn column_name(&self, _i: usize) -> Option<&str> {
+        None
+    }
+    fn column_names(&self) -> Vec<&str> {
+        Vec::new()
+    }
+    fn column_type(&self, _i: usize) -> ForensicColumnType {
+        ForensicColumnType::Null
+    }
+    fn next(&mut self) -> ForensicResult<bool> {
+        Ok(false)
+    }
+    fn read_ref(&self, i: usize) -> ForensicResult<ForensicValueRef<'_>> {
+        Err(ForensicError::missing_data(
+            "column",
+            format!("EmptyRows has no column {i}").into(),
+        ))
+    }
 }
 
 /// A single table within a forensic database.
@@ -538,6 +625,67 @@ pub trait ForensicRows {
     fn read_multi(&self, i: usize) -> ForensicResult<Vec<ForensicValue>> {
         self.read_multi_ref(i)
             .map(|refs| refs.into_iter().map(|r| r.to_owned()).collect())
+    }
+
+    // --- provenance of the current row: defaulted, override only if the
+    // backend can recover rows from anywhere but live, allocated storage ---
+
+    /// Whether the current row came from live, allocated storage.
+    ///
+    /// `false` for a row recovered from a deleted record or page slack.
+    /// Always `true` for backends without recovery support, which is why it
+    /// defaults that way - the same contract as
+    /// [`KeyEntry::allocated`](crate::traits::registry::KeyEntry).
+    fn allocated(&self) -> bool {
+        true
+    }
+
+    /// How the current row was located.
+    ///
+    /// Kept consistent with [`allocated`](ForensicRows::allocated) by
+    /// default, so a backend that overrides only that one still reports a
+    /// truthful [`Recovery`]. Override this directly to distinguish
+    /// [`Recovery::Slack`], [`Recovery::LogReplayed`], or
+    /// [`Recovery::Carved`], which the boolean cannot express.
+    ///
+    /// This is what a caller feeds to
+    /// [`SourceHandle::mint`](crate::provenance::SourceHandle::mint) or
+    /// [`ProvenanceStore::derive`](crate::provenance::ProvenanceStore::derive);
+    /// an unreported recovery grades the row as trustworthy as an allocated
+    /// read, which is a false claim of confidence rather than a missing
+    /// detail.
+    fn recovery(&self) -> Recovery {
+        if self.allocated() {
+            Recovery::Allocated
+        } else {
+            Recovery::DeletedMetadata
+        }
+    }
+
+    /// The byte-exact address of the current row, if the backend can name
+    /// one. `None` by default.
+    ///
+    /// [`Locus::Record`] is the generic paged/slotted address most database
+    /// backends want. Supplying it is what lets a recovered row reach
+    /// [`EventId::new`](crate::pipeline::timeline::EventId::new) with an
+    /// identity distinct from the allocated read of the same structure,
+    /// instead of every row collapsing onto [`Locus::Api`].
+    fn locus(&self) -> Option<Locus> {
+        None
+    }
+
+    /// Scan-level diagnostics for a recovery cursor: how much ground it
+    /// covered and how much of what it found it admitted. `None` by
+    /// default, meaning either "this is an ordinary allocated-read cursor,
+    /// no scan happened" or "this backend hasn't reported one yet" — the two
+    /// are indistinguishable from the caller's side, which is the honest
+    /// state when nothing claims otherwise.
+    ///
+    /// A [`RecoverRows`] cursor that ran a real scan should override this;
+    /// an ordinary [`ForensicTable::iter_rows`] cursor should not, since
+    /// reporting zeroes would falsely claim a scan took place.
+    fn scan_report(&self) -> Option<RecoveryReport> {
+        None
     }
 }
 
