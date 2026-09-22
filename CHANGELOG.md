@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `FileAttributes::CONTAINER` and `WalkOptions::descend_into_containers` (`src/core/fs/walk.rs`):
+  a `Walk` can now transparently descend into a *file* whose backend flags it `CONTAINER` (not
+  just a real directory), letting a container-mounting `FileSystem` decorator (see the
+  forthcoming `ContainerFs`) make nested evidence appear at an ordinary path without the walker
+  needing to know anything about containers itself. Off by default and doubly safe: nothing sets
+  the bit on a plain backend, so a caller who opts in on `WalkOptions` still sees today's
+  behavior until wrapped in a container-aware `FileSystem`. `CONTAINER` is bit 16, establishing
+  the convention that bits 0-15 are read off the evidence and bits 16+ are derived by the
+  framework, so a future backend passing raw Win32/POSIX attribute bits through
+  `from_bits_truncate` cannot collide with it.
 - `PathAttributes` (`src/traits/vfs.rs`), discovered via a fourth `FileSystem` capability probe, `FileSystem::as_attributes()`, alongside `as_streams()`/`as_unallocated()`: untyped, uninterpreted per-*path* facts (an OLE document's author, a macro count, a PE's compile timestamp), namespaced by the reporting backend's own tag (`ole.*`, `pe.*`) so two backends' keys can never collide. The per-path counterpart to `StructuredObject::attributes()`, which is per-object; same `BTreeMap<Text, Field>` return shape on purpose, so an object-backed filesystem can forward its mounted object's map verbatim with no conversion. Wired into `VfsProvider`'s `ResourceProvider`/`ForensicProvider` `metadata()` (added under the backend's own keys, never shadowing the four bare keys core already places there) and into `AuthorizedVirtualFileSystem` (gated by the same `ensure_path` check as every other method, so a denied path's attributes are indistinguishable from a missing path's).
 - `docs/agent-guide/`: downstream tool-author guidance, with two Claude Code skills (`forensic-rs-tool-review`, `forensic-rs-new-tool`) and copyable repo-scaffolding templates (README, CHANGELOG, AGENTS.md, CI workflow) for tools built on top of the framework.
 - Windows decompression algorithms: LZNT1, LZ77 and LZ77+Huffman

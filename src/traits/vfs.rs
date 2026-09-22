@@ -164,6 +164,7 @@ impl FileId {
 pub struct FileAttributes(u32);
 
 impl FileAttributes {
+    // --- bits 0-15: attributes a backend reads off the evidence itself ---
     pub const READONLY: Self = FileAttributes(1 << 0);
     pub const HIDDEN: Self = FileAttributes(1 << 1);
     pub const SYSTEM: Self = FileAttributes(1 << 2);
@@ -172,6 +173,16 @@ impl FileAttributes {
     pub const COMPRESSED: Self = FileAttributes(1 << 5);
     pub const ENCRYPTED: Self = FileAttributes(1 << 6);
     pub const SPARSE: Self = FileAttributes(1 << 7);
+
+    // --- bits 16+: attributes the framework itself derives, never read off the evidence ---
+    /// A registered `FormatFactory` claims this file's bytes, so `read_dir` on it may succeed
+    /// (see `crate::core::fs::ContainerFs`, which sets this bit and is the only thing that
+    /// should). Advisory only: the bit means a factory's `probe` returned better than
+    /// `ProbeScore::No`, not that the mount is guaranteed to succeed -- a truncated or corrupt
+    /// container can still fail to mount even though this bit is set. Never set by a backend
+    /// reading raw evidence (that's what bits 0-15 are for); a future backend author reaching
+    /// for `from_bits_truncate` on real Win32/POSIX attribute bits cannot collide with it.
+    pub const CONTAINER: Self = FileAttributes(1 << 16);
 
     pub const fn empty() -> Self {
         FileAttributes(0)
@@ -460,5 +471,25 @@ mod fs_tests {
         assert!(metadata.created_opt().is_none());
         assert!(metadata.accessed_opt().is_none());
         assert!(metadata.modified_opt().is_none());
+    }
+
+    #[test]
+    fn container_bit_does_not_collide_with_any_evidence_side_bit() {
+        let evidence_bits = FileAttributes::READONLY
+            | FileAttributes::HIDDEN
+            | FileAttributes::SYSTEM
+            | FileAttributes::DIRECTORY
+            | FileAttributes::REPARSE_POINT
+            | FileAttributes::COMPRESSED
+            | FileAttributes::ENCRYPTED
+            | FileAttributes::SPARSE;
+        assert_eq!(evidence_bits.bits() & FileAttributes::CONTAINER.bits(), 0);
+    }
+
+    #[test]
+    fn as_attributes_defaults_to_none() {
+        let files = BTreeMap::new();
+        let fs = MiniFs { files };
+        assert!(fs.as_attributes().is_none());
     }
 }
