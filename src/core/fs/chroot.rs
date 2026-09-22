@@ -71,7 +71,27 @@ impl FileSystem for ChRootFileSystem {
         &self,
         path: &FPath,
     ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
-        self.fs.read_dir(self.resolve(path).as_path())
+        // The inner fs returns each entry's path in *its own* namespace (rooted at
+        // `self.path`, not at the chroot's apparent root) -- every caller of `read_dir`
+        // (`Walk`, `ContainerFs`, a plain `for entry in fs.read_dir(...)` loop) expects the
+        // path it gets back to be directly usable as-is against this same `FileSystem`, so it
+        // must be rewritten back into the outer, chroot-relative namespace before being
+        // yielded. Only the leaf name is taken from the inner entry and rejoined onto the
+        // caller's own `path` -- `read_dir` only ever returns immediate children, so this is
+        // exact, not an approximation.
+        let outer_prefix = path.as_str().to_string();
+        let iter = self.fs.read_dir(self.resolve(path).as_path())?;
+        Ok(Box::new(iter.map(move |entry| {
+            entry.map(|mut e| {
+                let leaf = e.path.as_str().rsplit(['/', '\\']).next().unwrap_or(e.path.as_str()).to_string();
+                e.path = if outer_prefix.is_empty() {
+                    FPathBuf::from(leaf)
+                } else {
+                    FPathBuf::from(format!("{outer_prefix}/{leaf}"))
+                };
+                e
+            })
+        })))
     }
 
     fn source(&self) -> SourceKind {
@@ -146,5 +166,39 @@ mod tst {
                 .unwrap(),
             CONTENT.as_bytes()
         );
+    }
+
+    #[test]
+    fn read_dir_returns_paths_in_the_chroot_s_own_namespace_not_the_inner_fs_s() {
+        // `read_dir`'s entries must be directly usable as further calls against the *same*
+        // `ChRootFileSystem` (open/metadata/read_dir again) -- if they still carried the
+        // inner fs's own-rooted path (`<tmp>/subdir/file.txt` instead of `subdir/file.txt`),
+        // every caller that walks a chroot (`Walk`, `ContainerFs`, a bare `for` loop) would
+        // silently fail to resolve what `read_dir` itself just handed back.
+        let root = std::env::temp_dir().join(format!(
+            "forensic_rs_stdfs_chroot_read_dir_rewrite_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("subdir")).unwrap();
+        std::fs::write(root.join("subdir").join("leaf.txt"), CONTENT).unwrap();
+
+        let chrfs = ChRootFileSystem::new(root.to_string_lossy().into_owned(), Arc::new(StdVirtualFS::new()));
+
+        let root_entries: Vec<_> = FileSystem::read_dir(&chrfs, FPath::new(""))
+            .unwrap()
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
+        assert_eq!(root_entries, vec!["subdir".to_string()]);
+
+        let sub_entries: Vec<_> = FileSystem::read_dir(&chrfs, FPath::new("subdir"))
+            .unwrap()
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
+        assert_eq!(sub_entries, vec!["subdir/leaf.txt".to_string()]);
+
+        // And the returned path must be directly usable against this same filesystem.
+        assert_eq!(chrfs.read_all(FPath::new(&sub_entries[0])).unwrap(), CONTENT.as_bytes());
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
