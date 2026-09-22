@@ -324,6 +324,49 @@ fn transparent_path_reaches_the_same_bytes_as_the_hand_unrolled_chain() {
     assert_eq!(via_transparent_path, b"MZsecret-app-code");
 }
 
+#[test]
+fn max_nesting_depth_is_refused_identically_through_container_fs() {
+    // A twin of `nesting_at_the_limit_succeeds_one_hop_deeper_is_refused` above, but driven
+    // through `ContainerFs`'s transparent path instead of manual `resolve()` calls -- proving
+    // the resolver's own `Limits::max_nesting_depth` still fires, unchanged, when the caller
+    // never sees an `EvidenceLocator` at all. Three real `FileSystem`-yielding mounts this
+    // time (outer -> inner -> innermost), since the worked-example fixture's third hop is an
+    // `Object` embedding, outside `ContainerFs`'s scope (see the test above).
+    let resolver = Arc::new(
+        MountResolver::builder()
+            .factory(Arc::new(ToyZipFactory))
+            .factory(Arc::new(ToyPeFactory))
+            .limits(Limits {
+                max_nesting_depth: 2,
+                ..Limits::default()
+            })
+            .build(),
+    );
+
+    let innermost_zip = build_toy_zip(&[("secret.txt", "buried-treasure")]);
+    let inner_zip = build_toy_zip(&[("innermost.tzip", std::str::from_utf8(&innermost_zip).unwrap())]);
+    let outer_zip = build_toy_zip(&[("inner.tzip", std::str::from_utf8(&inner_zip).unwrap())]);
+    let mut root_fs = InMemoryVirtualFileSystem::new();
+    root_fs.add_file("outer.tzip", outer_zip);
+    let root: Arc<dyn FileSystem> = Arc::new(root_fs);
+
+    let container_fs = ContainerFs::new(root, resolver).with_policy(DescentPolicy {
+        extensions: None, // this fixture's containers don't use a real extension
+        ..DescentPolicy::default()
+    });
+
+    // Depth 2 (outer.tzip -> inner.tzip): within the limit.
+    assert!(container_fs.exists(FPath::new("outer.tzip/inner.tzip")));
+
+    // Depth 3 (outer.tzip -> inner.tzip -> innermost.tzip): one FileSystem-yielding mount past
+    // the limit, refused by the resolver exactly as the manual chain is above.
+    let result = container_fs.read_all(FPath::new("outer.tzip/inner.tzip/innermost.tzip/secret.txt"));
+    assert!(
+        result.is_err(),
+        "max_nesting_depth must refuse the third FileSystem-yielding mount through ContainerFs too"
+    );
+}
+
 #[derive(Default)]
 struct SimpleDigest {
     acc: u64,
