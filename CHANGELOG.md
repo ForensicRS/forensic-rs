@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `PathAttributes` (`src/traits/vfs.rs`), discovered via a fourth `FileSystem` capability probe, `FileSystem::as_attributes()`, alongside `as_streams()`/`as_unallocated()`: untyped, uninterpreted per-*path* facts (an OLE document's author, a macro count, a PE's compile timestamp), namespaced by the reporting backend's own tag (`ole.*`, `pe.*`) so two backends' keys can never collide. The per-path counterpart to `StructuredObject::attributes()`, which is per-object; same `BTreeMap<Text, Field>` return shape on purpose, so an object-backed filesystem can forward its mounted object's map verbatim with no conversion. Wired into `VfsProvider`'s `ResourceProvider`/`ForensicProvider` `metadata()` (added under the backend's own keys, never shadowing the four bare keys core already places there) and into `AuthorizedVirtualFileSystem` (gated by the same `ensure_path` check as every other method, so a denied path's attributes are indistinguishable from a missing path's).
 - `docs/agent-guide/`: downstream tool-author guidance, with two Claude Code skills (`forensic-rs-tool-review`, `forensic-rs-new-tool`) and copyable repo-scaffolding templates (README, CHANGELOG, AGENTS.md, CI workflow) for tools built on top of the framework.
 - Windows decompression algorithms: LZNT1, LZ77 and LZ77+Huffman
 - Added ergonomic wrappers for VFS to accept `AsRef<Path>` for improved path flexibility.

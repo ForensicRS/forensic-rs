@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
+
 use crate::err::ForensicResult;
+use crate::field::{Field, Text};
 use crate::utils::time::ForensicTimestamp;
 
 pub trait VirtualFile: std::io::Seek + std::io::Read + Send {
@@ -251,6 +254,9 @@ pub trait FileSystem: Send + Sync {
     fn as_unallocated(&self) -> Option<&dyn Unallocated> {
         None
     }
+    fn as_attributes(&self) -> Option<&dyn PathAttributes> {
+        None
+    }
 }
 
 /// Blanket-impl'd convenience layer over [`FileSystem`]. A backend author
@@ -311,6 +317,31 @@ pub trait Unallocated: FileSystem {
 pub struct Region {
     pub offset: u64,
     pub length: u64,
+}
+
+/// Untyped, uninterpreted facts about one *path*, discovered via
+/// [`FileSystem::as_attributes`].
+///
+/// The per-path counterpart to
+/// [`StructuredObject::attributes`](crate::traits::format::StructuredObject::attributes), which
+/// is per-*object* rather than per-path. Deliberately the same return shape, so a
+/// container-backed filesystem can forward its mounted object's map verbatim with no conversion
+/// and no key rewriting -- see that trait's own doc for why core stays uninterpreting here too:
+/// a downstream backend (an OLE reader, a PE reader) surfaces facts core neither validates nor
+/// interprets (an author name, a compile timestamp, a macro count), namespaced by that
+/// backend's own tag (`ole.*`, `pe.*`) so two backends' keys can never collide. Core reserves
+/// exactly two namespaces for itself: `fs.*` and `container.*`.
+///
+/// A key is omitted -- never zero-filled and never [`Field::Null`] -- when the underlying value
+/// is unknown or absent; `Field::Null` asserts "this attribute exists and its value is null",
+/// a different, stronger claim than "nothing is known about this attribute".
+pub trait PathAttributes: FileSystem {
+    /// Facts about `path`. An empty map is a valid answer, meaning "this backend has nothing
+    /// extra to say about this path" -- it is **not** an error, and callers must not treat it
+    /// as one. A path that does not exist must still be an `Err`, exactly as
+    /// [`FileSystem::metadata`] would report it, so this method can never be used to probe
+    /// existence more cheaply than `metadata` already allows.
+    fn attributes(&self, path: &FPath) -> ForensicResult<BTreeMap<Text, Field>>;
 }
 
 #[cfg(test)]

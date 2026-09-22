@@ -567,6 +567,23 @@ impl ResourceProvider for VfsProvider {
                 .map(CapabilityValue::Timestamp)
                 .unwrap_or(CapabilityValue::Null),
         );
+        // Format-specific facts (an OLE document's author, a PE's compile timestamp, ...), when
+        // the wrapped backend has them. `or_insert_with` rather than `insert`: a backend must
+        // never be able to shadow the `created`/`accessed`/`modified` keys core already placed
+        // in this map (the file's real `size` is a separate `ResourceMetadata` struct field, not
+        // a `values` entry, so there is nothing here for a backend to shadow it with). Shadowing
+        // these three is structurally impossible today since every attribute key is dotted and
+        // these are bare, but the guard costs nothing and survives a future core key gaining a
+        // dot in it. A failed attribute fetch degrades to "no extra keys", never to a failed
+        // `metadata` call -- `metadata` succeeding above is already the stronger guarantee this
+        // method makes.
+        if let Some(attrs) = self.inner.as_attributes() {
+            if let Ok(facts) = attrs.attributes(FPath::new(path)) {
+                for (key, field) in facts {
+                    values.entry(key).or_insert_with(|| CapabilityValue::from(field));
+                }
+            }
+        }
         Ok(ResourceMetadata {
             media_type: None,
             size: Some(metadata.len()),
@@ -696,6 +713,15 @@ impl ForensicProvider for VfsProvider {
                 .map(BridgeValue::Timestamp)
                 .unwrap_or(BridgeValue::Null),
         );
+        // Format-specific facts, same rule as the ResourceProvider impl above: never shadow
+        // core's own keys, never fail this call over a failed attribute fetch.
+        if let Some(attrs) = self.inner.as_attributes() {
+            if let Ok(facts) = attrs.attributes(FPath::new(path)) {
+                for (key, field) in facts {
+                    map.entry(key).or_insert_with(|| BridgeValue::from(field));
+                }
+            }
+        }
         Ok(map)
     }
 
@@ -1625,6 +1651,85 @@ mod registry_tests {
         assert_eq!(metadata.size, Some(17));
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A `FileSystem` that also implements `PathAttributes`, returning one fixed fact for any
+    /// path -- just enough to prove `VfsProvider` surfaces it through both metadata impls.
+    struct AttrFs(crate::utils::testing::InMemoryVirtualFileSystem);
+
+    impl FileSystem for AttrFs {
+        fn open(&self, path: &FPath) -> ForensicResult<Box<dyn crate::traits::vfs::VirtualFile>> {
+            self.0.open(path)
+        }
+        fn metadata(&self, path: &FPath) -> ForensicResult<crate::traits::vfs::VMetadata> {
+            self.0.metadata(path)
+        }
+        fn read_dir(
+            &self,
+            path: &FPath,
+        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<crate::traits::vfs::DirEntry>> + '_>> {
+            self.0.read_dir(path)
+        }
+        fn source(&self) -> crate::traits::vfs::SourceKind {
+            self.0.source()
+        }
+        fn as_attributes(&self) -> Option<&dyn crate::traits::vfs::PathAttributes> {
+            Some(self)
+        }
+    }
+
+    impl crate::traits::vfs::PathAttributes for AttrFs {
+        fn attributes(&self, path: &FPath) -> ForensicResult<BTreeMap<Text, crate::field::Field>> {
+            self.0.metadata(path)?;
+            let mut map = BTreeMap::new();
+            map.insert(Text::Borrowed("ole.author"), crate::field::Field::Text(Text::Borrowed("Jane Analyst")));
+            // "created" is one of the bare keys core itself already placed in this map (even
+            // though its value is Null here -- `InMemoryVirtualFileSystem` reports no
+            // timestamps). Attempted here to prove `entry().or_insert_with()`'s guard actually
+            // holds -- a present-but-null key still counts as present -- not just document it.
+            map.insert(Text::Borrowed("created"), crate::field::Field::Text(Text::Borrowed("fabricated")));
+            Ok(map)
+        }
+    }
+
+    #[test]
+    fn vfs_provider_surfaces_path_attributes_in_resource_metadata() {
+        let inner = crate::utils::testing::InMemoryVirtualFileSystem::new().with_file("doc.ole", b"bytes".to_vec());
+        let provider = VfsProvider::new(Arc::new(AttrFs(inner))).with_resource_id("evidence-files");
+        let cancellation = CancellationToken::new();
+
+        let metadata = ResourceProvider::metadata(&provider, "doc.ole", &cancellation).unwrap();
+        assert_eq!(metadata.size, Some(5), "core's own size field is untouched by attribute facts");
+        assert_eq!(
+            metadata.values.get(&Text::Borrowed("ole.author")),
+            Some(&CapabilityValue::Text(Text::Borrowed("Jane Analyst"))),
+            "a namespaced fact passes through"
+        );
+        // AttrFs also tried to plant a fabricated "created" -- core's own Null (this backend
+        // reports no timestamps) must win, proving the entry().or_insert_with() guard holds.
+        assert_eq!(metadata.values.get(&Text::Borrowed("created")), Some(&CapabilityValue::Null));
+    }
+
+    #[test]
+    fn vfs_provider_surfaces_path_attributes_in_bridge_metadata() {
+        let inner = crate::utils::testing::InMemoryVirtualFileSystem::new().with_file("doc.ole", b"bytes".to_vec());
+        let provider = VfsProvider::new(Arc::new(AttrFs(inner)));
+        let cancellation = CancellationToken::new();
+
+        let map = ForensicProvider::metadata(&provider, "doc.ole", &cancellation).unwrap();
+        match map.get(&Text::Borrowed("ole.author")) {
+            Some(BridgeValue::Text(t)) => assert_eq!(t.as_ref(), "Jane Analyst"),
+            other => panic!("expected Text(\"Jane Analyst\"), got {other:?}"),
+        }
+        match map.get(&Text::Borrowed("size")) {
+            Some(BridgeValue::U64(5)) => {}
+            other => panic!("expected U64(5), got {other:?}"),
+        }
+        // Same shadow-guard proof as the ResourceProvider test above.
+        match map.get(&Text::Borrowed("created")) {
+            Some(BridgeValue::Null) => {}
+            other => panic!("expected core's own Null to win over the fabricated value, got {other:?}"),
+        }
     }
 
     #[test]

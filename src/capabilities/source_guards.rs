@@ -110,6 +110,27 @@ impl FileSystem for AuthorizedVirtualFileSystem {
     fn as_unallocated(&self) -> Option<&dyn crate::traits::vfs::Unallocated> {
         None
     }
+
+    fn as_attributes(&self) -> Option<&dyn crate::traits::vfs::PathAttributes> {
+        // Honest capability reporting: only claim the probe when the wrapped backend actually
+        // has it, so a caller can tell "unsupported" apart from "every path denied" -- unlike
+        // as_streams/as_unallocated above, the gate this needs is exactly the same ensure_path
+        // check every other method already does, so it's threaded through rather than deferred.
+        self.inner.as_attributes().map(|_| self as &dyn crate::traits::vfs::PathAttributes)
+    }
+}
+
+impl crate::traits::vfs::PathAttributes for AuthorizedVirtualFileSystem {
+    fn attributes(&self, path: &FPath) -> ForensicResult<std::collections::BTreeMap<crate::field::Text, crate::field::Field>> {
+        // Gate FIRST, before the wrapped backend is touched at all -- a denied path and a
+        // genuinely missing one must be indistinguishable, including in timing/error shape, and
+        // `ensure_path` already returns the same generic error either way.
+        self.ensure_path(Some(path))?;
+        match self.inner.as_attributes() {
+            Some(attrs) => attrs.attributes(path),
+            None => Ok(std::collections::BTreeMap::new()),
+        }
+    }
 }
 
 /// A registry reader that authorizes key and value paths before exposing them.
@@ -637,7 +658,7 @@ mod tests {
     };
     use crate::traits::events::{EventLogQuery, EventLogReader};
     use crate::traits::registry::RegistryExt;
-    use crate::traits::vfs::FileSystemExt;
+    use crate::traits::vfs::{FileSystemExt, PathAttributes};
     use crate::utils::testing::{basic_event_log, TestingRegistry};
 
     struct PathPolicy;
@@ -695,6 +716,77 @@ mod tests {
         assert!(!filesystem.exists(FPath::new(&denied_str)));
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A tiny `FileSystem` that also implements `PathAttributes`, returning one fixed fact for
+    /// any path -- just enough to prove `AuthorizedVirtualFileSystem` forwards and gates it.
+    struct AttrFs(crate::utils::testing::InMemoryVirtualFileSystem);
+
+    impl FileSystem for AttrFs {
+        fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>> {
+            self.0.open(path)
+        }
+        fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
+            self.0.metadata(path)
+        }
+        fn read_dir(&self, path: &FPath) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+            self.0.read_dir(path)
+        }
+        fn source(&self) -> SourceKind {
+            self.0.source()
+        }
+        fn as_attributes(&self) -> Option<&dyn crate::traits::vfs::PathAttributes> {
+            Some(self)
+        }
+    }
+
+    impl crate::traits::vfs::PathAttributes for AttrFs {
+        fn attributes(&self, path: &FPath) -> ForensicResult<std::collections::BTreeMap<crate::field::Text, crate::field::Field>> {
+            self.0.metadata(path)?; // an unknown path is still an Err, exactly like `metadata`
+            let mut map = std::collections::BTreeMap::new();
+            map.insert(crate::field::Text::Borrowed("test.marker"), crate::field::Field::U64(1));
+            Ok(map)
+        }
+    }
+
+    #[test]
+    fn attributes_are_forwarded_when_allowed_and_gated_when_denied() {
+        let inner = crate::utils::testing::InMemoryVirtualFileSystem::new()
+            .with_file("allowed.txt", b"visible".to_vec())
+            .with_file("hidden.txt", b"hidden".to_vec());
+        let filesystem = AuthorizedVirtualFileSystem::new(
+            Arc::new(AttrFs(inner)),
+            Arc::new(PathPolicy),
+            AccessContext::new("analyst", "tenant"),
+            "evidence-vfs",
+        );
+
+        // The capability is reported (the wrapped backend really has it)...
+        assert!(filesystem.as_attributes().is_some());
+
+        // ...and an allowed path's facts pass through untouched.
+        let allowed = filesystem.attributes(FPath::new("allowed.txt")).unwrap();
+        assert_eq!(allowed.get(&crate::field::Text::Borrowed("test.marker")), Some(&crate::field::Field::U64(1)));
+
+        // A denied *existing* path and a denied *nonexistent* path must be indistinguishable --
+        // both the identical error `AuthorizedVirtualFileSystem::ensure_path` already produces
+        // for every other method, and neither ever reaches `AttrFs::attributes` at all (denial
+        // gates before the inner backend is touched).
+        let denied_existing = filesystem.attributes(FPath::new("hidden.txt")).unwrap_err().to_string();
+        let denied_missing = filesystem.attributes(FPath::new("does-not-exist.txt")).unwrap_err().to_string();
+        assert_eq!(denied_existing, "AuthorizedVirtualFileSystem error: source path is unavailable");
+        assert_eq!(denied_existing, denied_missing);
+    }
+
+    #[test]
+    fn as_attributes_is_none_when_the_wrapped_backend_lacks_the_capability() {
+        let filesystem = AuthorizedVirtualFileSystem::new(
+            Arc::new(StdVirtualFS::new()),
+            Arc::new(PathPolicy),
+            AccessContext::new("analyst", "tenant"),
+            "evidence-vfs",
+        );
+        assert!(filesystem.as_attributes().is_none());
     }
 
     struct RegistryPathPolicy;
