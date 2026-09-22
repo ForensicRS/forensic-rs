@@ -282,6 +282,48 @@ fn nesting_at_the_limit_succeeds_one_hop_deeper_is_refused() {
     assert!(result.is_err(), "depth exceeding max_nesting_depth must be refused");
 }
 
+#[test]
+fn transparent_path_reaches_the_same_bytes_as_the_hand_unrolled_chain() {
+    // The same containment-containment portion of the worked example above
+    // (outer.tzip -> inner.tzip -> evil.exe), reached through ContainerFs's transparent path
+    // scheme instead of the ~15 lines of manual EvidenceLocator/resolve bookkeeping the first
+    // test in this file needs -- and asserted to reach the identical bytes. The third
+    // (embedding) hop is deliberately not part of this comparison: evil.exe mounts as a
+    // StructuredObject, not a FileSystem, which is outside ContainerFs's scope by design.
+    let resolver = Arc::new(resolver());
+    let root = evidence_root();
+    let cancel = CancellationToken::new();
+
+    // The manual chain, exactly as the first test drives it.
+    let mut locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("outer.tzip")));
+    let file = root.open(FPath::new("outer.tzip")).unwrap();
+    let outer_fs = resolver
+        .resolve(&root, &locator, file, Some(MountKind::FileSystem), &cancel)
+        .unwrap()
+        .as_file_system()
+        .unwrap()
+        .clone();
+    locator = locator.push(LocatorSegment::Path(FPathBuf::from("inner.tzip")));
+    let file = outer_fs.open(FPath::new("inner.tzip")).unwrap();
+    let inner_fs = resolver
+        .resolve(&outer_fs, &locator, file, Some(MountKind::FileSystem), &cancel)
+        .unwrap()
+        .as_file_system()
+        .unwrap()
+        .clone();
+    let via_manual_chain = inner_fs.read_all(FPath::new("evil.exe")).unwrap();
+
+    // The same bytes, via one transparent path.
+    let container_fs = ContainerFs::new(root, resolver).with_policy(DescentPolicy {
+        extensions: None, // this fixture's containers don't use a real extension
+        ..DescentPolicy::default()
+    });
+    let via_transparent_path = container_fs.read_all(FPath::new("outer.tzip/inner.tzip/evil.exe")).unwrap();
+
+    assert_eq!(via_manual_chain, via_transparent_path);
+    assert_eq!(via_transparent_path, b"MZsecret-app-code");
+}
+
 #[derive(Default)]
 struct SimpleDigest {
     acc: u64,

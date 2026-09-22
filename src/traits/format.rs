@@ -428,6 +428,16 @@ pub trait FormatFactory: Send + Sync {
     /// this factory won the deterministic tie-break among every factory
     /// that returned better than [`ProbeScore::No`].
     fn mount(&self, file: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted>;
+
+    /// Lowercase extensions (no leading dot) this factory's format commonly uses, e.g.
+    /// `&["doc", "dot"]`. Advisory only -- a cheap pre-filter for a caller deciding which files
+    /// are worth a real `probe()` call (see `crate::core::fs::ContainerFs::DescentPolicy`),
+    /// never a substitute for `probe` itself. Empty by default; a factory that doesn't override
+    /// this is simply never reached by extension-gated pre-filtering (content-based dispatch
+    /// through `probe` is unaffected either way).
+    fn extensions(&self) -> &[&'static str] {
+        &[]
+    }
 }
 
 /// A structured object exposing typed child streams -- the "embedding"

@@ -166,6 +166,13 @@ impl MountResolver {
         self.factories.iter().any(|f| f.yields() == want)
     }
 
+    /// Every registered factory, in registration order. Exposed so a caller (e.g.
+    /// `ContainerFs::DescentPolicy::from_resolver`) can derive its own policy from what this
+    /// resolver actually knows how to mount, without core needing to name any format.
+    pub fn factories(&self) -> impl Iterator<Item = &Arc<dyn FormatFactory>> {
+        self.factories.iter()
+    }
+
     /// Whether any registered factory claims `file` as `want` (or as
     /// anything, if `want` is `None`) -- without mounting, caching, or
     /// charging any resource budget. For a lightweight "does this look

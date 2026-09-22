@@ -28,7 +28,9 @@ pub mod utils;
 pub mod prelude {
     pub use crate::artifact::*;
     pub use crate::context::initialize_context;
-    pub use crate::core::fs::{ChRootFileSystem, MountTable, OverlayFs, StdVirtualFS, StdVirtualFile};
+    pub use crate::core::fs::{
+        ChRootFileSystem, ContainerFs, DescentPolicy, MountTable, OverlayFs, StdVirtualFS, StdVirtualFile,
+    };
     pub use crate::core::limits::{LimitExceeded, Limits, MemorySpillStore, SpillStore};
     pub use crate::core::locator::{EvidenceLocator, LocatorSegment};
     pub use crate::core::path::{FPath, FPathBuf};

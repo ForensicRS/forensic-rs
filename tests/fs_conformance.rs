@@ -4,8 +4,9 @@
 //! as e.g. `std_fs::open_missing_path_errors` rather than an opaque loop
 //! index — each backend still shares the exact same assertion bodies below.
 
-use forensic_rs::core::fs::{ChRootFileSystem, StdVirtualFS};
+use forensic_rs::core::fs::{ChRootFileSystem, ContainerFs, StdVirtualFS};
 use forensic_rs::core::path::FPath;
+use forensic_rs::core::resolver::MountResolver;
 use forensic_rs::traits::vfs::{FileSystem, FileSystemExt, VFileType};
 use forensic_rs::utils::testing::InMemoryVirtualFileSystem;
 use std::sync::Arc;
@@ -26,6 +27,18 @@ fn in_memory_fixture() -> Arc<dyn FileSystem> {
     let mut fs = InMemoryVirtualFileSystem::new();
     seed(&mut fs);
     Arc::new(fs)
+}
+
+/// `ContainerFs` wrapping the same in-memory fixture, with an empty resolver (no `FormatFactory`
+/// registered -- there is nothing in this fixture that looks like a container anyway). This is
+/// the regression proof that `ContainerFs` is a fully conformant, transparent `FileSystem` when
+/// there is nothing to descend into: every assertion below must pass completely unchanged,
+/// including `read_dir_on_a_file_errors` (a non-container file has no boundary to find).
+fn container_fs_fixture() -> Arc<dyn FileSystem> {
+    let mut fs = InMemoryVirtualFileSystem::new();
+    seed(&mut fs);
+    let resolver = Arc::new(MountResolver::builder().build());
+    Arc::new(ContainerFs::new(Arc::new(fs), resolver))
 }
 
 /// `StdVirtualFS` rooted (via `ChRootFileSystem`) at a real temp directory
@@ -224,6 +237,7 @@ macro_rules! fs_conformance_battery {
 }
 
 fs_conformance_battery!(in_memory_fs, in_memory_fixture());
+fs_conformance_battery!(container_fs, container_fs_fixture());
 
 mod std_fs {
     use super::*;

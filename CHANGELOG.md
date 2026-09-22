@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ContainerFs`/`DescentPolicy` (`src/core/fs/container.rs`): a `FileSystem` decorator over
+  `Arc<dyn FileSystem>` + `Arc<MountResolver>` that makes container files transparently
+  walkable -- `C:\docs\report.doc\Macros\VBA\Module1` is an ordinary path, no `[mount]` marker
+  segment. An ordinary (non-container) path still costs exactly one `metadata()` call, identical
+  to today (the container-boundary search only runs on a miss); `..` in a nested path is dropped,
+  never applied, so it can never climb back out of a mounted container. `DescentPolicy` (extension
+  allow-list + size band + a container-hop depth cap tighter than `Limits::max_nesting_depth`,
+  since a transparent walk crosses boundaries the caller never asked for) governs which files are
+  even attempted; its default descends into nothing, and `DescentPolicy::from_resolver` derives
+  the extension allow-list from every registered factory's new `FormatFactory::extensions()`
+  (also added, defaulted to empty) so core never has to name a format itself. Also the first
+  enforcement site for `Limits::max_entries_per_container`, which was previously declared and
+  defaulted but enforced nowhere. Implements the new `PathAttributes`, forwarding the owning
+  filesystem's own facts plus `container.depth`/`container.locator` for a path reached by
+  crossing at least one boundary.
+  - Added as a third backend to `tests/fs_conformance.rs`'s shared battery (now 35 tests, up
+    from 22): every existing assertion, including `read_dir_on_a_file_errors`, passes completely
+    unchanged over a fixture with nothing to descend into -- the regression proof that this is a
+    fully conformant, transparent `FileSystem`.
+  - `tests/nesting.rs` gains a twin of its existing hand-unrolled 3-hop containment chain,
+    proving `ContainerFs`'s transparent path reaches byte-identical content.
 - `FileAttributes::CONTAINER` and `WalkOptions::descend_into_containers` (`src/core/fs/walk.rs`):
   a `Walk` can now transparently descend into a *file* whose backend flags it `CONTAINER` (not
   just a real directory), letting a container-mounting `FileSystem` decorator (see the
