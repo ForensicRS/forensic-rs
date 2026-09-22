@@ -46,8 +46,9 @@ pub mod prelude {
     #[cfg(feature = "serde")]
     pub use crate::pipeline::sinks::{JsonlFindingSink, JsonlTimelineSink, ProvenanceJsonlSink};
     pub use crate::pipeline::{
-        context::{ParseContext, TriageContext},
+        context::{ParseContext, SourceView, TriageContext},
         finding::{Finding, FindingCategory, FindingSeverity},
+        inventory::{ContainerInventoryParser, RECORD_TYPE_CONTAINER, RECORD_TYPE_MEMBER},
         parallel::{
             AnalysisModule, AnalysisModuleBuilder, ParallelPipeline, ParallelPipelineBuilder,
             ParallelPipelineResult, ParallelPipelineTask, PipelineEvent, StandardParallelTask,

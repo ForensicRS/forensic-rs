@@ -1,5 +1,6 @@
 pub mod context;
 pub mod finding;
+pub mod inventory;
 pub mod parallel;
 pub(crate) mod processor;
 pub mod registry;
