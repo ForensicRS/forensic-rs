@@ -1046,6 +1046,14 @@ impl ParallelPipelineBuilder {
         self
     }
 
+    /// Registers every factory in `parsers` for auto-matching — e.g. a downstream crate's own
+    /// `standard_parsers()` helper — without a `for` loop of `.parser(...)` calls at every call
+    /// site.
+    pub fn parsers(mut self, parsers: impl IntoIterator<Item = Arc<dyn ArtifactParserFactory>>) -> Self {
+        self.parsers.extend(parsers);
+        self
+    }
+
     /// Registers every factory currently in `registry` for auto-matching.
     pub fn parsers_from(mut self, registry: &super::registry::ParserRegistry) -> Self {
         self.parsers
@@ -1584,6 +1592,30 @@ mod tests {
         let result = pipeline.run().unwrap();
         // Only the 3 records from the registry parser should arrive.
         assert_eq!(result.items_processed, 3);
+    }
+
+    #[test]
+    fn parsers_registers_a_whole_batch_for_auto_matching_in_one_call() {
+        let module = AnalysisModuleBuilder::new("mod")
+            .analyzer(Box::new(CountingAnalyzer::with_artifact(Artifact::Unknown)))
+            .sources(empty_sources)
+            .build()
+            .unwrap();
+
+        let batch: Vec<Arc<dyn ArtifactParserFactory>> = vec![
+            typed_mock_parser(5, "a", Artifact::Unknown),
+            typed_mock_parser(3, "b", Artifact::Unknown),
+        ];
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(1)
+            .module(module)
+            .parsers(batch)
+            .sink(Box::new(CountingSink::new()))
+            .build()
+            .unwrap();
+
+        let result = pipeline.run().unwrap();
+        assert_eq!(result.items_processed, 8);
     }
 
     #[test]

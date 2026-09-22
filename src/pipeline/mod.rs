@@ -102,6 +102,13 @@ impl TriagePipelineBuilder {
         self
     }
 
+    /// Adds every factory in `parsers` — e.g. a downstream crate's own `standard_parsers()`
+    /// helper — without a `for` loop of `.parser(...)` calls at every call site.
+    pub fn parsers(mut self, parsers: impl IntoIterator<Item = Arc<dyn ArtifactParserFactory>>) -> Self {
+        self.parsers.extend(parsers);
+        self
+    }
+
     /// Adds every factory currently registered in `registry`.
     pub fn parsers_from(mut self, registry: &ParserRegistry) -> Self {
         self.parsers
@@ -434,6 +441,20 @@ mod tests {
         assert_eq!(result.items_processed, 2);
         assert_eq!(result.parsers_run.len(), 1);
         assert_eq!(result.parsers_run[0], "mock_parser");
+    }
+
+    #[test]
+    fn parsers_registers_a_whole_batch_in_one_call() {
+        let one_item = || vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+        let batch: Vec<Arc<dyn crate::traits::forensic::ArtifactParserFactory>> = vec![
+            Arc::new(mock_parser(one_item(), Artifact::Unknown).build()),
+            Arc::new(mock_parser(one_item(), Artifact::Unknown).build()),
+        ];
+        let mut pipeline = TriagePipeline::builder().parsers(batch).build().unwrap();
+        let sources = test_sources();
+        let result = pipeline.run(&sources).unwrap();
+        assert_eq!(result.items_processed, 2);
+        assert_eq!(result.parsers_run.len(), 2);
     }
 
     #[test]

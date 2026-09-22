@@ -435,6 +435,15 @@ impl MountResolverBuilder {
         self
     }
 
+    /// Registers several factories at once — e.g. a downstream crate's own
+    /// `standard_factories()` helper — without a `for` loop of `.factory(...)` calls at
+    /// every call site.
+    #[must_use]
+    pub fn factories(mut self, factories: impl IntoIterator<Item = Arc<dyn FormatFactory>>) -> Self {
+        self.factories.extend(factories);
+        self
+    }
+
     #[must_use]
     pub fn limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
@@ -847,5 +856,29 @@ mod tests {
         let mounted = resolver.resolve(&fs, &locator_at("huge"), open(big), None, &cancel).unwrap();
         assert!(mounted.as_registry().is_some(), "an oversized-for-the-cache mount is still handed back");
         assert_eq!(resolver.cache_len(), 0, "but it is never retained in the resident cache");
+    }
+
+    #[test]
+    fn builder_factories_registers_every_factory_in_one_call() {
+        struct AnotherRegistryFactory;
+        impl FormatFactory for AnotherRegistryFactory {
+            fn name(&self) -> &'static str {
+                "test-registry-2"
+            }
+            fn yields(&self) -> MountKind {
+                MountKind::Registry
+            }
+            fn probe(&self, _file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> Result_<ProbeScore> {
+                Ok(ProbeScore::No)
+            }
+            fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> Result_<Mounted> {
+                unreachable!("never probes Strong enough to be asked to mount")
+            }
+        }
+
+        let batch: Vec<Arc<dyn FormatFactory>> = vec![Arc::new(RegistryFactory), Arc::new(AnotherRegistryFactory)];
+        let resolver = MountResolver::builder().factories(batch).build();
+        let names: Vec<&str> = resolver.factories().map(|f| f.name()).collect();
+        assert_eq!(names, vec!["test-registry", "test-registry-2"]);
     }
 }

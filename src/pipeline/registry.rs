@@ -45,6 +45,19 @@ impl ParserRegistry {
         self.parsers.get(id)
     }
 
+    /// Registers every factory in `factories` — e.g. a downstream crate's own
+    /// `standard_parsers()` helper — stopping at the first duplicate id rather than silently
+    /// registering a partial set and reporting success.
+    pub fn register_all(
+        &mut self,
+        factories: impl IntoIterator<Item = Arc<dyn ArtifactParserFactory>>,
+    ) -> ForensicResult<()> {
+        for factory in factories {
+            self.register(factory)?;
+        }
+        Ok(())
+    }
+
     pub fn descriptors(&self) -> impl Iterator<Item = &ParserDescriptor> {
         self.parsers.values().map(|p| p.descriptor())
     }
@@ -156,5 +169,29 @@ mod tests {
         registry.register(stub("a", vec![])).unwrap();
         let ids: Vec<&str> = registry.ids().collect();
         assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn register_all_registers_a_whole_batch_in_one_call() {
+        let mut registry = ParserRegistry::new();
+        registry
+            .register_all(vec![stub("a", vec![]), stub("b", vec![])])
+            .unwrap();
+        assert_eq!(registry.len(), 2);
+        assert!(registry.get("a").is_some());
+        assert!(registry.get("b").is_some());
+    }
+
+    #[test]
+    fn register_all_stops_at_the_first_duplicate_id() {
+        let mut registry = ParserRegistry::new();
+        registry.register(stub("a", vec![])).unwrap();
+        let err = registry.register_all(vec![stub("b", vec![]), stub("a", vec![]), stub("c", vec![])]);
+        assert!(err.is_err(), "a duplicate id partway through the batch must surface as an error");
+        // The batch stops at the conflict: "b" (registered before the conflict) is kept,
+        // "c" (registered after) never is -- a caller sees a partial registry plus the error,
+        // never a silently reordered or fully-rolled-back one.
+        assert!(registry.get("b").is_some());
+        assert!(registry.get("c").is_none());
     }
 }
