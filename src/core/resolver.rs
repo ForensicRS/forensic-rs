@@ -8,6 +8,16 @@
 //! represent more than one level of nesting), enforces [`Limits`] shared
 //! across the whole resolution graph, and interns content so the same bytes
 //! reached through two different chains resolve to one entry.
+//!
+//! The mount cache is **bytes-bounded and evictable**
+//! ([`Limits::max_resident_bytes`]), not an ever-growing map -- a caller that walks a whole
+//! evidence tree and resolves thousands of containers does not retain every one of them in
+//! memory forever. Whether a mounted locator is still *resident* is deliberately kept separate
+//! from whether it has been *charged* against `Limits::max_expanded_bytes`/
+//! `Limits::max_expansion_ratio`/content-cycle detection: the latter is permanent for the
+//! resolver's lifetime, so evicting and later re-mounting the same locator never re-charges its
+//! budget or re-trips cycle detection against its own recurring bytes. Budget outcomes are a
+//! function of the evidence resolved, never of cache pressure.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom};
@@ -32,7 +42,18 @@ pub struct MountResolver {
     limits: Limits,
     spill: Arc<dyn SpillStore>,
     digest_factory: Option<Arc<dyn Fn() -> Box<dyn Digest> + Send + Sync>>,
-    cache: Mutex<BTreeMap<EvidenceLocator, Mounted>>,
+    /// Bytes-bounded, evictable: holds whole mounted containers. Distinct from `charged` below
+    /// -- a locator can be evicted from here and later re-mounted without being charged again.
+    resident: Mutex<ResidentCache>,
+    /// Every locator ever successfully mounted by this resolver, permanent for the resolver's
+    /// whole lifetime. Small (one `EvidenceLocator` per hop ever mounted, not per byte), and
+    /// what makes eviction from `resident` safe: it decouples "has this been charged against
+    /// `expanded_bytes`/`visited_content`" from "is it currently resident". Without this split,
+    /// adding eviction to `resident` alone would make budget outcomes -- whether a run hits
+    /// `max_expanded_bytes`, or spuriously re-triggers the "cycle or duplicate content" check on
+    /// a legitimate re-mount -- depend on cache pressure instead of on the evidence, which is
+    /// non-deterministic across otherwise-identical runs.
+    charged: Mutex<BTreeSet<EvidenceLocator>>,
     visited_content: Mutex<BTreeSet<ContentAddress>>,
     /// The expansion-ratio denominator, keyed by each resolution chain's own root (its
     /// locator's first segment) rather than one process-wide value. Without this, walking many
@@ -41,6 +62,84 @@ pub struct MountResolver {
     /// reason unrelated to its own bytes (see the `expansion_ratio_is_scoped_per_root` test).
     root_bytes: Mutex<BTreeMap<Option<LocatorSegment>, u64>>,
     expanded_bytes: AtomicU64,
+}
+
+/// A small hand-rolled least-recently-used cache, bounded by total resident bytes rather than
+/// entry count (entry count says nothing about memory; a handful of large mounts can dwarf
+/// thousands of tiny ones). No external LRU dependency -- this crate stays deliberately
+/// dependency-light, and the entry count in flight here (bounded by
+/// `max_resident_bytes` / typical mount size, realistically dozens to low hundreds) makes the
+/// linear eviction scan below cheap relative to the cost of a mount itself.
+struct ResidentCache {
+    entries: BTreeMap<EvidenceLocator, ResidentEntry>,
+    total_bytes: u64,
+    max_bytes: u64,
+    next_tick: u64,
+}
+
+struct ResidentEntry {
+    mounted: Mounted,
+    weight: u64,
+    last_used: u64,
+}
+
+impl ResidentCache {
+    fn new(max_bytes: u64) -> Self {
+        Self { entries: BTreeMap::new(), total_bytes: 0, max_bytes, next_tick: 0 }
+    }
+
+    /// Reads a still-resident entry and marks it most-recently-used. `None` means either never
+    /// mounted, or evicted -- the caller can't tell which from this alone, and doesn't need to:
+    /// both are handled the same way, by falling through to `MountResolver::charged`.
+    fn get(&mut self, locator: &EvidenceLocator) -> Option<Mounted> {
+        let tick = self.next_tick;
+        self.next_tick += 1;
+        let entry = self.entries.get_mut(locator)?;
+        entry.last_used = tick;
+        Some(entry.mounted.clone())
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Inserts or replaces `locator`'s mount, then evicts least-recently-used *other* entries
+    /// until back within `max_bytes`. A single mount whose own weight exceeds the whole budget
+    /// is inserted, handed back to the caller via the return of `resolve`, and then immediately
+    /// dropped from the cache -- refusing to mount it at all would make an oversized-but-valid
+    /// container unreadable purely because of a cache policy, not anything wrong with it.
+    fn insert(&mut self, locator: EvidenceLocator, mounted: Mounted, weight: u64) {
+        if let Some(old) = self.entries.remove(&locator) {
+            self.total_bytes -= old.weight;
+        }
+        let tick = self.next_tick;
+        self.next_tick += 1;
+        self.entries.insert(locator.clone(), ResidentEntry { mounted, weight, last_used: tick });
+        self.total_bytes += weight;
+
+        while self.total_bytes > self.max_bytes {
+            let victim = self
+                .entries
+                .iter()
+                .filter(|(k, _)| **k != locator)
+                .min_by_key(|(_, e)| e.last_used)
+                .map(|(k, _)| k.clone());
+            match victim {
+                Some(v) => {
+                    if let Some(e) = self.entries.remove(&v) {
+                        self.total_bytes -= e.weight;
+                    }
+                }
+                // Nothing left but the entry we just inserted, and it alone is over budget.
+                None => {
+                    if let Some(e) = self.entries.remove(&locator) {
+                        self.total_bytes -= e.weight;
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl MountResolver {
@@ -52,9 +151,11 @@ impl MountResolver {
         &self.limits
     }
 
-    /// Number of hops resolved and cached so far.
+    /// Number of hops **currently resident** in the mount cache. Unlike before eviction existed,
+    /// this is not monotonic -- it can decrease as older mounts are evicted to make room for
+    /// newer ones under `Limits::max_resident_bytes`.
     pub fn cache_len(&self) -> usize {
-        self.cache.lock().expect("MountResolver cache poisoned").len()
+        self.resident.lock().expect("MountResolver cache poisoned").len()
     }
 
     /// Registered factories that could produce `want` (or all of them, if
@@ -71,6 +172,11 @@ impl MountResolver {
     /// like a container" hint on content already read for another reason;
     /// mounting itself stays strictly on-demand, only when a caller
     /// actually asks to read inside it via [`MountResolver::resolve`].
+    ///
+    /// Does **not** enforce [`Limits::max_nesting_depth`] -- unlike `resolve`, this never
+    /// recurses, so there is nothing here for the depth budget to bound. A caller that drives
+    /// its own multi-hop chain (rather than calling `resolve` once per hop) must check depth
+    /// itself before each probe.
     pub fn probe_only(
         &self,
         fs: &Arc<dyn FileSystem>,
@@ -108,7 +214,10 @@ impl MountResolver {
     /// A cache hit short-circuits everything below, including budget
     /// checks -- the whole point of caching by `EvidenceLocator` is that a
     /// container mounted once is mounted once, however many times its
-    /// contents are subsequently read.
+    /// contents are subsequently read. A locator that was mounted once but
+    /// has since been evicted from the (bounded) resident cache is
+    /// re-mounted here without being charged a second time -- see
+    /// `charged`'s doc comment.
     pub fn resolve(
         &self,
         fs: &Arc<dyn FileSystem>,
@@ -118,7 +227,7 @@ impl MountResolver {
         cancellation: &crate::bridge::CancellationToken,
     ) -> ForensicResult<Mounted> {
         if let Some(cached) = self
-            .cache
+            .resident
             .lock()
             .expect("MountResolver cache poisoned")
             .get(locator)
@@ -129,11 +238,11 @@ impl MountResolver {
             // `MountKind::Object` at the identical locator -- `as_object()` would then return
             // `None` with no indication the resolver ever ran. This is reachable wherever one
             // locator legitimately mounts two ways (e.g. an OLE container as both a
-            // `FileSystem` and a `StructuredObject`). A mismatch falls through to a full,
-            // freshly-charged resolution for the requested kind rather than erroring, and its
-            // result overwrites this cache entry.
+            // `FileSystem` and a `StructuredObject`). A mismatch falls through to a full
+            // resolution for the requested kind rather than erroring, and its result overwrites
+            // this cache entry.
             if want.is_none_or(|want| cached.kind() == want) {
-                return Ok(cached.clone());
+                return Ok(cached);
             }
         }
         if cancellation.is_cancelled() {
@@ -161,32 +270,47 @@ impl MountResolver {
             .map(|meta| meta.size)
             .unwrap_or(0);
 
-        let would_total = self.expanded_bytes.load(Ordering::Relaxed) + size;
-        if would_total > self.limits.max_expanded_bytes {
-            return Err(ForensicError::other(
-                "MountResolver",
-                LimitExceeded::ExpandedBytes {
-                    would_total,
-                    max: self.limits.max_expanded_bytes,
-                }
-                .to_string(),
-            ));
-        }
-        let root_key = locator.segments().first().cloned();
-        let root = {
-            let mut guard = self.root_bytes.lock().expect("MountResolver root poisoned");
-            *guard.entry(root_key).or_insert(size.max(1))
-        };
-        let ratio = would_total / root;
-        if ratio > self.limits.max_expansion_ratio as u64 {
-            return Err(ForensicError::other(
-                "MountResolver",
-                LimitExceeded::ExpansionRatio {
-                    observed: ratio.min(u32::MAX as u64) as u32,
-                    max: self.limits.max_expansion_ratio,
-                }
-                .to_string(),
-            ));
+        // Whether this locator's bytes were already charged against `expanded_bytes` /
+        // `visited_content` by an earlier resolve -- possibly since evicted from `resident`,
+        // possibly still there but under a `want` this call doesn't match. Either way, this is
+        // not new expansion: the bytes were already accounted for once, and re-materializing an
+        // already-validated mount must not cost the run's budget a second time, nor spuriously
+        // re-trigger the duplicate-content check against content that legitimately recurs here
+        // by construction (it's the same locator).
+        let already_charged = self
+            .charged
+            .lock()
+            .expect("MountResolver charged-set poisoned")
+            .contains(locator);
+
+        if !already_charged {
+            let would_total = self.expanded_bytes.load(Ordering::Relaxed) + size;
+            if would_total > self.limits.max_expanded_bytes {
+                return Err(ForensicError::other(
+                    "MountResolver",
+                    LimitExceeded::ExpandedBytes {
+                        would_total,
+                        max: self.limits.max_expanded_bytes,
+                    }
+                    .to_string(),
+                ));
+            }
+            let root_key = locator.segments().first().cloned();
+            let root = {
+                let mut guard = self.root_bytes.lock().expect("MountResolver root poisoned");
+                *guard.entry(root_key).or_insert(size.max(1))
+            };
+            let ratio = would_total / root;
+            if ratio > self.limits.max_expansion_ratio as u64 {
+                return Err(ForensicError::other(
+                    "MountResolver",
+                    LimitExceeded::ExpansionRatio {
+                        observed: ratio.min(u32::MAX as u64) as u32,
+                        max: self.limits.max_expansion_ratio,
+                    }
+                    .to_string(),
+                ));
+            }
         }
 
         let ctx = MountContext::new(
@@ -201,32 +325,36 @@ impl MountResolver {
             cancellation,
         );
 
-        // Content interning: only pay the cost of a full read when a
-        // digest is actually configured. This both dedupes the same bytes
-        // reached through two chains and catches a cycle (a container that
-        // contains itself) before it can recurse unboundedly.
-        if let Some(make_digest) = &self.digest_factory {
-            let materialized = self.spill.spill(&mut *working_file, Some(size))?;
-            working_file = materialized;
-            let mut buf = Vec::new();
-            working_file
-                .read_to_end(&mut buf)
-                .map_err(|e| ForensicError::other("MountResolver", e.to_string()))?;
-            working_file
-                .seek(SeekFrom::Start(0))
-                .map_err(|e| ForensicError::other("MountResolver", e.to_string()))?;
-            let mut digest = make_digest();
-            digest.update(&buf);
-            let address = digest.finish();
-            let mut visited = self
-                .visited_content
-                .lock()
-                .expect("MountResolver visited-content poisoned");
-            if !visited.insert(address) {
-                return Err(ForensicError::other(
-                    "MountResolver",
-                    format!("cycle or duplicate content detected at {locator}"),
-                ));
+        // Content interning: only pay the cost of a full read when a digest is actually
+        // configured, AND only on the first time this locator is charged. Re-running it on a
+        // re-mount would insert the same content address a second time and spuriously report a
+        // "cycle or duplicate content" error against bytes that are legitimately recurring here
+        // -- they're the same locator's own bytes, re-materialized after eviction, not a new
+        // occurrence of duplicate content.
+        if !already_charged {
+            if let Some(make_digest) = &self.digest_factory {
+                let materialized = self.spill.spill(&mut *working_file, Some(size))?;
+                working_file = materialized;
+                let mut buf = Vec::new();
+                working_file
+                    .read_to_end(&mut buf)
+                    .map_err(|e| ForensicError::other("MountResolver", e.to_string()))?;
+                working_file
+                    .seek(SeekFrom::Start(0))
+                    .map_err(|e| ForensicError::other("MountResolver", e.to_string()))?;
+                let mut digest = make_digest();
+                digest.update(&buf);
+                let address = digest.finish();
+                let mut visited = self
+                    .visited_content
+                    .lock()
+                    .expect("MountResolver visited-content poisoned");
+                if !visited.insert(address) {
+                    return Err(ForensicError::other(
+                        "MountResolver",
+                        format!("cycle or duplicate content detected at {locator}"),
+                    ));
+                }
             }
         }
 
@@ -261,11 +389,17 @@ impl MountResolver {
         };
 
         let mounted = factory.mount(working_file, &ctx)?;
-        self.expanded_bytes.fetch_add(size, Ordering::Relaxed);
-        self.cache
+        if !already_charged {
+            self.expanded_bytes.fetch_add(size, Ordering::Relaxed);
+            self.charged
+                .lock()
+                .expect("MountResolver charged-set poisoned")
+                .insert(locator.clone());
+        }
+        self.resident
             .lock()
             .expect("MountResolver cache poisoned")
-            .insert(locator.clone(), mounted.clone());
+            .insert(locator.clone(), mounted.clone(), size);
         Ok(mounted)
     }
 }
@@ -325,7 +459,8 @@ impl MountResolverBuilder {
                 .spill
                 .unwrap_or_else(|| Arc::new(MemorySpillStore::new(limits.materialize_in_memory_limit))),
             digest_factory: self.digest_factory,
-            cache: Mutex::new(BTreeMap::new()),
+            resident: Mutex::new(ResidentCache::new(limits.max_resident_bytes)),
+            charged: Mutex::new(BTreeSet::new()),
             visited_content: Mutex::new(BTreeSet::new()),
             root_bytes: Mutex::new(BTreeMap::new()),
             expanded_bytes: AtomicU64::new(0),
@@ -638,5 +773,72 @@ mod tests {
         let resolver = MountResolver::builder().factory(Arc::new(RegistryFactory)).build();
         assert!(resolver.supports(MountKind::Registry));
         assert!(!resolver.supports(MountKind::Database));
+    }
+
+    #[test]
+    fn eviction_keeps_the_resident_cache_within_the_byte_budget() {
+        // Every mount below is 5 bytes; a 12-byte budget can hold at most 2 at once.
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .limits(Limits { max_resident_bytes: 12, ..Limits::default() })
+            .build();
+        let fs = fs();
+        let cancel = CancellationToken::new();
+
+        for i in 0..5 {
+            resolver
+                .resolve(&fs, &locator_at(&format!("m{i}")), open(format!("REG{i:02}")), None, &cancel)
+                .unwrap();
+            assert!(resolver.cache_len() <= 2, "resident cache exceeded its byte budget after mount {i}");
+        }
+    }
+
+    #[test]
+    fn re_mounting_an_evicted_locator_does_not_charge_the_expanded_bytes_budget_again() {
+        // max_expanded_bytes is exactly enough for the two *distinct* locators below (5 bytes
+        // each) and no more -- a third fresh charge of 5 bytes would exceed it. max_resident_bytes
+        // holds only one 5-byte mount at a time, so resolving A then B evicts A.
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .limits(Limits {
+                max_expanded_bytes: 10,
+                max_resident_bytes: 5,
+                max_expansion_ratio: u32::MAX,
+                ..Limits::default()
+            })
+            .build();
+        let fs = fs();
+        let cancel = CancellationToken::new();
+
+        resolver.resolve(&fs, &locator_at("a"), open("REG12"), None, &cancel).unwrap();
+        assert_eq!(resolver.cache_len(), 1);
+
+        // Distinct locator, same weight: evicts "a" from the resident cache and consumes the
+        // rest of the expanded-bytes budget (5 + 5 == 10, right at the limit).
+        resolver.resolve(&fs, &locator_at("b"), open("REG34"), None, &cancel).unwrap();
+        assert_eq!(resolver.cache_len(), 1);
+
+        // "a" is no longer resident, but it WAS already charged once. If this re-mount charged
+        // it again, would_total would be 10 + 5 = 15 > the 10-byte budget and this would error.
+        let result = resolver.resolve(&fs, &locator_at("a"), open("REG12"), None, &cancel);
+        match result {
+            Ok(_) => {}
+            Err(e) => panic!("re-mounting an evicted-but-already-charged locator must not re-charge the budget: {e}"),
+        }
+    }
+
+    #[test]
+    fn a_single_mount_larger_than_the_whole_budget_is_still_returned_but_not_retained() {
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .limits(Limits { max_resident_bytes: 5, ..Limits::default() })
+            .build();
+        let fs = fs();
+        let cancel = CancellationToken::new();
+
+        let big = format!("REG{}", "x".repeat(17)); // 20 bytes, over the 5-byte cache budget
+        let mounted = resolver.resolve(&fs, &locator_at("huge"), open(big), None, &cancel).unwrap();
+        assert!(mounted.as_registry().is_some(), "an oversized-for-the-cache mount is still handed back");
+        assert_eq!(resolver.cache_len(), 0, "but it is never retained in the resident cache");
     }
 }

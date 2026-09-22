@@ -36,6 +36,20 @@ pub struct Limits {
     /// [`SpillStore`] call. Above it, the resolver asks the configured
     /// `SpillStore` to hand back a seekable backing.
     pub materialize_in_memory_limit: usize,
+    /// Maximum bytes held resident in [`crate::core::resolver::MountResolver`]'s mount cache at
+    /// once, sized by each mounted container's own input byte size. Above this, the
+    /// least-recently-used mount is evicted to make room for a new one -- so walking many
+    /// containers (a whole disk image's worth of documents, say) does not retain every parsed
+    /// container in memory forever. A single mount larger than this whole budget is still
+    /// mounted and handed back, just never retained in the cache -- refusing it outright would
+    /// make a legitimate large container unreadable purely because of a cache policy, not
+    /// because of anything wrong with the container itself.
+    ///
+    /// Eviction never re-charges [`Limits::max_expanded_bytes`]/[`Limits::max_expansion_ratio`]
+    /// on a later re-mount of the same locator: those budgets track bytes *ever* expanded during
+    /// this resolution, not bytes currently resident, so whether a run hits them must depend
+    /// only on the evidence, never on cache pressure.
+    pub max_resident_bytes: u64,
 }
 
 impl Default for Limits {
@@ -46,6 +60,7 @@ impl Default for Limits {
             max_entries_per_container: 100_000,
             max_expansion_ratio: 200,
             materialize_in_memory_limit: 32 << 20, // 32 MiB
+            max_resident_bytes: 256 << 20,          // 256 MiB
         }
     }
 }
