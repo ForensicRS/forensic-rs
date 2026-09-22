@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::core::limits::{LimitExceeded, Limits, MemorySpillStore, SpillStore};
-use crate::core::locator::EvidenceLocator;
+use crate::core::locator::{EvidenceLocator, LocatorSegment};
 use crate::err::{ForensicError, ForensicResult};
 use crate::traits::digest::{ContentAddress, Digest};
 use crate::traits::format::{FormatFactory, MountContext, MountKind, Mounted, ProbeScore};
@@ -34,7 +34,12 @@ pub struct MountResolver {
     digest_factory: Option<Arc<dyn Fn() -> Box<dyn Digest> + Send + Sync>>,
     cache: Mutex<BTreeMap<EvidenceLocator, Mounted>>,
     visited_content: Mutex<BTreeSet<ContentAddress>>,
-    root_bytes: Mutex<Option<u64>>,
+    /// The expansion-ratio denominator, keyed by each resolution chain's own root (its
+    /// locator's first segment) rather than one process-wide value. Without this, walking many
+    /// evidence roots in sequence pins the ratio's denominator to whichever root happened to
+    /// resolve first -- typically small -- and every larger root afterward is refused for a
+    /// reason unrelated to its own bytes (see the `expansion_ratio_is_scoped_per_root` test).
+    root_bytes: Mutex<BTreeMap<Option<LocatorSegment>, u64>>,
     expanded_bytes: AtomicU64,
 }
 
@@ -118,7 +123,18 @@ impl MountResolver {
             .expect("MountResolver cache poisoned")
             .get(locator)
         {
-            return Ok(cached.clone());
+            // A cache hit is only valid for the kind actually being asked for. Without this
+            // check, a locator resolved once as e.g. `MountKind::FileSystem` would silently
+            // hand back that same `Mounted::FileSystem` to a later caller asking for
+            // `MountKind::Object` at the identical locator -- `as_object()` would then return
+            // `None` with no indication the resolver ever ran. This is reachable wherever one
+            // locator legitimately mounts two ways (e.g. an OLE container as both a
+            // `FileSystem` and a `StructuredObject`). A mismatch falls through to a full,
+            // freshly-charged resolution for the requested kind rather than erroring, and its
+            // result overwrites this cache entry.
+            if want.is_none_or(|want| cached.kind() == want) {
+                return Ok(cached.clone());
+            }
         }
         if cancellation.is_cancelled() {
             return Err(ForensicError::other(
@@ -156,9 +172,10 @@ impl MountResolver {
                 .to_string(),
             ));
         }
+        let root_key = locator.segments().first().cloned();
         let root = {
             let mut guard = self.root_bytes.lock().expect("MountResolver root poisoned");
-            *guard.get_or_insert(size.max(1))
+            *guard.entry(root_key).or_insert(size.max(1))
         };
         let ratio = would_total / root;
         if ratio > self.limits.max_expansion_ratio as u64 {
@@ -310,7 +327,7 @@ impl MountResolverBuilder {
             digest_factory: self.digest_factory,
             cache: Mutex::new(BTreeMap::new()),
             visited_content: Mutex::new(BTreeSet::new()),
-            root_bytes: Mutex::new(None),
+            root_bytes: Mutex::new(BTreeMap::new()),
             expanded_bytes: AtomicU64::new(0),
         }
     }
@@ -327,7 +344,7 @@ mod tests {
     use crate::utils::testing::{InMemoryVirtualFileSystem, TestingRegistry};
     use std::io::Cursor;
 
-    fn open(text: &'static str) -> Box<dyn VirtualFile> {
+    fn open(bytes: impl Into<Vec<u8>>) -> Box<dyn VirtualFile> {
         struct MemFile(Cursor<Vec<u8>>);
         impl Read for MemFile {
             fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -351,7 +368,7 @@ mod tests {
                 })
             }
         }
-        Box::new(MemFile(Cursor::new(text.as_bytes().to_vec())))
+        Box::new(MemFile(Cursor::new(bytes.into())))
     }
 
     /// Claims any bytes starting with "REG", mounts a fixed empty registry.
@@ -429,6 +446,84 @@ mod tests {
         let cancel = CancellationToken::new();
         let result = resolver.resolve(&fs, &locator, open("REG-x"), None, &cancel);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn expansion_ratio_is_scoped_per_root_not_poisoned_by_an_earlier_small_root() {
+        // Regression for the bug where `root_bytes` was a single process-wide value pinned by
+        // whichever locator resolved *first* -- here, a legitimately tiny root -- so every
+        // larger, entirely unrelated root resolved afterward had its ratio measured against
+        // the wrong denominator and was refused for a reason unrelated to its own bytes.
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .limits(Limits {
+                max_expanded_bytes: u64::MAX,
+                max_expansion_ratio: 10,
+                ..Limits::default()
+            })
+            .build();
+        let fs = fs();
+        let cancel = CancellationToken::new();
+
+        // Root A: 5 bytes. Resolves first, so under the old bug it pins the global denominator.
+        resolver.resolve(&fs, &locator_at("a"), open("REG12"), None, &cancel).unwrap();
+
+        // Root B: 50 bytes, completely unrelated to A. Its own size is a perfectly reasonable
+        // denominator for its own expansion (ratio 1:1 against itself), but under the old bug
+        // the ratio was computed against A's 5-byte size instead, giving a spurious ~11:1.
+        let big = format!("REG{}", "x".repeat(47));
+        assert_eq!(big.len(), 50);
+        match resolver.resolve(&fs, &locator_at("b"), open(big), None, &cancel) {
+            Ok(_) => {}
+            Err(e) => panic!("root B must be judged against its own size, not root A's: {e}"),
+        }
+    }
+
+    #[test]
+    fn a_cache_hit_of_the_wrong_kind_is_treated_as_a_miss() {
+        // Regression for the bug where the cache was consulted before the `want` filter: a
+        // locator resolved once as one `MountKind` would silently hand back that same `Mounted`
+        // to a later caller asking for a *different* kind at the identical locator.
+        struct DualKindFactory;
+        impl FormatFactory for DualKindFactory {
+            fn name(&self) -> &'static str {
+                "test-dual-database"
+            }
+            fn yields(&self) -> MountKind {
+                MountKind::Database
+            }
+            fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> Result_<ProbeScore> {
+                let start = file.stream_position().unwrap_or(0);
+                let mut magic = [0u8; 3];
+                let matched = file.read_exact(&mut magic).is_ok() && &magic == b"REG";
+                let _ = file.seek(SeekFrom::Start(start));
+                // Weaker than RegistryFactory's `Strong`, so an untargeted resolve still
+                // deterministically picks the registry mount -- this factory only ever wins
+                // when `want` explicitly filters it in.
+                Ok(if matched { ProbeScore::Weak } else { ProbeScore::No })
+            }
+            fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> Result_<Mounted> {
+                Ok(Mounted::Database(Arc::new(crate::utils::testing::InMemoryForensicDb::new())))
+            }
+        }
+
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .factory(Arc::new(DualKindFactory))
+            .build();
+        let fs = fs();
+        let locator = locator_at("dual.dat");
+        let cancel = CancellationToken::new();
+
+        let first = resolver.resolve(&fs, &locator, open("REG-first"), None, &cancel).unwrap();
+        assert!(first.as_registry().is_some(), "untargeted resolve picks the higher-scoring factory");
+
+        // Same locator, same bytes, but now explicitly asking for the OTHER kind. Without the
+        // fix this returns the cached Registry mount and `as_database()` is `None`.
+        let second = resolver
+            .resolve(&fs, &locator, open("REG-second"), Some(MountKind::Database), &cancel)
+            .unwrap();
+        assert!(second.as_database().is_some(), "a kind-mismatched cache entry must not be returned");
     }
 
     #[test]
