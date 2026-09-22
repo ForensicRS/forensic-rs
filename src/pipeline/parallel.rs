@@ -229,6 +229,7 @@ impl ParallelPipelineTask for StandardParallelTask {
 
         // Create data sources on the worker thread via the factory.
         let sources = (self.sources_factory)();
+        context.attach_sources(&sources);
         let analyzer_artifacts: Vec<Vec<crate::artifact::Artifact>> = self
             .analyzers
             .iter()
@@ -501,6 +502,7 @@ impl ParallelPipelineTask for AnalysisModule {
         // All parsers for this module share one TriageSources instance,
         // created on the worker thread via the factory.
         let sources = (self.sources_factory)();
+        context.attach_sources(&sources);
         // One analyzer, so this is a length-1 slice — `RecordProcessor` is
         // generic over the analyzer count to share its logic with
         // `StandardParallelTask`'s N-analyzer shape.
@@ -1837,5 +1839,64 @@ mod tests {
                 "record did not resolve against the post-run result store"
             );
         }
+    }
+
+    // -------------------------------------------------------------------
+    // SourceView reaches analyzers on worker threads too
+    // -------------------------------------------------------------------
+
+    struct NestedPathReadingAnalyzer {
+        path: &'static str,
+        expected: &'static [u8],
+    }
+
+    impl Analyzer for NestedPathReadingAnalyzer {
+        fn name(&self) -> &str {
+            "nested_path_reading"
+        }
+        fn analyze(
+            &mut self,
+            _data: &ForensicData,
+            context: &TriageContext,
+            _out: &mut Vec<Finding>,
+        ) -> ForensicResult<()> {
+            use crate::traits::vfs::FileSystemExt;
+            let vfs = context
+                .sources()
+                .vfs()
+                .expect("the parallel pipeline must attach sources before running analyzers");
+            let bytes = vfs.read_all(crate::core::path::FPath::new(self.path))?;
+            assert_eq!(bytes, self.expected, "analyzer must read the exact bytes the parser saw");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn analyzer_sees_sources_in_the_parallel_pipeline_too() {
+        use crate::utils::testing::InMemoryVirtualFileSystem;
+
+        let path = "report.doc/Macros/VBA/Module1";
+        let expected: &'static [u8] = b"Sub Foo()\nEnd Sub\n";
+
+        let task = StandardParallelTaskBuilder::new("nested_read")
+            .parser(mock_parser_with_records(1, "host-a"))
+            .analyzer(Box::new(NestedPathReadingAnalyzer { path, expected }))
+            .sources(move || {
+                let vfs = Arc::new(InMemoryVirtualFileSystem::new().with_file(path, expected.to_vec()));
+                TriageSources::builder().vfs(vfs).build()
+            })
+            .build()
+            .unwrap();
+
+        let mut pipeline = ParallelPipeline::builder()
+            .workers(1)
+            .task(Box::new(task))
+            .sink(Box::new(CountingSink::new()))
+            .build()
+            .unwrap();
+
+        let result = pipeline.run().unwrap();
+        assert_eq!(result.items_processed, 1);
+        assert!(result.errors.is_empty());
     }
 }

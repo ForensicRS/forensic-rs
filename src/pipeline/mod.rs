@@ -183,6 +183,7 @@ impl TriagePipeline {
         cancellation: CancellationToken,
     ) -> ForensicResult<PipelineResult> {
         self.context.install();
+        self.context.attach_sources(sources);
 
         let mut result = PipelineResult::default();
         let analyzer_artifacts: Vec<Vec<crate::artifact::Artifact>> = self
@@ -294,7 +295,8 @@ mod tests {
         pipeline::finding::{Finding, FindingCategory, FindingSeverity},
         pipeline::sinks::{FindingCollector, TimelineSink},
         traits::forensic::ParserDescriptor,
-        utils::testing::{test_provenance_id, TestParserFactoryBuilder, TestingRegistry},
+        traits::vfs::FileSystemExt,
+        utils::testing::{test_provenance_id, InMemoryVirtualFileSystem, TestParserFactoryBuilder, TestingRegistry},
     };
 
     fn mock_parser(
@@ -762,5 +764,65 @@ mod tests {
 
         assert_eq!(result.items_processed, 5);
         assert!(result.errors.is_empty());
+    }
+
+    // --- SourceView reaches analyzers ---
+
+    struct NestedPathReadingAnalyzer {
+        path: &'static str,
+        expected: &'static [u8],
+        reads: u64,
+    }
+
+    impl Analyzer for NestedPathReadingAnalyzer {
+        fn name(&self) -> &str {
+            "nested_path_reading"
+        }
+        fn analyze(
+            &mut self,
+            _data: &ForensicData,
+            context: &TriageContext,
+            _out: &mut Vec<Finding>,
+        ) -> ForensicResult<()> {
+            let vfs = context
+                .sources()
+                .vfs()
+                .expect("pipeline run must install a SourceView with the configured vfs");
+            let bytes = vfs.read_all(crate::core::path::FPath::new(self.path))?;
+            assert_eq!(bytes, self.expected, "analyzer must read the exact bytes the parser saw");
+            self.reads += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn analyzer_reads_a_nested_path_through_the_context() {
+        let vfs = Arc::new(
+            InMemoryVirtualFileSystem::new()
+                .with_file("report.doc/Macros/VBA/Module1", b"Sub Foo()\nEnd Sub\n".to_vec()),
+        );
+        let sources = TriageSources::new(vfs, std::sync::Arc::new(TestingRegistry::new()));
+
+        let items = vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+        let mut pipeline = TriagePipeline::builder()
+            .parser(Arc::new(mock_parser(items, Artifact::Unknown).build()))
+            .analyzer(Box::new(NestedPathReadingAnalyzer {
+                path: "report.doc/Macros/VBA/Module1",
+                expected: b"Sub Foo()\nEnd Sub\n",
+                reads: 0,
+            }))
+            .build()
+            .unwrap();
+        let result = pipeline.run(&sources).unwrap();
+
+        assert_eq!(result.items_processed, 1);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn source_view_is_empty_before_a_pipeline_run_installs_it() {
+        let ctx = TriageContext::new("HOST", "TENANT");
+        assert!(ctx.sources().vfs().is_none());
+        assert!(ctx.sources().registry().is_none());
     }
 }

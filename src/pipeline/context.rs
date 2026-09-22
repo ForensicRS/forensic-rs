@@ -35,11 +35,83 @@ use crate::{
 /// propagate one shared store to every task/module that doesn't set its
 /// own override, instead of each one silently minting into an independent
 /// store no sink can resolve confidence against.
+/// A read-only view of a pipeline run's evidence sources, for an
+/// [`Analyzer`](crate::pipeline::traits::Analyzer)/[`Enricher`](crate::pipeline::traits::Enricher)
+/// that needs to pull bytes during analysis -- e.g. read an embedded payload found at a nested
+/// path a [`ContainerFs`](crate::core::fs::ContainerFs)-backed VFS already makes ordinary, hash
+/// it, or recurse into it.
+///
+/// Deliberately **narrower** than [`TriageSources`]:
+///
+/// - No [`crate::secrets::SecretProvider`]. Every read of a [`crate::secrets::Secret`] must be
+///   a deliberate, specifically-named call site inside a parser's `open()` (see
+///   [`ParseContext::resolve_secret`]'s own doc); letting an analyzer reach one by accident,
+///   from arbitrary analysis code with no naming discipline, defeats that.
+/// - No [`MountResolver`](crate::core::resolver::MountResolver). It has interior mutability and
+///   a budget shared across the whole run -- letting analyzers mount things through it would
+///   silently spend that budget *after* every parser already reported completing, making a
+///   run's limits depend on which analyzers happened to be registered. An analyzer that needs to
+///   reach inside a container does it through a `ContainerFs`-backed [`Self::vfs`], where the
+///   resolver is driven by the filesystem itself, budgets and all.
+#[derive(Clone)]
+pub struct SourceView {
+    vfs: Option<Arc<dyn FileSystem>>,
+    registry: Option<Arc<dyn Registry>>,
+    acquisition: Acquisition,
+    source_kind: Option<SourceKind>,
+}
+
+impl Default for SourceView {
+    fn default() -> Self {
+        Self { vfs: None, registry: None, acquisition: Acquisition::LiveApi, source_kind: None }
+    }
+}
+
+impl SourceView {
+    pub(crate) fn from_sources(sources: &TriageSources) -> Self {
+        let (acquisition, source_kind) = derive_acquisition(sources);
+        Self { vfs: sources.vfs().cloned(), registry: sources.registry().cloned(), acquisition, source_kind }
+    }
+
+    /// The run's filesystem source, if one was configured. Reaching inside a nested container
+    /// (an embedded file inside a document, say) is just an ordinary path on this handle when
+    /// it's backed by a `ContainerFs` -- no new plumbing needed here for that.
+    pub fn vfs(&self) -> Option<&Arc<dyn FileSystem>> {
+        self.vfs.as_ref()
+    }
+
+    /// A pre-opened registry source, if one was configured.
+    pub fn registry(&self) -> Option<&Arc<dyn Registry>> {
+        self.registry.as_ref()
+    }
+
+    /// The same value the run's parsers saw on [`ParseContext::acquisition`], so a record an
+    /// analyzer derives from a source read here grades identically to one a parser minted from
+    /// the same bytes.
+    pub fn acquisition(&self) -> Acquisition {
+        self.acquisition
+    }
+
+    pub fn source_kind(&self) -> Option<SourceKind> {
+        self.source_kind
+    }
+
+    /// Convenience over `self.vfs().and_then(|fs| fs.as_attributes())`: per-path facts from the
+    /// configured VFS's [`PathAttributes`] probe, when both a VFS is configured and its backend
+    /// supports the probe. `None` means "can't answer" (no VFS, or this backend doesn't surface
+    /// per-path facts) -- never "the path has no attributes"; that distinction is the inner
+    /// `ForensicResult`'s to make.
+    pub fn attributes(&self, path: &crate::core::path::FPath) -> Option<crate::err::ForensicResult<BTreeMap<Text, Field>>> {
+        Some(self.vfs.as_ref()?.as_attributes()?.attributes(path))
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct TriageContext {
     forensic: ForensicContext,
     shared: BTreeMap<Text, Field>,
     provenance_store: ProvenanceStore,
+    sources: SourceView,
 }
 
 impl TriageContext {
@@ -53,6 +125,7 @@ impl TriageContext {
             },
             shared: BTreeMap::new(),
             provenance_store: ProvenanceStore::new(),
+            sources: SourceView::default(),
         }
     }
 
@@ -61,12 +134,41 @@ impl TriageContext {
             forensic: ctx,
             shared: BTreeMap::new(),
             provenance_store: ProvenanceStore::new(),
+            sources: SourceView::default(),
         }
     }
 
     /// Access the underlying `ForensicContext`.
     pub fn forensic_context(&self) -> &ForensicContext {
         &self.forensic
+    }
+
+    /// The run's evidence sources, read-only -- for an [`Analyzer`](crate::pipeline::traits::Analyzer)
+    /// or [`Enricher`](crate::pipeline::traits::Enricher) that needs to pull bytes during
+    /// analysis (read an embedded payload, hash it, recurse into a nested path a
+    /// [`ContainerFs`](crate::core::fs::ContainerFs)-backed VFS already makes an ordinary path).
+    ///
+    /// Empty (every accessor returns `None`) until a pipeline installs the real sources via
+    /// [`Self::attach_sources`] at run start, or a caller pre-attaches them with
+    /// [`Self::with_sources`] -- an analyzer never has to deal with a second layer of `Option`
+    /// to tell "no sources configured" apart from "not running inside a pipeline".
+    pub fn sources(&self) -> &SourceView {
+        &self.sources
+    }
+
+    /// Pre-attaches sources to a context driven outside a [`crate::pipeline::TriagePipeline`]
+    /// run (a test harness, a bespoke driver). A real pipeline run calls [`Self::attach_sources`]
+    /// itself at run start; this is for everything else.
+    #[must_use]
+    pub fn with_sources(mut self, sources: &TriageSources) -> Self {
+        self.sources = SourceView::from_sources(sources);
+        self
+    }
+
+    /// Installs `sources` as this context's [`SourceView`]. Called by the pipeline at run start,
+    /// once per worker (each holding its own `TriageContext` clone, so this never races).
+    pub(crate) fn attach_sources(&mut self, sources: &TriageSources) {
+        self.sources = SourceView::from_sources(sources);
     }
 
     /// The [`ProvenanceStore`] for this pipeline run. Cheap to clone (an
@@ -190,17 +292,25 @@ pub struct ParseContext<'a> {
     cancellation: CancellationToken,
 }
 
+/// Shared by [`ParseContext::new`] and [`SourceView::from_sources`], so the two can never
+/// silently drift on how acquisition is derived from a run's configured sources: an explicit
+/// override via [`crate::pipeline::sources::TriageSourcesBuilder::acquisition`] wins if one was
+/// set, else it's derived from the VFS's [`SourceKind`], else the conservative floor
+/// [`Acquisition::LiveApi`] -- never [`Acquisition::ImageRead`], which would over-claim `High`
+/// confidence for evidence that was never actually shown to have come from an image.
+pub(crate) fn derive_acquisition(sources: &TriageSources) -> (Acquisition, Option<SourceKind>) {
+    let source_kind = sources.vfs().map(|fs| fs.source());
+    let acquisition = sources.acquisition().or_else(|| source_kind.map(Acquisition::from)).unwrap_or(Acquisition::LiveApi);
+    (acquisition, source_kind)
+}
+
 impl<'a> ParseContext<'a> {
     pub(crate) fn new(
         sources: &'a TriageSources,
         ctx: &TriageContext,
         cancellation: &CancellationToken,
     ) -> Self {
-        let source_kind = sources.vfs().map(|fs| fs.source());
-        let acquisition = sources
-            .acquisition()
-            .or_else(|| source_kind.map(Acquisition::from))
-            .unwrap_or(Acquisition::LiveApi);
+        let (acquisition, source_kind) = derive_acquisition(sources);
         Self {
             sources,
             host: Text::Owned(ctx.host().to_string()),
