@@ -78,7 +78,10 @@ impl Default for ContainerInventoryParser {
                  (an OLE document, an archive, ...) and its members, carrying whatever facts \
                  the backend's PathAttributes probe surfaces",
                 env!("CARGO_PKG_VERSION"),
-            ),
+            )
+            // Never leave this empty: an empty list means "every artifact", which would inject
+            // this parser into every auto-matched `AnalysisModule`.
+            .with_artifacts(&[Artifact::Common(CommonArtifact::ContainerInventory)][..]),
             max_depth: None,
         }
     }
@@ -257,7 +260,7 @@ fn build_record(
 
     let mut data = ForensicData::new(
         host,
-        Artifact::Common(CommonArtifact::Other("container_inventory".to_string())),
+        Artifact::Common(CommonArtifact::ContainerInventory),
         id,
     );
 

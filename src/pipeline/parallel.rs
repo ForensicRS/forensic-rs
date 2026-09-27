@@ -1595,6 +1595,22 @@ mod tests {
     }
 
     #[test]
+    fn container_inventory_is_not_auto_matched_into_an_unrelated_module() {
+        use crate::artifact::{CommonArtifact, RegistryArtifacts, WindowsArtifacts};
+        use crate::pipeline::inventory::ContainerInventoryParser;
+        use crate::traits::forensic::ArtifactParserFactory;
+
+        let inventory = ContainerInventoryParser::new();
+        let registry = Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns));
+        assert!(!inventory.descriptor().handles(&registry));
+        assert!(
+            inventory
+                .descriptor()
+                .handles(&Artifact::Common(CommonArtifact::ContainerInventory))
+        );
+    }
+
+    #[test]
     fn parsers_registers_a_whole_batch_for_auto_matching_in_one_call() {
         let module = AnalysisModuleBuilder::new("mod")
             .analyzer(Box::new(CountingAnalyzer::with_artifact(Artifact::Unknown)))
