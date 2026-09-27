@@ -19,6 +19,59 @@ use crate::provenance::confidence::Confidence;
 /// space with reused bit meanings (the same bit meaning different things
 /// depending on [`super::Locus`] would be a correctness trap in serialized
 /// output).
+///
+/// # Adding a parser's own anomaly kinds
+///
+/// 1. Define a crate-local `#[non_exhaustive]` enum, one variant per kind,
+///    with a stable `name()` (`"fixup_mismatch"`), since names end up in output.
+/// 2. Give it a `flag()` that maps a variant onto the core bit that *means the
+///    same thing* — an `$MFT` fixup mismatch is a [`CHECKSUM_MISMATCH`], a
+///    record cut short is [`TRUNCATED`] — and record it with
+///    [`Anomalies::add_detail`]`(`[`AnomalyDetail::new`]`(flag, name, message))`.
+///    The bit drives confidence and the aggregate findings; the name keeps the
+///    precise kind.
+/// 3. When no core bit means the same thing (a malformed identifier, a value
+///    outside its documented range), don't borrow the nearest one: that bit
+///    would then mean two things. Record the kind as a field of the record
+///    under the parser's own namespace, and raise a `Finding` if an analyst
+///    must act on it. A detail with no flag is not enough on its own: sinks
+///    export the flag names, not the details.
+///
+/// `frnsc-ntfs`'s `NtfsAnomaly` is a complete example.
+///
+/// ```
+/// use forensic_rs::prelude::*;
+///
+/// #[non_exhaustive]
+/// enum PidAnomaly {
+///     /// The value is shorter than its declared length.
+///     Truncated { declared: usize, found: usize },
+///     /// Not hexadecimal: no core bit means this.
+///     Malformed,
+/// }
+///
+/// let provenance = testing::test_provenance_id();
+/// let mut data = ForensicData::new("h", Artifact::Unknown, provenance);
+/// for anomaly in [PidAnomaly::Truncated { declared: 8, found: 3 }, PidAnomaly::Malformed] {
+///     match anomaly {
+///         PidAnomaly::Truncated { declared, found } => {
+///             let mut anomalies = Anomalies::empty();
+///             anomalies.add_detail(AnomalyDetail::new(
+///                 AnomalyFlags::TRUNCATED,
+///                 "pid_truncated",
+///                 format!("{found} of {declared} hex digits"),
+///             ));
+///             let raw = Parsed::with_anomalies("1A2".to_string(), anomalies, provenance);
+///             data.set_parsed("feature_usage.app.pid", raw);
+///         }
+///         PidAnomaly::Malformed => data.set("feature_usage.app.anomaly", "malformed_pid"),
+///     }
+/// }
+/// assert!(data.anomalies().has(AnomalyFlags::TRUNCATED));
+/// ```
+///
+/// [`CHECKSUM_MISMATCH`]: AnomalyFlags::CHECKSUM_MISMATCH
+/// [`TRUNCATED`]: AnomalyFlags::TRUNCATED
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct AnomalyFlags(u32);
@@ -111,6 +164,19 @@ pub struct AnomalyDetail {
     pub message: CompactString,
 }
 
+impl AnomalyDetail {
+    /// A detail for a parser's own anomaly kind `name`, carried by the core
+    /// bit `kind`: the message is `"<name>: <message>"`, the shape every
+    /// parser uses, so the precise kind survives next to the coarse bit. See
+    /// [`AnomalyFlags`] for choosing the bit.
+    pub fn new(kind: AnomalyFlags, name: &str, message: impl std::fmt::Display) -> Self {
+        Self {
+            kind,
+            message: CompactString::from(format!("{name}: {message}")),
+        }
+    }
+}
+
 /// Cheap, always-present anomaly tracking for one instance of data.
 ///
 /// `size_of::<Anomalies>() == 16`: `flags` is a 4-byte bitfield, and `detail`
@@ -195,6 +261,13 @@ const _: [(); 4] = [(); std::mem::size_of::<AnomalyFlags>()];
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detail_new_prefixes_the_parser_kind_name() {
+        let detail = AnomalyDetail::new(AnomalyFlags::TRUNCATED, "pid_truncated", "3 of 8");
+        assert_eq!(detail.kind, AnomalyFlags::TRUNCATED);
+        assert_eq!(detail.message, "pid_truncated: 3 of 8");
+    }
 
     #[test]
     fn default_is_empty_and_allocates_nothing() {

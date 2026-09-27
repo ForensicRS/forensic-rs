@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same variables as `get_env_vars_of_users`, plus an `EnvFallback` for every value that was
   assumed rather than read (`C:\Windows`, `C:`, `C:\Program Files`, per-user `TMP`, ...) and the
   reads that failed. Paths resolved from assumed values can now be told apart from real ones.
+- `AnomalyDetail::new(kind, name, message)`, which builds the `"<name>: <message>"` detail every
+  parser writes by hand, and `AnomalyFlags` docs on how a parser adds its own anomaly kinds: a
+  crate-local enum mapped onto the core bit with the same meaning, or a record field when no
+  bit means the same thing.
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,
