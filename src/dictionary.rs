@@ -81,5 +81,9 @@ pub const FILE_CHANGED: &str = "file.ctime";
 pub const FILE_DEVICE: &str = "file.device";
 pub const FILE_DIRECTORY: &str = "file.directory";
 pub const FILE_EXTENSION: &str = "file.extension";
+/// ECS `file.attributes`: array of lowercase attribute names (`hidden`, `system`, `readonly`, ...).
+pub const FILE_ATTRIBUTES: &str = "file.attributes";
+/// ECS `file.uid`: owner user ID or, on Windows, the owner SID.
+pub const FILE_UID: &str = "file.uid";
 
 pub const PE_IMPORTS: &str = "pe.imports";

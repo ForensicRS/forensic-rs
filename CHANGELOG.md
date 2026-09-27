@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `dictionary::FILE_ATTRIBUTES` (`file.attributes`) and `dictionary::FILE_UID` (`file.uid`, the
+  owner UID or SID).
 - `utils::testing::conformance` and the exported `fs_conformance_battery!` macro: the shared
   `FileSystem` conformance battery, so downstream backends (volume systems, NTFS, archives) run
   exactly the assertions core's own backends run.
