@@ -25,11 +25,17 @@ use std::borrow::Cow;
 use crate::field::Text;
 
 mod expand;
+mod resolve;
 mod slice;
+#[cfg(test)]
+mod tests;
 
 pub use expand::{
     expand, ExpandedGlob, ExpandedKey, ExpandedValue, Expansion, UnresolvedSource,
     GLOBSTAR_DEFAULT_DEPTH,
+};
+pub use resolve::{
+    resolve_expansion, ArtifactResolution, ResolvedFile, ResolvedKey, ResolvedValue,
 };
 pub use slice::{CatalogIndexEntry, SliceCatalog};
 

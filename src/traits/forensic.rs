@@ -279,6 +279,29 @@ impl TargetSpec {
     }
 }
 
+/// A named artifact definition a parser consumes (e.g.
+/// `"WindowsAMCacheHveFile"`), resolved through the run's
+/// [`ArtifactCatalog`](crate::catalog::ArtifactCatalog) with
+/// [`ParseContext::resolve_artifact`](crate::pipeline::context::ParseContext::resolve_artifact).
+/// The name is a ForensicArtifacts definition name or alias.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArtifactRef {
+    pub name: Text,
+}
+
+impl ArtifactRef {
+    pub fn new(name: impl Into<Text>) -> Self {
+        Self { name: name.into() }
+    }
+
+    /// `const` form, for requirement lists declared as `static` slices.
+    pub const fn from_static(name: &'static str) -> Self {
+        Self {
+            name: Text::Borrowed(name),
+        }
+    }
+}
+
 /// A registry key path a parser needs (e.g.
 /// `"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -408,6 +431,16 @@ pub enum Requirement {
     EventLog(ChannelSpec),
     /// Externally supplied key material.
     Secret(SecretKind),
+    /// Every location of a named artifact definition, from the run's
+    /// artifact catalog.
+    Artifact(ArtifactRef),
+}
+
+impl Requirement {
+    /// Shorthand for `Requirement::Artifact(ArtifactRef::new(name))`.
+    pub fn artifact(name: impl Into<Text>) -> Self {
+        Requirement::Artifact(ArtifactRef::new(name))
+    }
 }
 
 /// The outcome of resolving one [`Requirement`].

@@ -1,3 +1,4 @@
+use crate::catalog::ArtifactCatalog;
 use crate::core::resolver::MountResolver;
 use crate::provenance::Acquisition;
 use crate::secrets::SecretProvider;
@@ -30,6 +31,7 @@ pub struct TriageSources {
     acquisition: Option<Acquisition>,
     mount_resolver: Option<Arc<MountResolver>>,
     secrets: Option<Arc<dyn SecretProvider>>,
+    catalog: Option<Arc<dyn ArtifactCatalog>>,
 }
 
 impl TriageSources {
@@ -41,6 +43,7 @@ impl TriageSources {
             acquisition: None,
             mount_resolver: None,
             secrets: None,
+            catalog: None,
         }
     }
 
@@ -91,6 +94,13 @@ impl TriageSources {
     pub fn secrets(&self) -> Option<&Arc<dyn SecretProvider>> {
         self.secrets.as_ref()
     }
+
+    /// The artifact catalog for this run, if configured — used by
+    /// [`crate::pipeline::context::ParseContext::resolve_artifact`] to satisfy
+    /// [`crate::traits::forensic::Requirement::Artifact`].
+    pub fn catalog(&self) -> Option<&Arc<dyn ArtifactCatalog>> {
+        self.catalog.as_ref()
+    }
 }
 
 /// Builder for constructing `TriageSources` with the available evidence.
@@ -101,6 +111,7 @@ pub struct TriageSourcesBuilder {
     acquisition: Option<Acquisition>,
     mount_resolver: Option<Arc<MountResolver>>,
     secrets: Option<Arc<dyn SecretProvider>>,
+    catalog: Option<Arc<dyn ArtifactCatalog>>,
 }
 
 impl TriageSourcesBuilder {
@@ -140,6 +151,13 @@ impl TriageSourcesBuilder {
         self
     }
 
+    /// Attach an [`ArtifactCatalog`] so parsers can resolve
+    /// [`crate::traits::forensic::Requirement::Artifact`] by definition name.
+    pub fn catalog(mut self, catalog: Arc<dyn ArtifactCatalog>) -> Self {
+        self.catalog = Some(catalog);
+        self
+    }
+
     pub fn build(self) -> TriageSources {
         TriageSources {
             vfs: self.vfs,
@@ -147,6 +165,7 @@ impl TriageSourcesBuilder {
             acquisition: self.acquisition,
             mount_resolver: self.mount_resolver,
             secrets: self.secrets,
+            catalog: self.catalog,
         }
     }
 }

@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::{
     artifact::Artifact,
     bridge::CancellationToken,
+    catalog::{ArtifactResolution, Os, expand, resolve_expansion},
     context::{ForensicContext, initialize_context},
     core::locator::{EvidenceLocator, LocatorSegment},
     err::ForensicError,
     field::{Field, Ip, Text},
+    host_profile::HostProfile,
     pipeline::sources::TriageSources,
     provenance::{Acquisition, ProvenanceStore, SourceHandle, SourceKey},
     secrets::{Secret, SecretRequest},
@@ -303,6 +305,8 @@ pub struct ParseContext<'a> {
     acquisition: Acquisition,
     source_kind: Option<SourceKind>,
     cancellation: CancellationToken,
+    /// Resolved on first use by [`ParseContext::host_profile`].
+    host_profile: OnceLock<Option<HostProfile>>,
 }
 
 /// Shared by [`ParseContext::new`] and [`SourceView::from_sources`], so the two can never
@@ -361,6 +365,7 @@ impl<'a> ParseContext<'a> {
             acquisition,
             source_kind,
             cancellation: cancellation.clone(),
+            host_profile: OnceLock::new(),
         }
     }
 
@@ -423,10 +428,24 @@ impl<'a> ParseContext<'a> {
         &self.provenance
     }
 
+    /// The host's [`HostProfile`], resolved from this run's registry on
+    /// first use and cached for the rest of the parser's run. `None` when no
+    /// registry is configured.
+    pub fn host_profile(&self) -> Option<&HostProfile> {
+        self.host_profile
+            .get_or_init(|| HostProfile::resolve_from_context(self))
+            .as_ref()
+    }
+
     /// Best-effort resolution of a self-contained
     /// [`Requirement`](crate::traits::forensic::Requirement) — one that
-    /// needs no caller-chosen target locator to resolve. Today that is only
-    /// [`Requirement::File`], resolved via a glob search rooted at the VFS.
+    /// needs no caller-chosen target locator to resolve:
+    /// - [`Requirement::File`] resolves to the first match of a glob search
+    ///   rooted at the VFS; [`ParseContext::resolve_files`] returns them all.
+    /// - [`Requirement::Artifact`] resolves to the first file found for the
+    ///   definition; [`ParseContext::resolve_artifact`] returns every file,
+    ///   registry key and value. It is `Unsupported` without an artifact
+    ///   catalog, and an `Err` for a name the catalog doesn't know.
     ///
     /// `Database`/`Registry`/`EventLog` requirements are declarative only:
     /// they document what a parser needs (for coverage reporting and
@@ -443,7 +462,18 @@ impl<'a> ParseContext<'a> {
     /// [`ParseContext::resolve_secret`] and its doc for why.
     pub fn resolve(&self, requirement: &Requirement) -> crate::err::ForensicResult<Resolution> {
         match requirement {
-            Requirement::File(spec) => self.resolve_file(spec),
+            Requirement::File(spec) => {
+                let first = self.resolve_files(spec)?.into_iter().next();
+                Ok(Self::first_file(first))
+            }
+            Requirement::Artifact(artifact) => {
+                if self.sources.catalog().is_none() {
+                    return Ok(Resolution::Unavailable(UnavailableReason::Unsupported));
+                }
+                let resolution = self.resolve_artifact(&artifact.name)?;
+                let first = resolution.files.into_iter().next().map(|f| f.locator);
+                Ok(Self::first_file(first))
+            }
             Requirement::Database(_) | Requirement::Registry(_) | Requirement::EventLog(_) => {
                 Ok(Resolution::Unavailable(UnavailableReason::Unsupported))
             }
@@ -451,16 +481,85 @@ impl<'a> ParseContext<'a> {
         }
     }
 
-    fn resolve_file(&self, spec: &TargetSpec) -> crate::err::ForensicResult<Resolution> {
+    fn first_file(locator: Option<EvidenceLocator>) -> Resolution {
+        match locator {
+            Some(locator) => Resolution::Resolved(Mounted::File(locator)),
+            None => Resolution::Unavailable(UnavailableReason::NotPresent),
+        }
+    }
+
+    /// Every file matching `spec`'s glob, in walk order. Empty when nothing
+    /// matches or no VFS is configured.
+    pub fn resolve_files(
+        &self,
+        spec: &TargetSpec,
+    ) -> crate::err::ForensicResult<Vec<EvidenceLocator>> {
         let Some(vfs) = self.sources.vfs() else {
-            return Ok(Resolution::Unavailable(UnavailableReason::NotPresent));
+            return Ok(Vec::new());
         };
-        let matches = vfs.glob(&spec.glob)?;
-        let Some(path) = matches.into_iter().next() else {
-            return Ok(Resolution::Unavailable(UnavailableReason::NotPresent));
+        Ok(vfs
+            .glob(&spec.glob)?
+            .into_iter()
+            .map(|path| EvidenceLocator::root().push(LocatorSegment::Path(path)))
+            .collect())
+    }
+
+    /// Every location of the artifact definition `name` (a name or alias
+    /// in this run's catalog) found in the evidence: files, registry keys
+    /// and values, plus what couldn't be resolved and why.
+    ///
+    /// The definition is expanded with [`host_profile`](Self::host_profile)
+    /// (an empty profile when there is no registry, so every placeholder
+    /// falls back to a search pattern) for the OS it targets: Windows when
+    /// it supports Windows, else its first supported OS. Use
+    /// [`resolve_artifact_for`](Self::resolve_artifact_for) to choose.
+    ///
+    /// An empty result with no `errors` means the artifact is not present.
+    /// `Err` means there is no catalog, or it doesn't know `name`.
+    pub fn resolve_artifact(&self, name: &str) -> crate::err::ForensicResult<ArtifactResolution> {
+        let os = {
+            let (_, def) = self.artifact_definition(name)?;
+            if def.supports(Os::Windows) {
+                Os::Windows
+            } else {
+                def.supported_os.first().copied().unwrap_or(Os::Windows)
+            }
         };
-        let locator = EvidenceLocator::root().push(LocatorSegment::Path(path));
-        Ok(Resolution::Resolved(Mounted::File(locator)))
+        self.resolve_artifact_for(name, os)
+    }
+
+    /// [`resolve_artifact`](Self::resolve_artifact) for a given OS.
+    pub fn resolve_artifact_for(
+        &self,
+        name: &str,
+        os: Os,
+    ) -> crate::err::ForensicResult<ArtifactResolution> {
+        let (catalog, def) = self.artifact_definition(name)?;
+        let empty = HostProfile::default();
+        let host = self.host_profile().unwrap_or(&empty);
+        let expansion = expand(def, catalog.as_ref(), host, os);
+        Ok(resolve_expansion(
+            expansion,
+            self.sources.vfs().map(|fs| fs.as_ref()),
+            self.sources.registry().map(|reg| reg.as_ref()),
+        ))
+    }
+
+    /// The run's catalog and its definition for `name`.
+    fn artifact_definition(
+        &self,
+        name: &str,
+    ) -> crate::err::ForensicResult<(
+        &'a Arc<dyn crate::catalog::ArtifactCatalog>,
+        &'a crate::catalog::ArtifactDefinition,
+    )> {
+        let catalog = self.sources.catalog().ok_or_else(|| {
+            ForensicError::other("catalog", format!("no artifact catalog configured to resolve {name}"))
+        })?;
+        let def = catalog.get(name).ok_or_else(|| {
+            ForensicError::other("catalog", format!("unknown artifact definition: {name}"))
+        })?;
+        Ok((catalog, def))
     }
 
     /// Mounts an already-opened file at `locator` as `want`, through this
