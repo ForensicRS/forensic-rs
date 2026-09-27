@@ -38,6 +38,18 @@ pub struct DescentPolicy {
     pub min_size: u64,
     /// Above this size, a file is not attempted -- guards the *mount* cost, not just the probe.
     pub max_size: u64,
+    /// Lowercase extensions (no dot) exempt from `max_size`, because the factory that claims
+    /// them mounts a [`HopCost::View`](crate::traits::format::HopCost::View) -- an image or a
+    /// volume system addresses its bytes in place, so its mount cost does not grow with its
+    /// size, and a disk image is by nature far larger than any in-memory limit. Still subject
+    /// to `extensions` and `min_size`. Empty by default.
+    pub view_extensions: BTreeSet<String>,
+    /// Attempt every file flagged [`FileAttributes::VOLUME`] -- an image's media stream, a
+    /// partition -- whatever its name or size, since neither has an extension to match and both
+    /// are as large as the disk. `false` by default; [`DescentPolicy::from_resolver`] turns it on
+    /// when any registered factory mounts a [`HopCost::View`](crate::traits::format::HopCost::View),
+    /// i.e. when the caller has opted into storage media at all.
+    pub descend_into_volumes: bool,
     /// Container boundaries this `ContainerFs` will cross in one path resolution. Independent
     /// of `WalkOptions::max_depth` (directory levels) and of
     /// `Limits::max_nesting_depth` (the resolver's own, looser budget) -- a transparent walk
@@ -52,6 +64,8 @@ impl Default for DescentPolicy {
             extensions: Some(BTreeSet::new()),
             min_size: 8,
             max_size: crate::core::limits::Limits::default().materialize_in_memory_limit as u64,
+            view_extensions: BTreeSet::new(),
+            descend_into_volumes: false,
             max_container_depth: 4,
         }
     }
@@ -64,34 +78,52 @@ impl DescentPolicy {
     /// shipped `SpillStore` already refuses above it, so a larger file would fail to mount
     /// anyway; deriving the policy from it means refusing cheaply, before any open, instead of
     /// expensively, after one). Adding a factory to the resolver automatically extends what this
-    /// policy is willing to attempt; core never has to name a format itself.
+    /// policy is willing to attempt; core never has to name a format itself. A factory whose
+    /// [`FormatFactory::hop_cost`] is `View` also lands its extensions in `view_extensions`,
+    /// since it never materializes what it mounts.
     pub fn from_resolver(resolver: &MountResolver) -> Self {
         let mut extensions = BTreeSet::new();
+        let mut view_extensions = BTreeSet::new();
+        let mut descend_into_volumes = false;
         for factory in resolver.factories() {
+            let is_view = factory.hop_cost() == crate::traits::format::HopCost::View;
+            descend_into_volumes |= is_view;
             for ext in factory.extensions() {
                 extensions.insert(ext.to_ascii_lowercase());
+                if is_view {
+                    view_extensions.insert(ext.to_ascii_lowercase());
+                }
             }
         }
         Self {
             extensions: Some(extensions),
             max_size: resolver.limits().materialize_in_memory_limit as u64,
+            view_extensions,
+            descend_into_volumes,
             ..Self::default()
         }
     }
 
-    /// Pure, byte-free gate: extension allow-list plus size band. Reads only data the caller
-    /// already has (a `DirEntry`'s name and `VMetadata::size`) -- never opens the file.
-    fn should_probe(&self, path: &FPath, size: u64) -> bool {
-        if size < self.min_size || size > self.max_size {
+    /// Pure, byte-free gate: a volume flag, or an extension allow-list plus size band. Reads
+    /// only data the caller already has (a `DirEntry`'s name, `VMetadata::size` and
+    /// attributes) -- never opens the file.
+    fn should_probe(&self, path: &FPath, size: u64, attributes: FileAttributes) -> bool {
+        if self.descend_into_volumes && attributes.contains(FileAttributes::VOLUME) {
+            return size >= self.min_size;
+        }
+        let ext = path
+            .as_str()
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase());
+        let is_view = ext
+            .as_ref()
+            .is_some_and(|e| self.view_extensions.contains(e));
+        if size < self.min_size || (size > self.max_size && !is_view) {
             return false;
         }
         match &self.extensions {
             None => true,
-            Some(allow) => path
-                .as_str()
-                .rsplit_once('.')
-                .map(|(_, ext)| allow.contains(&ext.to_ascii_lowercase()))
-                .unwrap_or(false),
+            Some(allow) => ext.is_some_and(|e| allow.contains(&e)),
         }
     }
 }
@@ -216,7 +248,10 @@ impl ContainerFs {
             }
 
             let meta = fs.metadata(head.as_path())?;
-            if !self.policy.should_probe(head.as_path(), meta.size) {
+            if !self
+                .policy
+                .should_probe(head.as_path(), meta.size, meta.attributes)
+            {
                 return Err(ForensicError::path_not_found(path.to_string()));
             }
 
@@ -244,8 +279,8 @@ impl ContainerFs {
     /// Whether `path` (as seen from the base filesystem, i.e. NOT already resolved through a
     /// mount) is itself a plausible container per the descent policy -- the check `metadata`
     /// uses to decide whether to set [`FileAttributes::CONTAINER`].
-    fn looks_like_a_container(&self, path: &FPath, size: u64) -> bool {
-        self.policy.should_probe(path, size)
+    fn looks_like_a_container(&self, path: &FPath, size: u64, attributes: FileAttributes) -> bool {
+        self.policy.should_probe(path, size, attributes)
             && self
                 .resolver
                 .supports(crate::traits::format::MountKind::FileSystem)
@@ -277,7 +312,9 @@ impl FileSystem for ContainerFs {
 
     fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
         if let Ok(mut m) = self.base.metadata(path) {
-            if m.file_type == VFileType::File && self.looks_like_a_container(path, m.size) {
+            if m.file_type == VFileType::File
+                && self.looks_like_a_container(path, m.size, m.attributes)
+            {
                 m.attributes |= FileAttributes::CONTAINER;
             }
             return Ok(m);
@@ -302,7 +339,7 @@ impl FileSystem for ContainerFs {
                 let mut entry = entry?;
                 if supports_fs && entry.file_type == VFileType::File {
                     if let Some(m) = entry.metadata.as_mut() {
-                        if policy.should_probe(entry.path.as_path(), m.size) {
+                        if policy.should_probe(entry.path.as_path(), m.size, m.attributes) {
                             m.attributes |= FileAttributes::CONTAINER;
                         }
                     }

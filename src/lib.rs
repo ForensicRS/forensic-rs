@@ -30,7 +30,7 @@ pub mod prelude {
     pub use crate::context::initialize_context;
     pub use crate::core::fs::{
         ChRootFileSystem, ConcatReadAt, ContainerFs, DescentPolicy, MountTable, OverlayFs,
-        ReadAtFile, StdVirtualFS, StdVirtualFile, WindowReadAt, into_read_at,
+        ReadAtFile, SplitRawFactory, StdVirtualFS, StdVirtualFile, WindowReadAt, into_read_at,
     };
     pub use crate::core::limits::{LimitExceeded, Limits, MemorySpillStore, SpillStore};
     pub use crate::core::locator::{EvidenceLocator, LocatorSegment};

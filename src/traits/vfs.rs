@@ -229,6 +229,13 @@ impl FileAttributes {
     /// reading raw evidence (that's what bits 0-15 are for); a future backend author reaching
     /// for `from_bits_truncate` on real Win32/POSIX attribute bits cannot collide with it.
     pub const CONTAINER: Self = FileAttributes(1 << 16);
+    /// This file is a raw, byte-addressed volume rather than a file: an image's reconstructed
+    /// media, or one partition of a volume system. Set by the filesystem an image-format or
+    /// volume-system factory mounts, on exactly those entries, so
+    /// `crate::core::fs::DescentPolicy::descend_into_volumes` can let them through without an
+    /// extension (`case.E01/media/p2` has none to match). Like `CONTAINER`, never read off
+    /// the evidence.
+    pub const VOLUME: Self = FileAttributes(1 << 17);
 
     pub const fn empty() -> Self {
         FileAttributes(0)

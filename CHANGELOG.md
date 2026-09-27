@@ -19,6 +19,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
+- Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,
+  image -> volume system -> filesystem, each yielding `Mounted::FileSystem`):
+  - `HopCost` and the defaulted `FormatFactory::hop_cost()` (`src/traits/format.rs`): a factory
+    whose mount addresses its input in place (a partition, a raw image's segments, an E01's
+    chunks up to its declared media size) returns `HopCost::View`, and `MountResolver` then
+    neither charges it against `max_expanded_bytes`/`max_expansion_ratio` nor content-interns it,
+    and caches it at zero weight. Previously every real disk image was refused at its first hop
+    as a 1 GiB+ "expansion". The default stays `Expansion`, so existing factories are unchanged.
+  - `ReadAt` and the defaulted `VirtualFile::as_read_at()` (`src/traits/vfs.rs`): positional,
+    `&self` reads, so one image serves many workers without a lock per read. `StdVirtualFile`
+    implements it with `pread` on Unix (Windows gets the locked fallback, because `seek_read`
+    would move the shared cursor).
+  - `core::fs::window` (`into_read_at`, `LockedReadAt`, `WindowReadAt`, `ConcatReadAt`,
+    `ReadAtFile`): the shared plumbing every image and volume-system factory needs, so none has
+    to re-derive it.
+  - `MediaMap`/`MediaOffset` and the defaulted `FileSystem::as_media_map()`: maps a byte of a
+    mounted view back to the file and offset it came from one hop up, so a carved record inside a
+    partition can be located in the original image.
+  - `LocatorSegment::Volume { index, offset, len }` and `LocatorSegment::Snapshot { id }`.
+  - `SplitRawFactory`/`SplitRawFs` (`src/core/fs/split_raw.rs`): joins `name.001`, `.002`, ...
+    into one `media` file, reporting a numbering gap as the `raw.missing_segment` attribute
+    rather than refusing the image. The only image format core ships; it needs no parser.
+  - `DescentPolicy::view_extensions`: extensions whose factory mounts a view are exempt from
+    `max_size`, so `ContainerFs` can descend into an image larger than the in-memory limit;
+    `DescentPolicy::from_resolver` fills it from each factory's `hop_cost()`.
+  - `FileAttributes::VOLUME` and `DescentPolicy::descend_into_volumes`: an image's `media` file
+    and a volume system's partitions have no extension to match, so the filesystems that expose
+    them flag them `VOLUME`, and the policy lets flagged files through regardless of name or
+    size. `from_resolver` turns it on when any registered factory mounts a view.
 
 - `ContainerFs`/`DescentPolicy` (`src/core/fs/container.rs`): a `FileSystem` decorator over
   `Arc<dyn FileSystem>` + `Arc<MountResolver>` that makes container files transparently

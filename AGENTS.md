@@ -93,6 +93,8 @@ src/
       mount.rs        — MountTable, OverlayFs: layered filesystem composition
       walk.rs         — Walk, WalkOptions: lazy streaming directory-tree traversal (FileSystemExt::walk)
       glob.rs         — Glob: pattern matching over FileSystem paths (FileSystemExt::glob/glob_iter)
+      window.rs       — into_read_at, LockedReadAt, WindowReadAt, ConcatReadAt, ReadAtFile: shared positional byte sources for image/volume factories
+      split_raw.rs    — SplitRawFactory, SplitRawFs: `name.001`, `.002`, ... joined into one `media` file (the only image format core ships)
   field/
     mod.rs            — Field enum, Text, FieldAccess, From/TryInto impls
     ip.rs             — Ip enum (V4/V6), IP parsing and utilities
@@ -333,6 +335,32 @@ A backend author implements only the minimal core trait (`FileSystem`, `Registry
 `FileSystem` supports nesting without any special core-trait methods, since `Arc<dyn FileSystem>` is the common currency type: `MountTable`/`OverlayFs` (`src/core/fs/mount.rs`) compose several filesystems into one layered view; `ChRootFileSystem` wraps an `Arc<dyn FileSystem>` and remaps paths under a different root.
 
 Nesting *through* a container — a ZIP, an E01 volume, a SQLite database, a PE's embedded resources — is a different problem: "inside" is really three relationships (containment, interpretation, embedding), and a `FormatFactory` (`src/traits/format.rs`) covers all three through one `probe()`/`mount()` contract, producing a `Mounted` value. `MountResolver` (`src/core/resolver.rs`) drives probing across every registered factory, picks a winner deterministically (highest `ProbeScore`, tied broken by factory name — never registration order), and caches by `EvidenceLocator` (`src/core/locator.rs`) rather than a string path, so an arbitrary depth of nesting is a distinct, correctly-scoped cache entry at every hop instead of colliding on a flat key. `Limits` (`src/core/limits.rs`) bound nesting depth, total expanded bytes, entry count, and expansion ratio across the whole resolution, shared rather than per-container, so many small containers can't each individually pass a check and still sum to an unbounded expansion.
+
+### Storage Media: Images and Volume Systems
+
+A disk image, a volume system and a filesystem are each one containment hop, stacked: an
+image-format factory (E01, VMDK, split raw) mounts a `FileSystem` holding a single `media` file;
+a volume-system factory (MBR, GPT) probes that file and mounts one file per partition; a
+filesystem factory (NTFS, ext4) probes a partition and mounts the real tree. Every hop yields
+`Mounted::FileSystem`, so `ContainerFs` makes `case.E01/media/p2/Windows/System32/config/SYSTEM`
+an ordinary path and artifact parsers never know an image was involved.
+
+Rules for writing one of these factories:
+
+- Return `HopCost::View` from `hop_cost()` when the mount addresses its input in place (or up to a
+  size the input itself declares). The default, `Expansion`, charges the whole input against the
+  zip-bomb budgets and refuses any real disk.
+- Hold the parent as `Arc<dyn ReadAt>` (`core::fs::window::into_read_at`), never as a
+  `Box<dyn VirtualFile>`: build partitions with `WindowReadAt`, segments/extents with
+  `ConcatReadAt`, and hand out `ReadAtFile` from `open()`. Workers then read concurrently with
+  no lock per read.
+- Name volumes with `LocatorSegment::Volume` and snapshots with `LocatorSegment::Snapshot`, not
+  `Offset`.
+- Implement `MediaMap` (`as_media_map()`) so a byte found inside the view can be traced back to
+  the original image, and surface format facts (stored hashes, partition GUIDs, a missing
+  segment) through `PathAttributes` under the format's own namespace (`raw.*`, `ewf.*`,
+  `vsys.*`). A damaged or incomplete image still mounts; the damage is reported, never a reason
+  to refuse the rest.
 
 ### Default Implementations
 
