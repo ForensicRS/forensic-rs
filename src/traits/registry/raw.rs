@@ -13,8 +13,10 @@
 //! `tests/compile_fail/` (RFC 0001 implementation plan, workstream F).
 
 use super::RegValue;
+use crate::core::fs::glob::{parse_component, segment_matches, Component};
 use crate::err::{ForensicError, ForensicResult};
 use crate::recovery::Recovered;
+use crate::traits::vfs::CaseSensitivity;
 use crate::utils::time::ForensicTimestamp;
 use std::marker::PhantomData;
 
@@ -463,8 +465,114 @@ pub trait RegistryExt: Registry {
         }
         Ok(())
     }
+    /// Expands a key-path pattern into the paths of the keys that exist and
+    /// match it, sorted.
+    ///
+    /// The hive designator must be literal, and it is kept as written. Each
+    /// later `\`-separated segment uses the same syntax as a file glob
+    /// component (`*`, `?`, `[..]`, `**`, `**N`), matched case-insensitively
+    /// against subkey names; wildcard matches take the key's real name.
+    /// For example `HKU\*\Software\Microsoft\Windows\CurrentVersion\Run`
+    /// or `HKLM\Software\Google\Chrome\Extensions\**5`.
+    ///
+    /// A key that doesn't exist only means no match. Any other read error
+    /// is returned. A bare `**` is capped at [`KEY_PATTERN_DEPTH_CAP`] levels.
+    fn expand_key_pattern(&self, pattern: &str) -> ForensicResult<Vec<String>> {
+        let (hive, sub) = parse_hive_path(pattern)?;
+        let root = pattern[..pattern.len() - sub.len()].trim_end_matches('\\');
+        let comps: Vec<Component<'_>> = sub
+            .split('\\')
+            .filter(|s| !s.is_empty())
+            .map(parse_component)
+            .collect();
+        let mut out = std::collections::BTreeSet::new();
+        expand_key_components(self, hive, root, "", &comps, &mut out)?;
+        Ok(out.into_iter().collect())
+    }
 }
 impl<T: Registry + ?Sized> RegistryExt for T {}
+
+/// How deep a bare `**` descends in [`RegistryExt::expand_key_pattern`].
+pub const KEY_PATTERN_DEPTH_CAP: u32 = 64;
+
+/// Depth-first step of [`RegistryExt::expand_key_pattern`]. `sub` is the
+/// hive-relative path matched so far ("" for the hive root).
+fn expand_key_components<R: Registry + ?Sized>(
+    reg: &R,
+    hive: PredefinedHive,
+    root: &str,
+    sub: &str,
+    comps: &[Component<'_>],
+    out: &mut std::collections::BTreeSet<String>,
+) -> ForensicResult<()> {
+    let join = |name: &str| {
+        if sub.is_empty() {
+            name.to_string()
+        } else {
+            format!("{sub}\\{name}")
+        }
+    };
+    // `Ok(None)` when the key at `sub` doesn't exist.
+    let children = || -> ForensicResult<Option<Vec<String>>> {
+        let root_key = RegKey::from_raw(reg, reg.root(hive)?);
+        let key = if sub.is_empty() {
+            Ok(root_key)
+        } else {
+            root_key.open(sub)
+        };
+        match key.and_then(|k| k.keys()) {
+            Ok(keys) => Ok(Some(keys.into_iter().map(|k| k.name).collect())),
+            Err(e) if e.is_registry_not_found() => Ok(None),
+            Err(e) => Err(e),
+        }
+    };
+    match comps.first() {
+        None => {
+            let root_key = RegKey::from_raw(reg, reg.root(hive)?);
+            let exists = if sub.is_empty() {
+                Ok(root_key)
+            } else {
+                root_key.open(sub)
+            };
+            match exists {
+                Ok(_) => {
+                    out.insert(if sub.is_empty() {
+                        root.to_string()
+                    } else {
+                        format!("{root}\\{sub}")
+                    });
+                    Ok(())
+                }
+                Err(e) if e.is_registry_not_found() => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
+        Some(Component::Segment(seg)) if !seg.contains(['*', '?', '[']) => {
+            expand_key_components(reg, hive, root, &join(seg), &comps[1..], out)
+        }
+        Some(Component::Segment(seg)) => {
+            for name in children()?.unwrap_or_default() {
+                if segment_matches(seg, &name, CaseSensitivity::Insensitive) {
+                    expand_key_components(reg, hive, root, &join(&name), &comps[1..], out)?;
+                }
+            }
+            Ok(())
+        }
+        Some(Component::Globstar(limit)) => {
+            expand_key_components(reg, hive, root, sub, &comps[1..], out)?;
+            let budget = limit.unwrap_or(KEY_PATTERN_DEPTH_CAP);
+            if budget == 0 {
+                return Ok(());
+            }
+            let mut rest = comps.to_vec();
+            rest[0] = Component::Globstar(Some(budget - 1));
+            for name in children()?.unwrap_or_default() {
+                expand_key_components(reg, hive, root, &join(&name), &rest, out)?;
+            }
+            Ok(())
+        }
+    }
+}
 
 fn parse_hive_path(path: &str) -> ForensicResult<(PredefinedHive, &str)> {
     let sep_pos = path.find('\\').unwrap_or(path.len());
@@ -1034,5 +1142,90 @@ mod tests {
             software.value("InstallDate").unwrap(),
             RegValue::DWord(20240101)
         );
+    }
+}
+
+#[cfg(test)]
+mod key_pattern_tests {
+    use super::*;
+    use crate::utils::testing::TestingRegistry;
+
+    const ALICE: &str = "S-1-5-21-1-2-3-1001";
+    const BOB: &str = "S-1-5-21-1-2-3-1002";
+
+    fn registry() -> TestingRegistry {
+        let mut reg = TestingRegistry::empty();
+        for sid in [ALICE, BOB] {
+            reg.add_key(&format!(
+                "HKU\\{sid}\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+            ));
+        }
+        reg.add_key(&format!("HKU\\{ALICE}_Classes\\Local Settings"));
+        reg.add_key("HKLM\\Software\\Google\\Chrome\\Extensions\\abc\\1.0\\meta");
+        reg.add_key("HKLM\\Software\\Google\\Chrome\\Extensions\\def");
+        reg
+    }
+
+    #[test]
+    fn star_enumerates_subkeys_and_keeps_only_existing_matches() {
+        let got = registry()
+            .expand_key_pattern("HKU\\*\\Software\\Microsoft\\Windows\\CurrentVersion\\Run")
+            .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                format!("HKU\\{ALICE}\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+                format!("HKU\\{BOB}\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+            ]
+        );
+    }
+
+    #[test]
+    fn segment_patterns_filter_subkey_names() {
+        let got = registry().expand_key_pattern("HKU\\S-*[0-9]").unwrap();
+        assert_eq!(got, vec![format!("HKU\\{ALICE}"), format!("HKU\\{BOB}")]);
+    }
+
+    #[test]
+    fn bounded_globstar_limits_the_depth() {
+        let reg = registry();
+        let two = reg
+            .expand_key_pattern("HKLM\\Software\\Google\\Chrome\\Extensions\\**2")
+            .unwrap();
+        assert_eq!(
+            two,
+            vec![
+                "HKLM\\Software\\Google\\Chrome\\Extensions",
+                "HKLM\\Software\\Google\\Chrome\\Extensions\\abc",
+                "HKLM\\Software\\Google\\Chrome\\Extensions\\abc\\1.0",
+                "HKLM\\Software\\Google\\Chrome\\Extensions\\def",
+            ]
+        );
+        let five = reg
+            .expand_key_pattern("HKLM\\Software\\Google\\Chrome\\Extensions\\**5")
+            .unwrap();
+        assert!(five
+            .contains(&"HKLM\\Software\\Google\\Chrome\\Extensions\\abc\\1.0\\meta".to_string()));
+    }
+
+    #[test]
+    fn a_missing_key_is_no_match_not_an_error() {
+        let reg = registry();
+        assert!(reg
+            .expand_key_pattern("HKLM\\Software\\Nope\\*")
+            .unwrap()
+            .is_empty());
+        assert!(reg
+            .expand_key_pattern("HKLM\\Software\\Nope")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn wildcard_segments_match_case_insensitively() {
+        let got = registry()
+            .expand_key_pattern("hklm\\Software\\Google\\Chrome\\Extensions\\D*")
+            .unwrap();
+        assert_eq!(got, vec!["hklm\\Software\\Google\\Chrome\\Extensions\\def"]);
     }
 }

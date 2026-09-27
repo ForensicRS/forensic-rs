@@ -37,14 +37,14 @@ fn split_glob_prefix(pattern: &str) -> &str {
 
 /// One pre-parsed pattern component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Component<'p> {
+pub(crate) enum Component<'p> {
     /// `**` (`None`) or `**N` (`Some(N)`).
     Globstar(Option<u32>),
     /// Any other component, matched within one path component.
     Segment(&'p str),
 }
 
-fn parse_component(s: &str) -> Component<'_> {
+pub(crate) fn parse_component(s: &str) -> Component<'_> {
     match s.strip_prefix("**") {
         Some("") => Component::Globstar(None),
         Some(n) if n.bytes().all(|b| b.is_ascii_digit()) => {
