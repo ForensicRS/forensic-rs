@@ -13,7 +13,7 @@
 //! `tests/compile_fail/` (RFC 0001 implementation plan, workstream F).
 
 use super::RegValue;
-use crate::err::ForensicResult;
+use crate::err::{ForensicError, ForensicResult};
 use crate::recovery::Recovered;
 use crate::utils::time::ForensicTimestamp;
 use std::marker::PhantomData;
@@ -430,16 +430,28 @@ pub trait RegistryExt: Registry {
     }
     /// Expands `*` over user SIDs under `HKEY_USERS` — the most repeated
     /// loop in DFIR code. Skips `_Classes`-suffixed per-user class roots.
+    ///
+    /// SIDs are visited in sorted order. A user whose key can't be opened, or
+    /// whose callback returns `Err`, is reported to `on_error` with its SID,
+    /// and the loop goes on: one bad hive never hides the other users. Only
+    /// failing to enumerate `HKEY_USERS` itself is an `Err`.
     fn for_each_user_hive(
         &self,
         f: &mut dyn FnMut(&str, RegKey<'_, Self>) -> ForensicResult<()>,
+        on_error: &mut dyn FnMut(&str, ForensicError),
     ) -> ForensicResult<()> {
         let hku = self.root(PredefinedHive::Users)?;
         let hku_key = RegKey::from_raw(self, hku);
-        for entry in hku_key.keys()? {
-            if entry.name.starts_with("S-") && !entry.name.ends_with("_Classes") {
-                let user_key = hku_key.open(&entry.name)?;
-                f(&entry.name, user_key)?;
+        let mut sids: Vec<String> = hku_key
+            .keys()?
+            .into_iter()
+            .map(|entry| entry.name)
+            .filter(|name| name.starts_with("S-") && !name.ends_with("_Classes"))
+            .collect();
+        sids.sort();
+        for sid in &sids {
+            if let Err(e) = hku_key.open(sid).and_then(|user_key| f(sid, user_key)) {
+                on_error(sid, e);
             }
         }
         Ok(())
@@ -778,9 +790,40 @@ mod tests {
         reg.for_each_user_hive(&mut |sid, _key| {
             visited.push(sid.to_string());
             Ok(())
-        })
+        }, &mut |sid, e| panic!("{sid}: {e}"))
         .unwrap();
         assert_eq!(visited, vec!["S-1-5-21-1".to_string()]);
+    }
+
+    #[test]
+    fn for_each_user_hive_reports_a_failing_user_and_visits_the_rest_in_order() {
+        let mut tree = BTreeMap::new();
+        tree.insert(
+            String::new(),
+            (vec![], vec!["S-1-5-21-2".to_string(), "S-1-5-21-1".to_string()]),
+        );
+        tree.insert("S-1-5-21-1".to_string(), (vec![], vec![]));
+        tree.insert("S-1-5-21-2".to_string(), (vec![], vec![]));
+        let reg = MiniRegistry {
+            tree,
+            cache: Mutex::new(BTreeMap::new()),
+            counter: Mutex::new(0),
+        };
+        let mut visited = Vec::new();
+        let mut failed = Vec::new();
+        reg.for_each_user_hive(
+            &mut |sid, _key| {
+                visited.push(sid.to_string());
+                if sid == "S-1-5-21-1" {
+                    return Err(ForensicError::other("test", "corrupt hive".into()));
+                }
+                Ok(())
+            },
+            &mut |sid, _e| failed.push(sid.to_string()),
+        )
+        .unwrap();
+        assert_eq!(visited, vec!["S-1-5-21-1".to_string(), "S-1-5-21-2".to_string()]);
+        assert_eq!(failed, vec!["S-1-5-21-1".to_string()]);
     }
 
     #[test]

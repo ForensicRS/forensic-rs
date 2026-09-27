@@ -1761,6 +1761,19 @@ impl ForensicError {
         })
     }
 
+    /// Whether this is a registry key or value that doesn't exist: "absent", which a caller
+    /// usually tolerates, as opposed to a read that failed. Looks through
+    /// [`with_path`](Self::with_path)/[`with_offset`](Self::with_offset) context.
+    pub fn is_registry_not_found(&self) -> bool {
+        match self {
+            Self::Registry(RegistryError::KeyNotFound { .. } | RegistryError::ValueNotFound { .. }) => {
+                true
+            }
+            Self::Contextualized { inner, .. } => inner.is_registry_not_found(),
+            _ => false,
+        }
+    }
+
     /// Creates a registry value type validation error
     ///
     /// Use this when a registry value exists but has the wrong data type.

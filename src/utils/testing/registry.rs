@@ -538,7 +538,7 @@ mod new_registry_trait_tests {
         reg.for_each_user_hive(&mut |sid, _key| {
             visited.push(sid.to_string());
             Ok(())
-        })
+        }, &mut |sid, e| panic!("{sid}: {e}"))
         .unwrap();
         assert_eq!(
             visited,

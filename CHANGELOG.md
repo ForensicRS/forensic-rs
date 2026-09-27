@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TestingRegistry::add_key` and `TestingRegistry::set_last_write`, plus
   `MountedCell::last_write`: tests can now check that key timestamps are carried through.
   Keys have no timestamp until one is set.
+- `ForensicError::is_registry_not_found()`: tells a key or value that is absent from a read that
+  failed, looking through path/offset context.
+- `windows::users_with_errors`: the user list plus every failure met while building it. Absent
+  data (no `ProfileList`, no `ProfileImagePath`) is not an error.
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,
@@ -198,6 +202,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RecoveryReport` (`src/recovery/mod.rs`) and `ForensicRows::scan_report()` (defaulted to `None`): scan-level diagnostics — units walked, candidates found/admitted/rejected/unreadable — that a `RecoverRows` cursor can report alongside its rows. Two independent crates (an ESE table-row carver, a registry hive-cell carver) were already computing these counts by hand with nowhere to put them; a caller could learn a recovered row's own trustworthiness but never how hard the scan behind it looked, which is itself case-relevant.
 ### Changed
 
+- `RegistryExt::for_each_user_hive` takes an `on_error: &mut dyn FnMut(&str, ForensicError)`
+  callback and visits SIDs in sorted order. A user whose key can't be opened, or whose callback
+  fails, goes to `on_error` and the loop continues; it used to stop at the first such user and
+  silently skip the rest. `windows::users` now returns the users it could read and logs the
+  failures, instead of failing as a whole.
 - `dictionary::FILE_OWNER` is now the ECS `file.owner`; it was `file.OWNER`. Nothing in the
   ecosystem referenced it.
 - `MountResolver::resolve` now probes before it checks budgets, since which budgets apply depends

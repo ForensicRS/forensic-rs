@@ -155,7 +155,7 @@ fn for_each_user_hive_visits_seeded_sid_only(reg: &TestingRegistry) {
     reg.for_each_user_hive(&mut |sid, _key| {
         visited.push(sid.to_string());
         Ok(())
-    })
+    }, &mut |sid, e| panic!("{sid}: {e}"))
     .unwrap();
     assert_eq!(visited, vec![SID.to_string()]);
 }

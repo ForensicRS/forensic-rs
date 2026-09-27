@@ -13,7 +13,7 @@
 
 use super::{Registry, RegistryExt};
 use crate::core::path::FPathBuf;
-use crate::err::ForensicResult;
+use crate::err::{ForensicError, ForensicResult};
 
 const CURRENT_VERSION: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
 
@@ -54,49 +54,101 @@ pub fn system_root(reg: &dyn Registry) -> ForensicResult<FPathBuf> {
 /// [`RegistryExt::for_each_user_hive`]) correlated against `ProfileList`
 /// (SID -> profile path), with `%SystemRoot%` expansion. A SID present in
 /// one but not the other still surfaces.
+///
+/// A per-user failure is only logged here; use [`users_with_errors`] when
+/// it has to reach a report.
 pub fn users(reg: &dyn Registry) -> ForensicResult<Vec<UserProfile>> {
-    let sys_root = system_root(reg).ok();
+    let (profiles, errors) = users_with_errors(reg)?;
+    for e in errors {
+        crate::warn!("windows::users: skipped part of a user profile: {}", e);
+    }
+    Ok(profiles)
+}
+
+/// [`users`], plus every failure met along the way. Data that is simply
+/// absent (no `ProfileList`, no `HKEY_USERS`, a profile with no
+/// `ProfileImagePath`) is not an error; a key or value that exists but can't
+/// be read is, and the remaining users are still returned.
+pub fn users_with_errors(
+    reg: &dyn Registry,
+) -> ForensicResult<(Vec<UserProfile>, Vec<ForensicError>)> {
+    let mut errors = Vec::new();
+    let sys_root = match system_root(reg) {
+        Ok(root) => Some(root),
+        Err(e) => {
+            keep_unless_absent(Err(e), &mut errors);
+            None
+        }
+    };
     let profile_list_path = format!(r"{CURRENT_VERSION}\ProfileList");
     let mut profiles = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
-    if let Ok(profile_list) = reg.key(&profile_list_path) {
-        for entry in profile_list.keys()? {
-            if !entry.name.starts_with("S-") {
-                continue;
+    let entries = reg
+        .key(&profile_list_path)
+        .and_then(|profile_list| Ok((profile_list.keys()?, profile_list)));
+    match entries {
+        Ok((entries, profile_list)) => {
+            for entry in entries {
+                if !entry.name.starts_with("S-") {
+                    continue;
+                }
+                let raw_path = profile_list
+                    .open(&entry.name)
+                    .and_then(|k| k.value("ProfileImagePath"))
+                    .and_then(String::try_from);
+                let profile_path = match raw_path {
+                    Ok(p) => Some(expand_system_root(p, sys_root.as_ref())),
+                    Err(e) => {
+                        keep_unless_absent(Err(e), &mut errors);
+                        None
+                    }
+                };
+                let name = profile_path
+                    .as_deref()
+                    .and_then(|p| p.rsplit(['\\', '/']).next())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                seen.insert(entry.name.clone());
+                profiles.push(UserProfile {
+                    sid: entry.name,
+                    profile_path: profile_path.map(FPathBuf::from).unwrap_or_default(),
+                    name,
+                });
             }
-            let profile_path: Option<String> = profile_list
-                .open(&entry.name)
-                .and_then(|k| k.value("ProfileImagePath"))
-                .ok()
-                .and_then(|v| String::try_from(v).ok())
-                .map(|p| expand_system_root(p, sys_root.as_ref()));
-            let name = profile_path
-                .as_deref()
-                .and_then(|p| p.rsplit(['\\', '/']).next())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-            seen.insert(entry.name.clone());
-            profiles.push(UserProfile {
-                sid: entry.name,
-                profile_path: profile_path.map(FPathBuf::from).unwrap_or_default(),
-                name,
-            });
         }
+        Err(e) => keep_unless_absent(Err(e), &mut errors),
     }
 
-    reg.for_each_user_hive(&mut |sid, _key| {
-        if seen.insert(sid.to_string()) {
-            profiles.push(UserProfile {
-                sid: sid.to_string(),
-                profile_path: FPathBuf::default(),
-                name: None,
-            });
-        }
-        Ok(())
-    })?;
+    let mut user_errors = Vec::new();
+    let walked = reg.for_each_user_hive(
+        &mut |sid, _key| {
+            if seen.insert(sid.to_string()) {
+                profiles.push(UserProfile {
+                    sid: sid.to_string(),
+                    profile_path: FPathBuf::default(),
+                    name: None,
+                });
+            }
+            Ok(())
+        },
+        &mut |_sid, e| user_errors.push(e),
+    );
+    keep_unless_absent(walked, &mut errors);
+    for e in user_errors {
+        keep_unless_absent(Err(e), &mut errors);
+    }
 
-    Ok(profiles)
+    Ok((profiles, errors))
+}
+
+/// Records a failure, but not a key or value that is simply absent.
+fn keep_unless_absent(result: ForensicResult<()>, errors: &mut Vec<ForensicError>) {
+    if let Err(e) = result {
+        if !e.is_registry_not_found() {
+            errors.push(e);
+        }
+    }
 }
 
 fn expand_system_root(path: String, sys_root: Option<&FPathBuf>) -> String {
@@ -242,7 +294,10 @@ mod tests {
                 format!("{parent_path}\\{name}")
             };
             if !self.values.contains_key(&full) && !self.children.contains_key(&full) {
-                return Err(crate::err::ForensicError::other("registry", format!("no such key: {full}")));
+                return Err(crate::err::ForensicError::registry_key_not_found(
+                    PredefinedHive::LocalMachine,
+                    Some(full.into()),
+                ));
             }
             Ok(self.intern(full))
         }
@@ -255,7 +310,13 @@ mod tests {
                 .get(&path)
                 .and_then(|values| values.iter().find(|(n, _)| n == value))
                 .map(|(_, v)| v.clone())
-                .ok_or_else(|| crate::err::ForensicError::other("registry", "value not found".to_string()))
+                .ok_or_else(|| {
+                    crate::err::ForensicError::registry_value_not_found(
+                        PredefinedHive::LocalMachine,
+                        Some(path.into()),
+                        value,
+                    )
+                })
         }
         fn values_raw(&self, key: &RawKey) -> ForensicResult<Vec<(String, RegValue)>> {
             let path = self.path_of(key)?;
@@ -337,5 +398,24 @@ mod tests {
         assert_eq!(profiles[1].sid, "S-1-5-21-2");
         assert!(profiles[1].profile_path.as_str().is_empty());
         assert_eq!(profiles[1].name, None);
+    }
+
+    #[test]
+    fn users_with_errors_reports_an_unreadable_profile_path_and_keeps_the_user() {
+        let mut reg = MiniWindowsRegistry::new();
+        reg.values.insert(
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\S-1-5-21-1".to_string(),
+            vec![("ProfileImagePath".to_string(), RegValue::DWord(7))],
+        );
+        let (profiles, errors) = users_with_errors(&reg).unwrap();
+        assert_eq!(profiles.len(), 2);
+        assert!(profiles[0].profile_path.as_str().is_empty());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+
+        // An absent value is not an error.
+        reg.values.remove(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\S-1-5-21-1");
+        let (profiles, errors) = users_with_errors(&reg).unwrap();
+        assert_eq!(profiles.len(), 2);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 }
