@@ -78,7 +78,7 @@ impl ArtifactParserFactory for AutorunParser {
                 data.insert(Text::Borrowed("autorun.name"), Field::Text(Text::Owned(value_name.clone())));
                 data.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Owned(format!("{:?}", reg_val))));
                 data.insert(Text::Borrowed(USER_NAME), Field::Text(Text::Owned(user.sid.clone())));
-                data.insert(Text::Borrowed("@timestamp"),
+                data.insert(Text::Borrowed(TIMESTAMP),
                     Field::Date(Filetime::with_ymd_and_hms(2024, 3, 15, 10, 30, 0, 0).into()));
 
                 records.push(Ok(data));
@@ -268,7 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enricher(Box::new(UserProfileEnricher::new()))
         .analyzer(Box::new(SuspiciousAutorunAnalyzer))
         .sink(Box::new(ReportSink::new()))
-        .sink(Box::new(TimelineSink::new("@timestamp")))
+        .sink(Box::new(TimelineSink::new(TIMESTAMP)))
         .sink(Box::new(FindingCollector::with_min_severity(FindingSeverity::Low)))
         .on_parser_error(ErrorAction::Continue)
         .build()?;

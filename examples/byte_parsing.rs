@@ -79,7 +79,7 @@ fn build_forensic_data(record: &RecycleBinRecord) -> ForensicData {
     );
     data.set(FILE_NAME, record.original_name.clone());
     data.set(FILE_SIZE, record.original_size);
-    data.set("@timestamp", record.deleted_at);
+    data.set(TIMESTAMP, record.deleted_at);
     data
 }
 

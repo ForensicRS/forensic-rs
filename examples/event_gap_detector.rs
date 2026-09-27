@@ -91,7 +91,7 @@ impl ArtifactParserFactory for MockEvtxParser {
             data.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
             data.insert(Text::Borrowed(EVENT_CODE), Field::U64(event_id));
             data.insert(Text::Borrowed("event.channel"), Field::Text(Text::Borrowed(channel)));
-            data.insert(Text::Borrowed("@timestamp"),
+            data.insert(Text::Borrowed(TIMESTAMP),
                 Field::Date(ForensicTimestamp::from_unix_secs(unix_secs as i64)));
 
             Ok(data)
@@ -147,7 +147,7 @@ impl Analyzer for EventGapDetector {
         };
 
         // Extract timestamp
-        let ts = match data.field("@timestamp") {
+        let ts = match data.field(TIMESTAMP) {
             Some(Field::Date(timestamp)) => *timestamp,
             _ => ForensicTimestamp::from_unix_secs(0),
         };
@@ -286,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parser(std::sync::Arc::new(MockEvtxParser::security_log()))
         .parser(std::sync::Arc::new(MockEvtxParser::system_log()))
         .analyzer(Box::new(EventGapDetector::new()))
-        .sink(Box::new(TimelineSink::new("@timestamp")))
+        .sink(Box::new(TimelineSink::new(TIMESTAMP)))
         .sink(Box::new(FindingCollector::new()))
         .on_parser_error(ErrorAction::Continue)
         .build()?;

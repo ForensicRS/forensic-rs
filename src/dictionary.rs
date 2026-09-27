@@ -1,6 +1,10 @@
 //https://www.elastic.co/guide/en/ecs/current/index.html
 // Some of this events are automatically created when you map a SiemLog to a SiemEvent. The object field types are not supported for simplicity in uSIEM.
 // If needed join the values by the character "\n" into a single String. Useful for file names.
+
+/// ECS `@timestamp`: when the event happened, read from the evidence. Leave it unset rather
+/// than filling it with a parse time or a key's last-write time that isn't the event time.
+pub const TIMESTAMP: &str = "@timestamp";
 pub const EVENT_OUTCOME: &str = "event.outcome";
 /// The action captured by the event. This describes the information in the event. It is more specific than event.category. Examples are group-add, process-started, file-created. The value is normally defined by the implementer.
 pub const EVENT_ACTION: &str = "event.action";
@@ -70,7 +74,8 @@ pub const PROCESS_EXECUTABLE: &str = "process.executable";
 
 pub const FILE_INODE: &str = "file.inode";
 pub const FILE_NAME: &str = "file.name";
-pub const FILE_OWNER: &str = "file.OWNER";
+/// ECS `file.owner`: the owner's user name.
+pub const FILE_OWNER: &str = "file.owner";
 pub const FILE_PATH: &str = "file.path";
 pub const FILE_SIZE: &str = "file.size";
 pub const FILE_TYPE: &str = "file.type";

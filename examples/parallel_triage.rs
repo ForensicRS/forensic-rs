@@ -77,7 +77,7 @@ impl ArtifactParserFactory for MockMftParser {
             let mut d = ForensicData::new("WORKSTATION01", mft_artifact(), provenance);
             d.insert(Text::Borrowed("file.path"),  Field::Text(Text::Owned(path.to_string())));
             d.insert(Text::Borrowed("file.inode"), Field::U64(inode));
-            d.insert(Text::Borrowed("@timestamp"),
+            d.insert(Text::Borrowed(TIMESTAMP),
                 Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
@@ -125,7 +125,7 @@ impl ArtifactParserFactory for MockEvtxParser {
             d.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
             d.insert(Text::Borrowed("event.code"),      Field::U64(event_id));
             d.insert(Text::Borrowed("event.channel"),   Field::Text(Text::Borrowed(channel)));
-            d.insert(Text::Borrowed("@timestamp"),
+            d.insert(Text::Borrowed(TIMESTAMP),
                 Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
@@ -179,7 +179,7 @@ impl ArtifactParserFactory for MockAutorunParser {
             d.insert(Text::Borrowed("autorun.name"),  Field::Text(Text::Borrowed(name)));
             d.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Borrowed(cmd)));
             d.insert(Text::Borrowed("autorun.user"),  Field::Text(Text::Borrowed(sid)));
-            d.insert(Text::Borrowed("@timestamp"),
+            d.insert(Text::Borrowed(TIMESTAMP),
                 Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
             Ok(d)
         }).collect();
@@ -436,7 +436,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Low-level task — has explicit parser, bypasses the pool.
         .task(Box::new(autorun_task))
         // Shared sinks — called on the main thread for all tasks.
-        .sink(Box::new(TimelineSink::new("@timestamp")))
+        .sink(Box::new(TimelineSink::new(TIMESTAMP)))
         .sink(Box::new(FindingCollector::new()))
         .sink(Box::new(ReportSink::new()))
         .build()?;

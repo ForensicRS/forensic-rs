@@ -104,7 +104,7 @@ impl EventRecord {
             Field::U64(event.event_id as u64),
         );
         fd.insert(
-            Text::Borrowed("@timestamp"),
+            Text::Borrowed(crate::dictionary::TIMESTAMP),
             Field::Date(event.timestamp),
         );
         fd.insert(

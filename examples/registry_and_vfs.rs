@@ -146,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     data.add_field(SOURCE_PORT, 52341u64.into());
 
     // Insert a timestamp
-    data.add_field("@timestamp",
+    data.add_field(TIMESTAMP,
         Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 14, 30, 0, 0).into()));
 
     // Typed accessors (with lazy coercion)

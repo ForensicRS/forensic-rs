@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CollectingOutput`, so a downstream test can drive an `ArtifactParserFactory` directly
   (`can_parse`, `open`, drain the run) instead of building a whole `TriagePipeline` with a custom
   `TriageSink`.
+- `dictionary::TIMESTAMP` (`@timestamp`), so crates stop writing the literal.
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,
@@ -194,6 +195,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RecoveryReport` (`src/recovery/mod.rs`) and `ForensicRows::scan_report()` (defaulted to `None`): scan-level diagnostics — units walked, candidates found/admitted/rejected/unreadable — that a `RecoverRows` cursor can report alongside its rows. Two independent crates (an ESE table-row carver, a registry hive-cell carver) were already computing these counts by hand with nowhere to put them; a caller could learn a recovered row's own trustworthiness but never how hard the scan behind it looked, which is itself case-relevant.
 ### Changed
 
+- `dictionary::FILE_OWNER` is now the ECS `file.owner`; it was `file.OWNER`. Nothing in the
+  ecosystem referenced it.
 - `MountResolver::resolve` now probes before it checks budgets, since which budgets apply depends
   on the winning factory's `hop_cost()`. Content interning now hashes in 64 KiB chunks instead of
   materializing the whole file through the `SpillStore`, so a digest-configured resolver no longer
