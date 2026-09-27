@@ -257,6 +257,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-parser analyzer could not tell "not seen yet" from "absent" and aggregate findings fired
   once per parser. It now finalizes once, after the last parser, like `ParallelPipeline`'s
   `AnalysisModule` (still skipped when the run halts).
+- `JsonlTimelineSink`, `JsonlFindingSink` and `ProvenanceJsonlSink` dropped write errors
+  (`let _ = write_all(b"\n")`) and turned serialization failures into a counter while still
+  returning `Ok`. Each line is now serialized in memory first, so a failure leaves no partial
+  line, and any serialization or write failure is returned as an `Err` (and still counted).
 - Binary offset validation is overflow-safe, and new fallible endian-explicit unpack helpers prevent truncated artifact data from panicking.
 - `ForensicError` now preserves original `std::io::Error` values created through `From<std::io::Error>` or `io_error_with_source()`, exposing them through `Error::source()`.
 - Parallel pipeline worker panics are reported as task errors without preventing healthy tasks from completing.

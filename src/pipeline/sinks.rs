@@ -158,6 +158,22 @@ impl TriageSink for FindingCollector {
 #[cfg(feature = "serde")]
 use std::io::Write;
 
+/// Writes `value` as one JSON line. It is serialized in memory first, so a value that fails to
+/// serialize leaves no partial line behind, and a write failure is an error rather than a
+/// silently short file.
+#[cfg(feature = "serde")]
+fn write_json_line<T: serde::Serialize + ?Sized>(
+    writer: &mut impl Write,
+    value: &T,
+    sink: &'static str,
+) -> ForensicResult<()> {
+    let mut line = serde_json::to_vec(value)
+        .map_err(|e| crate::err::ForensicError::other(sink, e.to_string()))?;
+    line.push(b'\n');
+    writer.write_all(&line)?;
+    Ok(())
+}
+
 /// A streaming sink that writes each `ForensicData` record as a JSON line.
 ///
 /// Uses constant memory regardless of dataset size. Records appear in parser
@@ -200,7 +216,8 @@ impl<W: Write> JsonlTimelineSink<W> {
         self.record_count
     }
 
-    /// Number of serialization errors encountered.
+    /// Number of lines that failed to serialize or write. Each failure is also returned as an
+    /// `Err` from the call that hit it.
     pub fn error_count(&self) -> u64 {
         self.errors
     }
@@ -228,13 +245,11 @@ impl<W: Write + 'static> TriageSink for JsonlTimelineSink<W> {
                 "jsonl_timeline_sink drops provenance, anomalies and confidence; use ProvenanceJsonlSink for output an examiner keeps"
             );
         }
-        match serde_json::to_writer(&mut self.writer, data) {
-            Ok(()) => {
-                let _ = self.writer.write_all(b"\n");
-                self.record_count += 1;
-            }
-            Err(_) => {
+        match write_json_line(&mut self.writer, data, "JsonlTimelineSink") {
+            Ok(()) => self.record_count += 1,
+            Err(e) => {
                 self.errors += 1;
+                return Err(e);
             }
         }
         Ok(())
@@ -289,7 +304,8 @@ impl<W: Write> JsonlFindingSink<W> {
         self.total_count
     }
 
-    /// Number of serialization errors encountered.
+    /// Number of lines that failed to serialize or write. Each failure is also returned as an
+    /// `Err` from the call that hit it.
     pub fn error_count(&self) -> u64 {
         self.errors
     }
@@ -312,13 +328,11 @@ impl<W: Write + 'static> TriageSink for JsonlFindingSink<W> {
 
     fn on_finding(&mut self, finding: &Finding) -> ForensicResult<()> {
         if finding.severity >= self.min_severity {
-            match serde_json::to_writer(&mut self.writer, finding) {
-                Ok(()) => {
-                    let _ = self.writer.write_all(b"\n");
-                    self.total_count += 1;
-                }
-                Err(_) => {
+            match write_json_line(&mut self.writer, finding, "JsonlFindingSink") {
+                Ok(()) => self.total_count += 1,
+                Err(e) => {
                     self.errors += 1;
+                    return Err(e);
                 }
             }
         }
@@ -411,7 +425,8 @@ impl<W: Write, S: Write> ProvenanceJsonlSink<W, S> {
         self.record_count
     }
 
-    /// Number of serialization errors encountered.
+    /// Number of lines that failed to serialize or write. Each failure is also returned as an
+    /// `Err` from the call that hit it.
     pub fn error_count(&self) -> u64 {
         self.errors
     }
@@ -448,13 +463,11 @@ impl<W: Write + 'static, S: Write + 'static> TriageSink for ProvenanceJsonlSink<
             confidence: data.confidence(&self.store),
             anomalies: data.anomalies().flags().names().collect(),
         };
-        match serde_json::to_writer(&mut self.records, &line) {
-            Ok(()) => {
-                let _ = self.records.write_all(b"\n");
-                self.record_count += 1;
-            }
-            Err(_) => {
+        match write_json_line(&mut self.records, &line, "ProvenanceJsonlSink") {
+            Ok(()) => self.record_count += 1,
+            Err(e) => {
                 self.errors += 1;
+                return Err(e);
             }
         }
         Ok(())
@@ -701,5 +714,38 @@ mod tests {
         };
 
         assert_eq!(export(), export());
+    }
+
+    /// A writer whose every write fails, like a full disk.
+    #[cfg(feature = "serde")]
+    struct FailingWriter;
+
+    #[cfg(feature = "serde")]
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("disk full"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn jsonl_sinks_report_write_failures() {
+        let data = ForensicData::new("h", Artifact::Unknown, test_provenance_id());
+        let finding = Finding::new(FindingSeverity::High, FindingCategory::AntiForensics, "x");
+
+        let mut timeline = JsonlTimelineSink::new(FailingWriter);
+        assert!(timeline.on_data(&data).is_err());
+        assert_eq!((timeline.record_count(), timeline.error_count()), (0, 1));
+
+        let mut findings = JsonlFindingSink::new(FailingWriter);
+        assert!(findings.on_finding(&finding).is_err());
+        assert_eq!((findings.total_count(), findings.error_count()), (0, 1));
+
+        let mut provenance = ProvenanceJsonlSink::new(FailingWriter, Vec::new(), ProvenanceStore::new());
+        assert!(provenance.on_data(&data).is_err());
+        assert_eq!((provenance.record_count(), provenance.error_count()), (0, 1));
     }
 }
