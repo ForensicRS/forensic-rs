@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `utils::testing::conformance` and the exported `fs_conformance_battery!` macro: the shared
+  `FileSystem` conformance battery, so downstream backends (volume systems, NTFS, archives) run
+  exactly the assertions core's own backends run.
 - `utils::win::decompress::lznt1::decompress_bounded(input, out, max_out)`: LZNT1 with an output
   cap, for attacker-influenced input.
 

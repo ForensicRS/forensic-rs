@@ -6,6 +6,7 @@
 //! Reachable at `forensic_rs::utils::testing::*` or, more discoverably, via
 //! `forensic_rs::prelude::testing::*`.
 
+pub mod conformance;
 mod db;
 mod events;
 mod factories;
