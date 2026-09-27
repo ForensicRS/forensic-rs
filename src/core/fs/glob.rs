@@ -83,7 +83,15 @@ fn max_walk_depth(pattern: &str) -> Option<u32> {
 /// See the [module docs](self) for the supported syntax.
 pub fn matches(pattern: &str, path: &FPath, cs: CaseSensitivity) -> bool {
     let pattern_comps = split_components(pattern);
-    let path_comps: Vec<&str> = path.components().map(|c| c.as_str()).collect();
+    // The pattern side drops separators, so a leading root means nothing
+    // there; drop it here too, or no rooted path (`/Windows/..`, as a
+    // `ChRootFileSystem` or an absolute `StdVirtualFS` path yields) could
+    // ever match.
+    let path_comps: Vec<&str> = path
+        .components()
+        .filter(|c| !matches!(c, crate::core::path::Component::RootDir))
+        .map(|c| c.as_str())
+        .collect();
     match_components(&pattern_comps, &path_comps, cs)
 }
 
@@ -551,6 +559,23 @@ mod tests {
                 .with_file("Users/alice/NTUSER.DAT", b"a".to_vec())
                 .with_file("Users/bob/NTUSER.DAT", b"b".to_vec())
                 .with_file("Users/bob/deep/er/x.log.1", b"c".to_vec())
+        }
+
+        #[test]
+        fn rooted_paths_match_rooted_and_unrooted_patterns() {
+            let cs = CaseSensitivity::Sensitive;
+            assert!(matches("/etc/*", FPath::new("/etc/passwd"), cs));
+            assert!(matches("\\Windows\\*.pf", FPath::new("/Windows/A.pf"), cs));
+            assert!(matches("Windows/*.pf", FPath::new("/Windows/A.pf"), cs));
+        }
+
+        #[test]
+        fn a_rooted_literal_prefix_matches_through_a_chroot() {
+            let inner = InMemoryVirtualFileSystem::new()
+                .with_file("ev/Windows/Prefetch/A.pf", b"x".to_vec());
+            let fs = crate::core::fs::ChRootFileSystem::new("ev", std::sync::Arc::new(inner));
+            let got = fs.glob("\\Windows\\Prefetch\\*.pf").unwrap();
+            assert_eq!(got.len(), 1, "{got:?}");
         }
 
         #[test]
