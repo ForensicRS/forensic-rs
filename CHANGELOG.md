@@ -227,6 +227,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compression-unit padding) as data. Every read is now bounds-checked, back-references stay in
   the current chunk, and a zero header ends the stream.
 
+- `ContainerFs::read_dir` on a container nested inside a mounted container (`disk.001/media`)
+  returned the bare file instead of listing its contents: only a container on the base
+  filesystem was looked inside. Now any file the descent policy considers a container is, at any
+  depth; `PathAttributes` on a nested ordinary file still answers for the file itself.
 - Binary offset validation is overflow-safe, and new fallible endian-explicit unpack helpers prevent truncated artifact data from panicking.
 - `ForensicError` now preserves original `std::io::Error` values created through `From<std::io::Error>` or `io_error_with_source()`, exposing them through `Error::source()`.
 - Parallel pipeline worker panics are reported as task errors without preventing healthy tasks from completing.

@@ -208,14 +208,20 @@ impl ContainerFs {
 
         loop {
             // Ordinary resolution short-circuits: a real directory, an entry nested inside an
-            // already-mounted fs (hops > 0), or -- for open()/metadata() (`inclusive: false`)
-            // only -- the container file's own bytes/metadata. The one case this must NOT
-            // short-circuit on is `inclusive: true` (read_dir/attributes) hitting the container
-            // file itself on the very first lookup: that call means "look inside it", so it
-            // must fall through to the mount-and-descend logic below instead of returning the
-            // bare file.
+            // already-mounted fs, or -- for open()/metadata() (`inclusive: false`) only -- the
+            // container file's own bytes/metadata. The one case this must NOT short-circuit on
+            // is `inclusive: true` (read_dir/attributes) landing on a file the descent policy
+            // considers a container, at any hop: that call means "look inside it" --
+            // `disk.001/media` is a container inside a container -- so it falls through to the
+            // mount-and-descend logic below. Any other file resolves to itself, so `attributes`
+            // answers for it and `read_dir` fails in its owning filesystem, as it must on a file.
             if let Ok(meta) = fs.metadata(rest.as_path()) {
-                if !(inclusive && hops == 0 && meta.is_file()) {
+                let look_inside = inclusive
+                    && meta.is_file()
+                    && self
+                        .policy
+                        .should_probe(rest.as_path(), meta.size, meta.attributes);
+                if !look_inside {
                     return Ok((fs, rest, locator));
                 }
             }
@@ -599,6 +605,41 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, vec!["report.tc/inner.txt", "report.tc/other.txt"]);
+    }
+
+    #[test]
+    fn read_dir_lists_a_container_nested_inside_a_mounted_one() {
+        // A toy container stored as a split raw image: disk.001 + disk.002 -> `media`, whose
+        // bytes are themselves a container. `media` has no extension; it is reached through
+        // FileAttributes::VOLUME.
+        let inner = build_toy_container(&[("inner.txt", "hello"), ("other.txt", "world")]);
+        let (a, b) = inner.split_at(10);
+        let base = InMemoryVirtualFileSystem::new()
+            .with_file("disk.001", a.to_vec())
+            .with_file("disk.002", b.to_vec());
+        let resolver = Arc::new(
+            MountResolver::builder()
+                .factory(Arc::new(ToyContainerFactory))
+                .factory(Arc::new(crate::core::fs::SplitRawFactory::new()))
+                .build(),
+        );
+        let fs = ContainerFs::new(Arc::new(base), resolver);
+        let mut names: Vec<String> = fs
+            .read_dir(FPath::new("disk.001/media"))
+            .unwrap()
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["disk.001/media/inner.txt", "disk.001/media/other.txt"]
+        );
+        assert_eq!(
+            fs.read_all(FPath::new("disk.001/media/other.txt")).unwrap(),
+            b"world"
+        );
+        // read_dir on a nested file that is no container still fails.
+        assert!(fs.read_dir(FPath::new("disk.001/media/other.txt")).is_err());
     }
 
     #[test]
