@@ -305,7 +305,34 @@ pub(crate) fn derive_acquisition(sources: &TriageSources) -> (Acquisition, Optio
 }
 
 impl<'a> ParseContext<'a> {
-    pub(crate) fn new(
+    /// The context a pipeline hands each parser: host and provenance store from `ctx`,
+    /// acquisition derived from `sources`.
+    ///
+    /// Pipelines build this themselves. It is public so a test can drive an
+    /// [`ArtifactParserFactory`](crate::traits::forensic::ArtifactParserFactory) directly --
+    /// `can_parse`, `open`, then drain the run with
+    /// [`collect_run`](crate::utils::testing::collect_run) -- without a whole `TriagePipeline`
+    /// and a custom sink.
+    ///
+    /// ```
+    /// use forensic_rs::prelude::*;
+    /// use forensic_rs::prelude::testing::{InMemoryVirtualFileSystem, TestingRegistry, collect_run};
+    /// use std::sync::Arc;
+    ///
+    /// let sources = TriageSources::new(
+    ///     Arc::new(InMemoryVirtualFileSystem::new()),
+    ///     Arc::new(TestingRegistry::new()),
+    /// );
+    /// let triage = TriageContext::default();
+    /// let cancellation = CancellationToken::new();
+    /// let ctx = ParseContext::new(&sources, &triage, &cancellation);
+    ///
+    /// let parser = ContainerInventoryParser::new();
+    /// assert!(parser.can_parse(&ctx));
+    /// let records = collect_run(parser.open(&ctx).unwrap()).unwrap();
+    /// assert!(records.is_empty());
+    /// ```
+    pub fn new(
         sources: &'a TriageSources,
         ctx: &TriageContext,
         cancellation: &CancellationToken,

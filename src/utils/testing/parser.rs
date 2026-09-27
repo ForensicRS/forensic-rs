@@ -3,9 +3,35 @@ use crate::data::ForensicData;
 use crate::err::ForensicResult;
 use crate::field::Text;
 use crate::pipeline::context::ParseContext;
-use crate::traits::forensic::{ArtifactParserFactory, ParserDescriptor, ParserRun};
+use crate::traits::forensic::{
+    ArtifactParserFactory, OutputFlow, ParserDescriptor, ParserOutput, ParserRun,
+};
 
 use super::test_provenance_id;
+
+/// A [`ParserOutput`] that keeps every record it is given, in order.
+#[derive(Default)]
+pub struct CollectingOutput(pub Vec<ForensicResult<ForensicData>>);
+
+impl ParserOutput for CollectingOutput {
+    fn emit(&mut self, record: ForensicResult<ForensicData>) -> OutputFlow {
+        self.0.push(record);
+        OutputFlow::Continue
+    }
+}
+
+/// Drains a [`ParserRun`], `Pull` or `Push`, into a `Vec`. Per-record errors stay in the `Vec`;
+/// a `Push` driver that fails as a whole is the outer `Err`.
+pub fn collect_run(run: ParserRun) -> ForensicResult<Vec<ForensicResult<ForensicData>>> {
+    match run {
+        ParserRun::Pull(stream) => Ok(stream.collect()),
+        ParserRun::Push(drive) => {
+            let mut out = CollectingOutput::default();
+            drive(&mut out)?;
+            Ok(out.0)
+        }
+    }
+}
 
 /// Builder for [`TestParserFactory`], a shared, public test double of
 /// [`ArtifactParserFactory`].
@@ -163,7 +189,6 @@ mod tests {
     use crate::core::fs::StdVirtualFS;
     use crate::pipeline::context::TriageContext;
     use crate::pipeline::sources::TriageSources;
-    use crate::traits::forensic::{OutputFlow, ParserOutput};
     use crate::utils::testing::TestingRegistry;
     use crate::bridge::CancellationToken;
 
@@ -178,24 +203,8 @@ mod tests {
         (TriageContext::default(), CancellationToken::new())
     }
 
-    /// Drains a [`ParserRun`] into a `Vec`, regardless of whether it is
-    /// `Pull` or `Push` — the common shape a test needs.
-    struct CollectSink(Vec<ForensicResult<ForensicData>>);
-    impl ParserOutput for CollectSink {
-        fn emit(&mut self, record: ForensicResult<ForensicData>) -> OutputFlow {
-            self.0.push(record);
-            OutputFlow::Continue
-        }
-    }
     fn collect(run: ParserRun) -> Vec<ForensicResult<ForensicData>> {
-        match run {
-            ParserRun::Pull(stream) => stream.collect(),
-            ParserRun::Push(drive) => {
-                let mut sink = CollectSink(Vec::new());
-                drive(&mut sink).unwrap();
-                sink.0
-            }
-        }
+        collect_run(run).unwrap()
     }
 
     #[test]

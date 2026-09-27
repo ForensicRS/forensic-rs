@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WindowsArtifacts::{I30, UsnJrnl, Secure}` for the NTFS directory index, change journal and
   `$Secure:$SDS`, which crates had to tag as `Other(..)`, and
   `CommonArtifact::ContainerInventory`. All round-trip through `Display`/parsing.
+- `ParseContext::new` is public, and `utils::testing` gains `collect_run` and
+  `CollectingOutput`, so a downstream test can drive an `ArtifactParserFactory` directly
+  (`can_parse`, `open`, drain the run) instead of building a whole `TriagePipeline` with a custom
+  `TriageSink`.
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,
