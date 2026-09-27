@@ -324,6 +324,9 @@ pub trait FileSystem: Send + Sync {
     fn as_media_map(&self) -> Option<&dyn MediaMap> {
         None
     }
+    fn as_deleted(&self) -> Option<&dyn DeletedFiles> {
+        None
+    }
 }
 
 /// Blanket-impl'd convenience layer over [`FileSystem`]. A backend author
@@ -406,6 +409,88 @@ pub trait MediaMap: FileSystem {
 pub struct MediaOffset {
     pub locator: crate::core::locator::EvidenceLocator,
     pub offset: u64,
+}
+
+/// Files a filesystem still knows about after they were deleted -- an NTFS `$MFT` record that is
+/// no longer in use, an ext4 inode with a zero link count. Discovered via
+/// [`FileSystem::as_deleted`].
+///
+/// Distinct from [`Unallocated`], which hands out raw free space with no structure: every entry
+/// here comes from the filesystem's own metadata, so it has a name, times and a size.
+///
+/// Soundness rules, the same as for any [`Recovered`](crate::recovery::Recovered) value:
+/// - a path that cannot be rebuilt (the parent directory is gone or reused) is `None`, never a
+///   guess;
+/// - content that cannot be read back intact (clusters reallocated, claimed twice) is an `Err`
+///   from [`open_deleted`](DeletedFiles::open_deleted), never empty or partial bytes presented
+///   as the file.
+pub trait DeletedFiles: FileSystem {
+    /// Every deleted entry under the volume rooted at `scope` (`""` or `"/"` when this
+    /// filesystem is the volume itself; a mount point when it wraps other filesystems), plus
+    /// scan-level counters.
+    fn deleted_entries(
+        &self,
+        scope: &FPath,
+    ) -> ForensicResult<(
+        Vec<crate::recovery::Recovered<DeletedEntry>>,
+        crate::recovery::RecoveryReport,
+    )>;
+
+    /// The content of the entry with this [`id`](DeletedEntry::id), from the same `scope`.
+    fn open_deleted(
+        &self,
+        scope: &FPath,
+        id: u64,
+    ) -> ForensicResult<crate::recovery::Recovered<Box<dyn VirtualFile>>>;
+}
+
+/// One deleted file or directory, as reported by [`DeletedFiles::deleted_entries`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct DeletedEntry {
+    /// Backend-defined handle, only meaningful to [`DeletedFiles::open_deleted`] on the same
+    /// filesystem and scope (NTFS: the file reference, entry and sequence number).
+    pub id: u64,
+    /// The full path, when the filesystem can still rebuild it.
+    pub path: Option<FPathBuf>,
+    /// The entry's own name, known even when its parent is gone.
+    pub name: Option<String>,
+    pub metadata: VMetadata,
+    /// Whether [`DeletedFiles::open_deleted`] can return the content.
+    pub content_readable: bool,
+    /// The backend's reason for `content_readable`, e.g. `"recoverable"`, `"reallocated"`.
+    pub content_status: Text,
+}
+
+impl DeletedEntry {
+    /// An entry with no path or name and unreadable content; set the rest with the `with_*`
+    /// methods.
+    pub fn new(id: u64, metadata: VMetadata) -> Self {
+        Self {
+            id,
+            path: None,
+            name: None,
+            metadata,
+            content_readable: false,
+            content_status: Text::Borrowed("unknown"),
+        }
+    }
+
+    pub fn with_path(mut self, path: impl Into<FPathBuf>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub fn with_content(mut self, readable: bool, status: impl Into<Text>) -> Self {
+        self.content_readable = readable;
+        self.content_status = status.into();
+        self
+    }
 }
 
 /// Untyped, uninterpreted facts about one *path*, discovered via

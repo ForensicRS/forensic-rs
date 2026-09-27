@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `utils::win::decompress::lznt1::decompress_bounded(input, out, max_out)`: LZNT1 with an output
   cap, for attacker-influenced input.
 
+- `DeletedFiles` and `DeletedEntry` (`src/traits/vfs.rs`), discovered through the defaulted
+  `FileSystem::as_deleted()`: files a filesystem still describes after deletion (a free `$MFT`
+  record), each a `Recovered<DeletedEntry>`, plus a `RecoveryReport` for the scan. A path that
+  can't be rebuilt is `None`, and content that can't be read back intact is an `Err`.
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,

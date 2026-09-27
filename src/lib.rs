@@ -82,9 +82,9 @@ pub mod prelude {
     pub use crate::traits::registry::windows;
     pub use crate::traits::registry::*;
     pub use crate::traits::vfs::{
-        AlternateStreams, CaseSensitivity, DirEntry, FileAttributes, FileId, FileSystem,
-        FileSystemExt, MacbTimes, MediaMap, MediaOffset, PathAttributes, ReadAt, Region,
-        SourceKind, StreamInfo, Unallocated, VFileType, VirtualFile,
+        AlternateStreams, CaseSensitivity, DeletedEntry, DeletedFiles, DirEntry, FileAttributes,
+        FileId, FileSystem, FileSystemExt, MacbTimes, MediaMap, MediaOffset, PathAttributes,
+        ReadAt, Region, SourceKind, StreamInfo, Unallocated, VFileType, VirtualFile,
     };
     pub use crate::utils::time::{
         Filetime, ForensicTimestamp, Timestamp128, TimestampFlags, TimestampPrecision,
