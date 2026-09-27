@@ -62,6 +62,12 @@ pub enum WindowsArtifacts {
     RdpCache,
     /// Windows Timeline (ActivitiesCache.db)
     Timeline,
+    /// NTFS directory index (`$I30`), including entries left in index slack
+    I30,
+    /// NTFS change journal (`$Extend\$UsnJrnl:$J`)
+    UsnJrnl,
+    /// NTFS security descriptor stream (`$Secure:$SDS`)
+    Secure,
     #[default]
     Unknown,
 }
@@ -169,6 +175,9 @@ pub enum MacArtifacts {
 #[non_exhaustive]
 pub enum CommonArtifact {
     WebBrowsing(WebBrowsingArtifact),
+    /// The list of files and container entries found in the evidence, whatever their format
+    /// (`ContainerInventoryParser`)
+    ContainerInventory,
     Other(String),
     #[default]
     Unknown,
@@ -310,6 +319,9 @@ impl std::fmt::Display for WindowsArtifacts {
             WindowsArtifacts::PowerShellHistory => write!(f, "PowerShellHistory"),
             WindowsArtifacts::RdpCache => write!(f, "RdpCache"),
             WindowsArtifacts::Timeline => write!(f, "Timeline"),
+            WindowsArtifacts::I30 => write!(f, "I30"),
+            WindowsArtifacts::UsnJrnl => write!(f, "UsnJrnl"),
+            WindowsArtifacts::Secure => write!(f, "Secure"),
             WindowsArtifacts::Unknown => write!(f, "Unknown"),
         }
     }
@@ -341,6 +353,7 @@ impl std::fmt::Display for CommonArtifact {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CommonArtifact::WebBrowsing(v) => write!(f, "WebBrowsing::{}", v),
+            CommonArtifact::ContainerInventory => write!(f, "ContainerInventory"),
             CommonArtifact::Other(v) => write!(f, "{}", v),
             CommonArtifact::Unknown => write!(f, "Unknown"),
         }
@@ -722,6 +735,9 @@ pub fn windows_artifacts_from_str(txt: &str) -> WindowsArtifacts {
         "PowerShellHistory" => WindowsArtifacts::PowerShellHistory,
         "RdpCache" => WindowsArtifacts::RdpCache,
         "Timeline" => WindowsArtifacts::Timeline,
+        "I30" => WindowsArtifacts::I30,
+        "UsnJrnl" => WindowsArtifacts::UsnJrnl,
+        "Secure" => WindowsArtifacts::Secure,
         _ => WindowsArtifacts::Other(txt.to_string()),
     }
 }
@@ -799,8 +815,13 @@ pub fn mac_artifact_from_str(txt: &str) -> MacArtifacts {
 pub fn common_artifact_from_str(txt: &str) -> CommonArtifact {
     let (artifact, subartifact) = match txt.find("::") {
         Some(v) => (&txt[0..v], &txt[v + 2..]),
-        None if txt == "Unknown" => return CommonArtifact::Unknown,
-        None => return CommonArtifact::Other(txt.to_string()),
+        None => {
+            return match txt {
+                "Unknown" => CommonArtifact::Unknown,
+                "ContainerInventory" => CommonArtifact::ContainerInventory,
+                _ => CommonArtifact::Other(txt.to_string()),
+            };
+        }
     };
     match artifact {
         "Unknown" => CommonArtifact::Unknown,
@@ -887,6 +908,9 @@ mod tests {
         roundtrip(Artifact::Windows(WindowsArtifacts::PowerShellHistory));
         roundtrip(Artifact::Windows(WindowsArtifacts::RdpCache));
         roundtrip(Artifact::Windows(WindowsArtifacts::Timeline));
+        roundtrip(Artifact::Windows(WindowsArtifacts::I30));
+        roundtrip(Artifact::Windows(WindowsArtifacts::UsnJrnl));
+        roundtrip(Artifact::Windows(WindowsArtifacts::Secure));
         roundtrip(Artifact::Windows(WindowsArtifacts::Unknown));
         roundtrip(Artifact::Windows(WindowsArtifacts::Other(
             "CustomThing".to_string(),
@@ -968,6 +992,7 @@ mod tests {
         roundtrip(Artifact::Common(CommonArtifact::WebBrowsing(
             WebBrowsingArtifact::Cookie,
         )));
+        roundtrip(Artifact::Common(CommonArtifact::ContainerInventory));
         roundtrip(Artifact::Common(CommonArtifact::Unknown));
         roundtrip(Artifact::Common(CommonArtifact::Other(
             "CloudSync".to_string(),

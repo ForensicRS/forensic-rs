@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FileSystem::as_deleted()`: files a filesystem still describes after deletion (a free `$MFT`
   record), each a `Recovered<DeletedEntry>`, plus a `RecoveryReport` for the scan. A path that
   can't be rebuilt is `None`, and content that can't be read back intact is an `Err`.
+- `WindowsArtifacts::{I30, UsnJrnl, Secure}` for the NTFS directory index, change journal and
+  `$Secure:$SDS`, which crates had to tag as `Other(..)`, and
+  `CommonArtifact::ContainerInventory`. All round-trip through `Display`/parsing.
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,
