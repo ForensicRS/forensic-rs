@@ -1,121 +1,143 @@
-use crate::err::ForensicResult;
+//! LZNT1 ([MS-XCA] 2.5), as used by NTFS compression, prefetch and hibernation files.
+//!
+//! The input is attacker-influenced in every forensic use, so every read is bounds-checked, a
+//! back-reference may only reach into the current chunk's output, and [`decompress_bounded`]
+//! caps the output size.
 
-const LZNT1_COMPRESSED_FLAG: usize = 0x8000;
+use crate::err::{ForensicError, ForensicResult};
 
+const LZNT1_COMPRESSED_FLAG: u16 = 0x8000;
+/// Uncompressed size of one LZNT1 chunk.
+pub const LZNT1_CHUNK_SIZE: usize = 4096;
+
+/// Decompresses `in_buf`, appending to `out_buf`. No output bound: prefer
+/// [`decompress_bounded`] for untrusted input.
 pub fn decompress(in_buf: &[u8], out_buf: &mut Vec<u8>) -> ForensicResult<()> {
-    let mut out_idx: usize = 0;
-    let mut in_idx: usize = 0;
+    decompress_bounded(in_buf, out_buf, usize::MAX).map(|_| ())
+}
 
-    let mut length: usize;
-    let mut chunk_len: usize;
-    let mut offset: usize;
-
-    let in_buf_max_size = in_buf.len();
-
-    while in_idx < in_buf_max_size {
-        let in_chunk_base = in_idx;
-        let header = u16::from_le_bytes([in_buf[in_idx], in_buf[in_idx + 1]]) as usize;
+/// Decompresses `in_buf`, appending at most `max_out` bytes to `out_buf`, and returns how many
+/// bytes were appended.
+///
+/// The stream ends at the end of the input or at a `0x0000` chunk header (the padding NTFS writes
+/// after the last chunk of a compression unit). Producing more than `max_out` bytes is an error,
+/// as is any structure pointing outside the input or the current chunk's output.
+pub fn decompress_bounded(
+    in_buf: &[u8],
+    out_buf: &mut Vec<u8>,
+    max_out: usize,
+) -> ForensicResult<usize> {
+    let start_len = out_buf.len();
+    let mut in_idx = 0usize;
+    while in_idx < in_buf.len() {
+        let Some(hdr) = in_buf.get(in_idx..in_idx + 2) else {
+            // A lone trailing byte cannot hold a chunk header: zero is padding, anything else
+            // is a truncated stream.
+            if in_buf[in_idx] == 0 {
+                break;
+            }
+            return Err(ForensicError::compression_error(
+                "lznt1",
+                "truncated chunk header",
+            ));
+        };
+        let header = u16::from_le_bytes([hdr[0], hdr[1]]);
+        if header == 0 {
+            break;
+        }
         in_idx += 2;
-        chunk_len = (header & 0xfff) + 1;
-
-        if chunk_len > (in_buf_max_size - in_idx) {
-            return crate::err::ForensicError::compression_error(
+        let chunk_len = usize::from(header & 0x0FFF) + 1;
+        let chunk = in_buf.get(in_idx..in_idx + chunk_len).ok_or_else(|| {
+            ForensicError::compression_error(
                 "lznt1",
                 "chunk length exceeds the remaining input buffer",
             )
-            .into();
-        }
-
-        if header & LZNT1_COMPRESSED_FLAG != 0 {
-            let in_base_idx = in_idx;
-            let out_base_idx = out_idx;
-
-            let mut flag_bit = 0;
-            let mut flags = in_buf[in_idx];
-            in_idx += 1;
-
-            while (in_idx - in_base_idx) < chunk_len {
-                if in_idx >= in_buf_max_size {
-                    break;
-                }
-
-                if (flags & (1 << flag_bit)) == 0 {
-                    if in_idx >= in_buf_max_size || (in_idx - in_base_idx) >= chunk_len {
-                        break;
-                    }
-
-                    out_buf.push(in_buf[in_idx]);
-                    out_idx += 1;
-                    in_idx += 1;
-                } else {
-                    let copy_token;
-
-                    if in_idx >= in_buf_max_size || (in_idx - in_base_idx) >= chunk_len {
-                        break;
-                    }
-
-                    copy_token = u16::from_le_bytes([in_buf[in_idx], in_buf[in_idx + 1]]) as usize;
-                    in_idx += 2;
-
-                    let mut pos = out_idx - out_base_idx - 1;
-                    let mut l_mask = 0xFFF;
-                    let mut o_shift = 12;
-
-                    while pos >= 0x10 {
-                        l_mask >>= 1;
-                        o_shift -= 1;
-                        pos >>= 1;
-                    }
-
-                    length = (copy_token & l_mask) + 3;
-                    offset = (copy_token >> o_shift) + 1;
-
-                    if offset > out_idx {
-                        return crate::err::ForensicError::invalid_offset(
-                            "decompress_lznt1",
-                            offset as i64,
-                            out_idx as u64,
-                        )
-                        .into();
-                    }
-
-                    for _i in 0..length {
-                        if offset > out_idx {
-                            return crate::err::ForensicError::invalid_offset(
-                                "decompress_lznt1",
-                                offset as i64,
-                                out_idx as u64,
-                            )
-                            .into();
-                        }
-
-                        out_buf.push(out_buf[out_idx - offset]);
-                        out_idx += 1;
-                    }
-                }
-
-                flag_bit = (flag_bit + 1) % 8;
-
-                if flag_bit == 0 {
-                    if (in_idx - in_base_idx) >= chunk_len {
-                        break;
-                    }
-                    flags = in_buf[in_idx];
-                    in_idx += 1;
-                }
+        })?;
+        in_idx += chunk_len;
+        let produced = out_buf.len() - start_len;
+        let room = max_out.saturating_sub(produced);
+        if header & LZNT1_COMPRESSED_FLAG == 0 {
+            if chunk.len() > room {
+                return Err(too_big(max_out));
             }
+            out_buf.extend_from_slice(chunk);
         } else {
-            // Not compressed
-            for _i in 0..chunk_len {
-                out_buf.push(in_buf[in_idx]);
-                out_idx += 1;
-                in_idx += 1;
+            decompress_chunk(chunk, out_buf, room.min(LZNT1_CHUNK_SIZE), room)?;
+        }
+    }
+    Ok(out_buf.len() - start_len)
+}
+
+fn too_big(max_out: usize) -> ForensicError {
+    ForensicError::too_big("lznt1 decompression", max_out as u64 + 1, max_out as u64)
+}
+
+/// Decompresses one compressed chunk. Back-references are relative to this chunk's own output.
+fn decompress_chunk(
+    chunk: &[u8],
+    out_buf: &mut Vec<u8>,
+    chunk_cap: usize,
+    room: usize,
+) -> ForensicResult<()> {
+    let base = out_buf.len();
+    let mut i = 0usize;
+    while i < chunk.len() {
+        let flags = chunk[i];
+        i += 1;
+        for bit in 0..8 {
+            if i >= chunk.len() {
+                return Ok(());
+            }
+            let produced = out_buf.len() - base;
+            if flags & (1 << bit) == 0 {
+                if produced + 1 > room {
+                    return Err(too_big(room));
+                }
+                out_buf.push(chunk[i]);
+                i += 1;
+                continue;
+            }
+            let Some(tok) = chunk.get(i..i + 2) else {
+                return Err(ForensicError::compression_error(
+                    "lznt1",
+                    "copy token truncated",
+                ));
+            };
+            i += 2;
+            if produced == 0 {
+                return Err(ForensicError::compression_error(
+                    "lznt1",
+                    "copy token before any literal in the chunk",
+                ));
+            }
+            let token = usize::from(u16::from_le_bytes([tok[0], tok[1]]));
+            // The split between offset and length bits depends on how much the chunk has produced.
+            let mut pos = produced - 1;
+            let mut len_mask = 0x0FFFusize;
+            let mut off_shift = 12u32;
+            while pos >= 0x10 {
+                len_mask >>= 1;
+                off_shift -= 1;
+                pos >>= 1;
+            }
+            let length = (token & len_mask) + 3;
+            let offset = (token >> off_shift) + 1;
+            if offset > produced {
+                return Err(ForensicError::invalid_offset(
+                    "decompress_lznt1",
+                    offset as i64,
+                    produced as u64,
+                ));
+            }
+            if produced + length > room || produced + length > chunk_cap.max(LZNT1_CHUNK_SIZE) {
+                return Err(too_big(room.min(LZNT1_CHUNK_SIZE)));
+            }
+            for _ in 0..length {
+                let b = out_buf[out_buf.len() - offset];
+                out_buf.push(b);
             }
         }
-
-        in_idx = in_chunk_base + 2 + chunk_len;
     }
-
     Ok(())
 }
 
@@ -153,5 +175,51 @@ mod tests {
         let mut out = Vec::new();
         decompress(&compressed, &mut out).unwrap();
         assert_eq!(out, b"Hello, world!abcdabcd");
+    }
+
+    #[test]
+    fn zero_header_ends_the_stream() {
+        let compressed: [u8; 10] = [0x03, 0x80, 0x02, 0x41, 0xfc, 0x0f, 0x00, 0x00, 0xFF, 0xFF];
+        let mut out = Vec::new();
+        assert_eq!(
+            decompress_bounded(&compressed, &mut out, 1 << 16).unwrap(),
+            4096
+        );
+    }
+
+    #[test]
+    fn output_bound_is_enforced() {
+        let compressed: [u8; 6] = [0x03, 0x80, 0x02, 0x41, 0xfc, 0x0f];
+        let mut out = Vec::new();
+        assert!(decompress_bounded(&compressed, &mut out, 100).is_err());
+        assert!(out.len() <= 100);
+    }
+
+    #[test]
+    fn hostile_inputs_error_instead_of_panicking() {
+        // Lone trailing byte, token as first item, token straddling the chunk end.
+        for input in [
+            &[0x05u8][..],
+            &[0x01, 0x80, 0x01, 0x00],
+            &[0x02, 0x80, 0x02, 0x41, 0xfc],
+        ] {
+            let mut out = Vec::new();
+            let _ = decompress_bounded(input, &mut out, 1 << 16);
+        }
+        let mut seed = 0x9E37_79B9u32;
+        for round in 0..20_000 {
+            let len = round % 300;
+            let buf: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    seed as u8
+                })
+                .collect();
+            let mut out = Vec::new();
+            let _ = decompress_bounded(&buf, &mut out, 1 << 16);
+            assert!(out.len() <= 1 << 16);
+        }
     }
 }

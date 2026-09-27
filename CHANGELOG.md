@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `utils::win::decompress::lznt1::decompress_bounded(input, out, max_out)`: LZNT1 with an output
+  cap, for attacker-influenced input.
+
 - `ContainerFs`/`DescentPolicy` (`src/core/fs/container.rs`): a `FileSystem` decorator over
   `Arc<dyn FileSystem>` + `Arc<MountResolver>` that makes container files transparently
   walkable -- `C:\docs\report.doc\Macros\VBA\Module1` is an ordinary path, no `[mount]` marker
@@ -172,6 +175,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `lznt1::decompress` panicked on hostile input:
+  - on a lone trailing byte (the header read);
+  - on a copy token as the first item of a chunk (`produced - 1` underflow);
+  - on a copy token straddling the chunk end.
+
+  It also let back-references reach into earlier chunks and decoded a `0x0000` header (NTFS
+  compression-unit padding) as data. Every read is now bounds-checked, back-references stay in
+  the current chunk, and a zero header ends the stream.
+
 - Binary offset validation is overflow-safe, and new fallible endian-explicit unpack helpers prevent truncated artifact data from panicking.
 - `ForensicError` now preserves original `std::io::Error` values created through `From<std::io::Error>` or `io_error_with_source()`, exposing them through `Error::source()`.
 - Parallel pipeline worker panics are reported as task errors without preventing healthy tasks from completing.
@@ -198,7 +210,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Added support for MacOS in StdVirtualFS
-
 
 ## [0.13.0] - 05/04/2024 
 
