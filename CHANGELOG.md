@@ -268,6 +268,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`let _ = write_all(b"\n")`) and turned serialization failures into a counter while still
   returning `Ok`. Each line is now serialized in memory first, so a failure leaves no partial
   line, and any serialization or write failure is returned as an `Err` (and still counted).
+- `examples/triage_pipeline.rs`'s `AutorunParser`, which downstream authors copy, broke the
+  review rules: it hardcoded the host and `Acquisition::LiveApi`, invented a `@timestamp`, put
+  the SID in `user.name` and dropped registry errors. It now uses `ctx.host()` and
+  `ctx.acquisition()`, writes the SID to `user.id`, keeps the Run key's last write as its own
+  field instead of a timestamp, and emits failures as `Err` items (a missing key is skipped).
 - Binary offset validation is overflow-safe, and new fallible endian-explicit unpack helpers prevent truncated artifact data from panicking.
 - `ForensicError` now preserves original `std::io::Error` values created through `From<std::io::Error>` or `io_error_with_source()`, exposing them through `Error::source()`.
 - Parallel pipeline worker panics are reported as task errors without preventing healthy tasks from completing.

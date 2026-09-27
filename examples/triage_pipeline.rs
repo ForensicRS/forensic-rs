@@ -60,26 +60,46 @@ impl ArtifactParserFactory for AutorunParser {
             let run_path = format!(r"HKU\{}\Software\Microsoft\Windows\CurrentVersion\Run", user.sid);
             let key = match registry.key(&run_path) {
                 Ok(k) => k,
-                Err(_) => continue,
+                // No Run key for this user is normal, not an error...
+                Err(ForensicError::Registry(RegistryError::KeyNotFound { .. })) => continue,
+                // ...but a key that exists and can't be read is: one `Err` item, and the
+                // other users go on.
+                Err(e) => {
+                    records.push(Err(e));
+                    continue;
+                }
             };
 
             let values = match key.values() {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(e) => {
+                    records.push(Err(e));
+                    continue;
+                }
+            };
+            // The key's last write is when *some* value under Run last changed, not when this
+            // entry was added, so it is kept as its own field and never used as `@timestamp`.
+            let key_last_write = match key.info() {
+                Ok(info) => info.last_write_time,
+                Err(e) => {
+                    records.push(Err(e));
+                    None
+                }
             };
 
             for (value_name, reg_val) in &values {
-                // Read through the Registry trait, live-API semantics:
-                // allocated (the key/value exists as read), but not
-                // reproducible byte-for-byte the way an image read would be.
-                let provenance = source.mint(Acquisition::LiveApi, Recovery::Allocated);
-                let mut data = ForensicData::new("WORKSTATION01",
+                // Minted with the run's acquisition (live API, image read, ...), not a
+                // hardcoded one: the parser doesn't know how the registry was acquired.
+                let provenance = source.mint(ctx.acquisition(), Recovery::Allocated);
+                let mut data = ForensicData::new(ctx.host(),
                     Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)), provenance);
                 data.insert(Text::Borrowed("autorun.name"), Field::Text(Text::Owned(value_name.clone())));
                 data.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Owned(format!("{:?}", reg_val))));
-                data.insert(Text::Borrowed(USER_NAME), Field::Text(Text::Owned(user.sid.clone())));
-                data.insert(Text::Borrowed(TIMESTAMP),
-                    Field::Date(Filetime::with_ymd_and_hms(2024, 3, 15, 10, 30, 0, 0).into()));
+                // A SID is an identifier, not a user name.
+                data.insert(Text::Borrowed(USER_ID), Field::Text(Text::Owned(user.sid.clone())));
+                if let Some(ts) = key_last_write {
+                    data.insert(Text::Borrowed("autorun.key_last_write"), Field::Date(ts));
+                }
 
                 records.push(Ok(data));
             }
@@ -107,7 +127,7 @@ impl Enricher for UserProfileEnricher {
     fn name(&self) -> &str { "user_profile_enricher" }
 
     fn enrich(&mut self, data: &mut ForensicData, context: &mut TriageContext) -> ForensicResult<()> {
-        let sid = match data.field(USER_NAME) {
+        let sid = match data.field(USER_ID) {
             Some(Field::Text(t)) => t.to_string(),
             _ => return Ok(()),
         };
