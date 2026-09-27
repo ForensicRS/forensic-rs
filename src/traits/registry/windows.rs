@@ -16,6 +16,8 @@ use crate::core::path::FPathBuf;
 use crate::err::{ForensicError, ForensicResult};
 
 const CURRENT_VERSION: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+const WINDOWS_CURRENT_VERSION: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion";
+const PROFILE_LIST: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList";
 
 /// A discovered user profile.
 #[derive(Debug, Clone, Default)]
@@ -151,13 +153,72 @@ fn keep_unless_absent(result: ForensicResult<()>, errors: &mut Vec<ForensicError
     }
 }
 
+/// Expands a leading `%SystemRoot%`/`%windir%` into `sys_root`, and a leading
+/// `%SystemDrive%` into `sys_root`'s drive, case-insensitively. Other paths
+/// are returned unchanged, and so is the whole path when `sys_root` is
+/// unknown.
 fn expand_system_root(path: String, sys_root: Option<&FPathBuf>) -> String {
-    let stripped = path
-        .strip_prefix("%systemroot%")
-        .or_else(|| path.strip_prefix("%SystemRoot%"));
-    match (stripped, sys_root) {
-        (Some(rest), Some(root)) => format!("{root}{rest}"),
+    let Some(root) = sys_root else { return path };
+    let strip = |var: &str| {
+        path.get(..var.len())
+            .filter(|head| head.eq_ignore_ascii_case(var))
+            .map(|_| &path[var.len()..])
+    };
+    if let Some(rest) = strip("%SystemRoot%").or_else(|| strip("%windir%")) {
+        return format!("{root}{rest}");
+    }
+    match (strip("%SystemDrive%"), root.as_path().drive()) {
+        (Some(rest), Some(drive)) => format!("{drive}{rest}"),
         _ => path,
+    }
+}
+
+/// Reads a path-valued registry value and expands it with
+/// [`expand_system_root`]. An environment variable left over (because the
+/// system root is unknown, or the variable isn't one of those) is an error:
+/// the value is never guessed.
+fn read_expanded_path(reg: &dyn Registry, key: &str, name: &str) -> ForensicResult<FPathBuf> {
+    let raw: String = reg.value(key, name)?.try_into()?;
+    let expanded = expand_system_root(raw, system_root(reg).ok().as_ref());
+    if expanded.contains('%') {
+        return Err(ForensicError::other(
+            "windows",
+            format!("{key}\\{name}: unexpanded environment variable in {expanded}"),
+        ));
+    }
+    Ok(FPathBuf::from(expanded))
+}
+
+/// `%ProgramFiles%`: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ProgramFilesDir`
+/// (usually `C:\Program Files`).
+pub fn program_files(reg: &dyn Registry) -> ForensicResult<FPathBuf> {
+    read_expanded_path(reg, WINDOWS_CURRENT_VERSION, "ProgramFilesDir")
+}
+
+/// `%ProgramFiles(x86)%`: `...\Windows\CurrentVersion\ProgramFilesDir (x86)`.
+/// Absent on 32-bit Windows.
+pub fn program_files_x86(reg: &dyn Registry) -> ForensicResult<FPathBuf> {
+    read_expanded_path(reg, WINDOWS_CURRENT_VERSION, "ProgramFilesDir (x86)")
+}
+
+/// `%ProgramData%`: `...\Windows NT\CurrentVersion\ProfileList\ProgramData`
+/// (usually `C:\ProgramData`). Absent before Vista.
+pub fn program_data(reg: &dyn Registry) -> ForensicResult<FPathBuf> {
+    read_expanded_path(reg, PROFILE_LIST, "ProgramData")
+}
+
+/// `%AllUsersProfile%`. Before Vista, `ProfileList` holds the folder name
+/// (`AllUsersProfile`, usually `All Users`) under `ProfilesDirectory`. From
+/// Vista on that value is gone and `%AllUsersProfile%` equals `%ProgramData%`.
+pub fn all_users_profile(reg: &dyn Registry) -> ForensicResult<FPathBuf> {
+    match reg.value(PROFILE_LIST, "AllUsersProfile") {
+        Ok(name) => {
+            let name: String = name.try_into()?;
+            let dir = read_expanded_path(reg, PROFILE_LIST, "ProfilesDirectory")?;
+            Ok(dir.as_path().join(name))
+        }
+        Err(e) if e.is_registry_not_found() => program_data(reg),
+        Err(e) => Err(e),
     }
 }
 
@@ -203,8 +264,8 @@ pub fn build(reg: &dyn Registry) -> ForensicResult<WindowsVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::registry::RegValue;
     use crate::traits::registry::raw::{KeyEntry, KeyInfo, PredefinedHive, RawKey};
+    use crate::traits::registry::RegValue;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -435,5 +496,30 @@ mod tests {
         let (profiles, errors) = users_with_errors(&reg).unwrap();
         assert_eq!(profiles.len(), 2);
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn expand_system_root_handles_system_drive_and_windir_case_insensitively() {
+        let root = FPathBuf::from(r"D:\Windows");
+        assert_eq!(
+            expand_system_root(r"%SystemDrive%\Users\Bob".into(), Some(&root)),
+            r"D:\Users\Bob"
+        );
+        assert_eq!(
+            expand_system_root(r"%SYSTEMROOT%\System32".into(), Some(&root)),
+            r"D:/Windows\System32"
+        );
+        assert_eq!(
+            expand_system_root(r"%windir%\Temp".into(), Some(&root)),
+            r"D:/Windows\Temp"
+        );
+        assert_eq!(
+            expand_system_root(r"%SystemDrive%\Users".into(), None),
+            r"%SystemDrive%\Users"
+        );
+        assert_eq!(
+            expand_system_root(r"%Other%\x".into(), Some(&root)),
+            r"%Other%\x"
+        );
     }
 }

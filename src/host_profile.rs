@@ -31,6 +31,14 @@ pub struct HostProfile {
     /// this same shape without a breaking change and every caller that
     /// already matches on `HostProfile`'s fields sees the gap explicitly.
     pub timezone: Option<Tracked<String>>,
+    /// `%ProgramFiles%`.
+    pub program_files: Option<Tracked<FPathBuf>>,
+    /// `%ProgramFiles(x86)%`; `None` on 32-bit Windows.
+    pub program_files_x86: Option<Tracked<FPathBuf>>,
+    /// `%ProgramData%`; `None` before Vista.
+    pub program_data: Option<Tracked<FPathBuf>>,
+    /// `%AllUsersProfile%`.
+    pub all_users_profile: Option<Tracked<FPathBuf>>,
 }
 
 impl HostProfile {
@@ -38,7 +46,11 @@ impl HostProfile {
     /// successfully-resolved field against `source` — all sharing the same
     /// interned `SourceId`, since every field here comes from reading the
     /// same registry. A field that can't be resolved stays `None`.
-    pub fn resolve(registry: &dyn Registry, source: &SourceHandle, acquisition: Acquisition) -> Self {
+    pub fn resolve(
+        registry: &dyn Registry,
+        source: &SourceHandle,
+        acquisition: Acquisition,
+    ) -> Self {
         let mint = |recovery: Recovery| source.mint(acquisition, recovery);
 
         let system_root = windows::system_root(registry)
@@ -65,12 +77,22 @@ impl HostProfile {
             .and_then(|value| String::try_from(value).ok())
             .map(|name| Tracked::new(name, mint(Recovery::Allocated)));
 
+        let path_fact = |read: fn(&dyn Registry) -> crate::err::ForensicResult<FPathBuf>| {
+            read(registry)
+                .ok()
+                .map(|path| Tracked::new(path, mint(Recovery::Allocated)))
+        };
+
         Self {
             computer_name,
             system_root,
             os_version,
             users,
             timezone: None,
+            program_files: path_fact(windows::program_files),
+            program_files_x86: path_fact(windows::program_files_x86),
+            program_data: path_fact(windows::program_data),
+            all_users_profile: path_fact(windows::all_users_profile),
         }
     }
 
@@ -100,6 +122,8 @@ impl HostProfile {
             && self.users.is_some()
         // `timezone` is deliberately excluded: it can never resolve today,
         // so requiring it would make `is_fully_resolved()` permanently false.
+        // The install locations are excluded too: `program_files_x86` is
+        // absent on 32-bit Windows and `program_data` before Vista.
     }
 }
 
@@ -107,6 +131,7 @@ impl HostProfile {
 mod tests {
     use super::*;
     use crate::provenance::ProvenanceStore;
+    use crate::traits::registry::RegValue;
     use crate::utils::testing::TestingRegistry;
 
     #[test]
@@ -140,9 +165,95 @@ mod tests {
         // even though ProfileList doesn't exist -- a SID present in one but
         // not the other still surfaces (see `windows::users`'s docs).
         let profile = HostProfile::resolve(&registry, &source, Acquisition::LiveApi);
-        let users = profile.users.expect("the seeded HKEY_USERS SID must resolve");
-        let snapshot = store.get(users.provenance()).expect("minted id must resolve");
+        let users = profile
+            .users
+            .expect("the seeded HKEY_USERS SID must resolve");
+        let snapshot = store
+            .get(users.provenance())
+            .expect("minted id must resolve");
         assert_eq!(snapshot.acquisition, Acquisition::LiveApi);
+    }
+
+    #[test]
+    fn resolves_install_locations_and_expands_system_drive() {
+        let mut registry = TestingRegistry::empty();
+        let nt = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+        let cv = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion";
+        registry.add_value(nt, "SystemRoot", RegValue::new_sz(r"D:\Windows"));
+        registry.add_value(cv, "ProgramFilesDir", RegValue::new_sz(r"D:\Program Files"));
+        let profile_list = format!(r"{nt}\ProfileList");
+        registry.add_value(
+            &profile_list,
+            "ProgramData",
+            RegValue::new_sz(r"%SystemDrive%\ProgramData"),
+        );
+        let store = ProvenanceStore::new();
+        let source = store.register_source(SourceKey::Synthetic("test-host".to_string()));
+
+        let profile = HostProfile::resolve(&registry, &source, Acquisition::LiveApi);
+
+        let path =
+            |f: &Option<Tracked<FPathBuf>>| f.as_ref().map(|t| t.value().as_str().to_string());
+        assert_eq!(
+            path(&profile.program_files).as_deref(),
+            Some("D:/Program Files")
+        );
+        assert_eq!(
+            path(&profile.program_data).as_deref(),
+            Some("D:/ProgramData")
+        );
+        // Vista+: no AllUsersProfile value, so it is %ProgramData%.
+        assert_eq!(
+            path(&profile.all_users_profile).as_deref(),
+            Some("D:/ProgramData")
+        );
+        assert!(profile.program_files_x86.is_none());
+    }
+
+    #[test]
+    fn install_locations_with_an_unknown_system_drive_stay_unresolved() {
+        let mut registry = TestingRegistry::empty();
+        registry.add_value(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList",
+            "ProgramData",
+            RegValue::new_sz(r"%SystemDrive%\ProgramData"),
+        );
+        let store = ProvenanceStore::new();
+        let source = store.register_source(SourceKey::Synthetic("test-host".to_string()));
+
+        let profile = HostProfile::resolve(&registry, &source, Acquisition::LiveApi);
+
+        assert!(profile.program_data.is_none());
+        assert!(profile.all_users_profile.is_none());
+    }
+
+    #[test]
+    fn xp_all_users_profile_lives_under_the_profiles_directory() {
+        let mut registry = TestingRegistry::empty();
+        let nt = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+        registry.add_value(nt, "SystemRoot", RegValue::new_sz(r"C:\WINDOWS"));
+        let profile_list = format!(r"{nt}\ProfileList");
+        registry.add_value(
+            &profile_list,
+            "AllUsersProfile",
+            RegValue::new_sz("All Users"),
+        );
+        registry.add_value(
+            &profile_list,
+            "ProfilesDirectory",
+            RegValue::new_sz(r"%SystemDrive%\Documents and Settings"),
+        );
+        let store = ProvenanceStore::new();
+        let source = store.register_source(SourceKey::Synthetic("test-host".to_string()));
+
+        let profile = HostProfile::resolve(&registry, &source, Acquisition::LiveApi);
+
+        let all_users = profile.all_users_profile.expect("XP layout resolves");
+        assert_eq!(
+            all_users.value().as_str(),
+            "C:/Documents and Settings/All Users"
+        );
+        assert!(profile.program_data.is_none());
     }
 
     #[test]
