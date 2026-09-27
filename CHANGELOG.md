@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parser writes by hand, and `AnomalyFlags` docs on how a parser adds its own anomaly kinds: a
   crate-local enum mapped onto the core bit with the same meaning, or a record field when no
   bit means the same thing.
+- `dictionary::PROCESS_NAME` (`process.name`).
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,

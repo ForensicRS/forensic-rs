@@ -71,6 +71,8 @@ pub const ARTIFACT_HOST: &str = "artifact.host";
 pub const ARTIFACT_TENANT: &str = "artifact.tenant";
 
 pub const PROCESS_EXECUTABLE: &str = "process.executable";
+/// ECS `process.name`: the process name, usually the executable's file name (`cmd.exe`).
+pub const PROCESS_NAME: &str = "process.name";
 
 pub const FILE_INODE: &str = "file.inode";
 pub const FILE_NAME: &str = "file.name";
