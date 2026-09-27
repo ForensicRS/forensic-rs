@@ -2,6 +2,7 @@ pub mod activity;
 pub mod artifact;
 pub mod bridge;
 pub mod capabilities;
+pub mod catalog;
 pub mod channel;
 pub mod collection;
 pub mod context;
