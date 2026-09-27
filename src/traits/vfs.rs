@@ -6,6 +6,52 @@ use crate::utils::time::ForensicTimestamp;
 
 pub trait VirtualFile: std::io::Seek + std::io::Read + Send {
     fn metadata(&self) -> ForensicResult<VMetadata>;
+
+    /// Positional, shareable access to the same bytes, when the backend can offer it without
+    /// disturbing this handle's own cursor (a `pread`, an in-memory buffer, a window over
+    /// another [`ReadAt`]). `None` by default -- use
+    /// [`into_read_at`](crate::core::fs::window::into_read_at), which falls back to a
+    /// mutex-guarded seek+read, rather than calling this directly.
+    ///
+    /// This is what lets a disk image be read by many workers at once: a volume system or a
+    /// filesystem mounted over an image holds an `Arc<dyn ReadAt>`, not a `Box<dyn VirtualFile>`
+    /// every reader would have to lock.
+    fn as_read_at(&self) -> Option<std::sync::Arc<dyn ReadAt>> {
+        None
+    }
+}
+
+/// Positional reads over a fixed-size byte source, shareable across threads: `&self`, so one
+/// `Arc<dyn ReadAt>` serves any number of concurrent readers, each with its own cursor (see
+/// [`ReadAtFile`](crate::core::fs::window::ReadAtFile)).
+pub trait ReadAt: Send + Sync {
+    /// Reads up to `buf.len()` bytes starting at `offset`. Returns `Ok(0)` at or past
+    /// [`size`](ReadAt::size), like `Read::read` at end of file.
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize>;
+
+    /// Total size in bytes.
+    fn size(&self) -> u64;
+
+    /// Fills `buf` completely from `offset`, or fails with `UnexpectedEof`.
+    fn read_exact_at(&self, mut offset: u64, mut buf: &mut [u8]) -> std::io::Result<()> {
+        while !buf.is_empty() {
+            match self.read_at(offset, buf) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "read_exact_at: source ended before the buffer was filled",
+                    ));
+                }
+                Ok(n) => {
+                    offset += n as u64;
+                    buf = &mut buf[n..];
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +314,9 @@ pub trait FileSystem: Send + Sync {
     fn as_attributes(&self) -> Option<&dyn PathAttributes> {
         None
     }
+    fn as_media_map(&self) -> Option<&dyn MediaMap> {
+        None
+    }
 }
 
 /// Blanket-impl'd convenience layer over [`FileSystem`]. A backend author
@@ -328,6 +377,28 @@ pub trait Unallocated: FileSystem {
 pub struct Region {
     pub offset: u64,
     pub length: u64,
+}
+
+/// Maps a byte in this filesystem back to where it physically lives in the evidence the
+/// filesystem was mounted from. Discovered via [`FileSystem::as_media_map`].
+///
+/// Implemented by filesystems that are *views* over their parent's bytes -- a volume system's
+/// partitions, a split image's concatenated segments. A carver that finds a record at offset
+/// `x` of partition `/p2` needs this to report where the bytes really are, so a second examiner
+/// can seek to them in the original image: call [`to_parent`](MediaMap::to_parent), then repeat
+/// on the filesystem that holds the returned locator, until a filesystem has no media map.
+pub trait MediaMap: FileSystem {
+    /// Where byte `offset` of the file at `path` lives one hop up. `Ok(None)` when that byte
+    /// has no single parent location -- past the end of the file, or inside a compressed or
+    /// encrypted run whose bytes exist only after decoding.
+    fn to_parent(&self, path: &FPath, offset: u64) -> ForensicResult<Option<MediaOffset>>;
+}
+
+/// A byte position one hop up: the file that holds it, and the offset inside that file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaOffset {
+    pub locator: crate::core::locator::EvidenceLocator,
+    pub offset: u64,
 }
 
 /// Untyped, uninterpreted facts about one *path*, discovered via

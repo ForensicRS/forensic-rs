@@ -29,8 +29,8 @@ pub mod prelude {
     pub use crate::artifact::*;
     pub use crate::context::initialize_context;
     pub use crate::core::fs::{
-        ChRootFileSystem, ContainerFs, DescentPolicy, MountTable, OverlayFs, StdVirtualFS,
-        StdVirtualFile,
+        ChRootFileSystem, ConcatReadAt, ContainerFs, DescentPolicy, MountTable, OverlayFs,
+        ReadAtFile, StdVirtualFS, StdVirtualFile, WindowReadAt, into_read_at,
     };
     pub use crate::core::limits::{LimitExceeded, Limits, MemorySpillStore, SpillStore};
     pub use crate::core::locator::{EvidenceLocator, LocatorSegment};
@@ -83,8 +83,8 @@ pub mod prelude {
     pub use crate::traits::registry::*;
     pub use crate::traits::vfs::{
         AlternateStreams, CaseSensitivity, DirEntry, FileAttributes, FileId, FileSystem,
-        FileSystemExt, MacbTimes, PathAttributes, Region, SourceKind, StreamInfo, Unallocated,
-        VFileType, VirtualFile,
+        FileSystemExt, MacbTimes, MediaMap, MediaOffset, PathAttributes, ReadAt, Region,
+        SourceKind, StreamInfo, Unallocated, VFileType, VirtualFile,
     };
     pub use crate::utils::time::{
         Filetime, ForensicTimestamp, Timestamp128, TimestampFlags, TimestampPrecision,

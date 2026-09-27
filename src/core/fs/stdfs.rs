@@ -93,6 +93,43 @@ impl VirtualFile for StdVirtualFile {
             attributes: FileAttributes::empty(),
         })
     }
+
+    /// `pread` on a duplicated descriptor: shares nothing with this handle's cursor, so any
+    /// number of readers can use it at once. Unix only -- Windows' `seek_read` moves the
+    /// cursor of the file object both handles share, so there the caller gets the locked
+    /// fallback from `into_read_at` instead of a reader that silently disturbs this one.
+    #[cfg(unix)]
+    fn as_read_at(&self) -> Option<std::sync::Arc<dyn crate::traits::vfs::ReadAt>> {
+        let file = self.file.try_clone().ok()?;
+        let size = file.metadata().ok()?.len();
+        Some(std::sync::Arc::new(StdReadAt { file, size }))
+    }
+}
+
+/// Positional reads over a duplicated descriptor. The size is fixed when it is created: an
+/// image being analysed does not grow, and a file that does is live evidence, read as it was
+/// when the reader was made.
+#[cfg(unix)]
+struct StdReadAt {
+    file: std::fs::File,
+    size: u64,
+}
+
+#[cfg(unix)]
+impl crate::traits::vfs::ReadAt for StdReadAt {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        if offset >= self.size {
+            return Ok(0);
+        }
+        let remaining = self.size - offset;
+        let want = usize::try_from(remaining).map_or(buf.len(), |r| buf.len().min(r));
+        self.file.read_at(&mut buf[..want], offset)
+    }
+
+    fn size(&self) -> u64 {
+        self.size
+    }
 }
 
 // ---------------------------------------------------------------------
