@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) mod capable_test_fs;
 pub mod chroot;
 pub mod container;
 pub mod glob;

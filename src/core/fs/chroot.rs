@@ -1,9 +1,17 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::{
     core::path::{Component, FPath, FPathBuf},
+    err::ForensicError,
+    field::{Field, Text},
     prelude::ForensicResult,
-    traits::vfs::{CaseSensitivity, DirEntry, FileSystem, SourceKind, VMetadata, VirtualFile},
+    recovery::{Recovered, RecoveryReport},
+    traits::vfs::{
+        AlternateStreams, CaseSensitivity, DeletedEntry, DeletedFiles, DirEntry, FileSystem,
+        MediaMap, MediaOffset, PathAttributes, Region, SourceKind, StreamInfo, Unallocated,
+        VMetadata, VirtualFile,
+    },
 };
 
 /// Changes the apparent root directory of the underlying filesystem, like
@@ -65,6 +73,42 @@ impl ChRootFileSystem {
     }
 }
 
+impl ChRootFileSystem {
+    /// `inner`, a path in the wrapped filesystem's namespace, in this chroot's namespace, or
+    /// `None` when it lies outside the root.
+    fn to_outer(&self, inner: &FPath) -> Option<FPathBuf> {
+        let insensitive = !matches!(self.fs.case_sensitivity(), CaseSensitivity::Sensitive);
+        let normal = |p: &FPath| -> Vec<String> {
+            p.components()
+                .filter_map(|c| match c {
+                    Component::Normal(s) => Some(s.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let root = normal(self.path.as_path());
+        let path = normal(inner);
+        if path.len() < root.len() {
+            return None;
+        }
+        let under_root = root.iter().zip(&path).all(|(r, p)| {
+            if insensitive {
+                r.eq_ignore_ascii_case(p)
+            } else {
+                r == p
+            }
+        });
+        under_root.then(|| FPathBuf::from(path[root.len()..].join("/")))
+    }
+}
+
+fn missing(capability: &str) -> ForensicError {
+    ForensicError::other(
+        "ChRootFileSystem",
+        format!("the wrapped filesystem has no {capability} support"),
+    )
+}
+
 /// `X:` exactly — a drive designator that did not come first in the path.
 fn is_drive_marker(segment: &str) -> bool {
     let b = segment.as_bytes();
@@ -119,6 +163,125 @@ impl FileSystem for ChRootFileSystem {
 
     fn case_sensitivity(&self) -> CaseSensitivity {
         self.fs.case_sensitivity()
+    }
+
+    // Each capability is claimed only when the wrapped filesystem has it.
+    fn as_streams(&self) -> Option<&dyn AlternateStreams> {
+        self.fs.as_streams().map(|_| self as &dyn AlternateStreams)
+    }
+
+    fn as_unallocated(&self) -> Option<&dyn Unallocated> {
+        self.fs.as_unallocated().map(|_| self as &dyn Unallocated)
+    }
+
+    fn as_attributes(&self) -> Option<&dyn PathAttributes> {
+        self.fs.as_attributes().map(|_| self as &dyn PathAttributes)
+    }
+
+    fn as_media_map(&self) -> Option<&dyn MediaMap> {
+        self.fs.as_media_map().map(|_| self as &dyn MediaMap)
+    }
+
+    fn as_deleted(&self) -> Option<&dyn DeletedFiles> {
+        self.fs.as_deleted().map(|_| self as &dyn DeletedFiles)
+    }
+}
+
+impl AlternateStreams for ChRootFileSystem {
+    fn streams(&self, path: &FPath) -> ForensicResult<Vec<StreamInfo>> {
+        let inner = self
+            .fs
+            .as_streams()
+            .ok_or_else(|| missing("alternate stream"))?;
+        inner.streams(self.resolve(path).as_path())
+    }
+
+    fn open_stream(&self, path: &FPath, stream: &str) -> ForensicResult<Box<dyn VirtualFile>> {
+        let inner = self
+            .fs
+            .as_streams()
+            .ok_or_else(|| missing("alternate stream"))?;
+        inner.open_stream(self.resolve(path).as_path(), stream)
+    }
+}
+
+/// Free space belongs to the volume, not to a directory, so it passes through unchanged.
+impl Unallocated for ChRootFileSystem {
+    fn unallocated_regions(&self) -> ForensicResult<Vec<Region>> {
+        let inner = self
+            .fs
+            .as_unallocated()
+            .ok_or_else(|| missing("unallocated"))?;
+        inner.unallocated_regions()
+    }
+
+    fn open_unallocated(&self, region: &Region) -> ForensicResult<Box<dyn VirtualFile>> {
+        let inner = self
+            .fs
+            .as_unallocated()
+            .ok_or_else(|| missing("unallocated"))?;
+        inner.open_unallocated(region)
+    }
+}
+
+impl PathAttributes for ChRootFileSystem {
+    fn attributes(&self, path: &FPath) -> ForensicResult<BTreeMap<Text, Field>> {
+        let inner = self
+            .fs
+            .as_attributes()
+            .ok_or_else(|| missing("attribute"))?;
+        inner.attributes(self.resolve(path).as_path())
+    }
+}
+
+/// The parent location names the evidence the wrapped filesystem was mounted from, which a
+/// chroot does not change, so it passes through as is.
+impl MediaMap for ChRootFileSystem {
+    fn to_parent(&self, path: &FPath, offset: u64) -> ForensicResult<Option<MediaOffset>> {
+        let inner = self.fs.as_media_map().ok_or_else(|| missing("media map"))?;
+        inner.to_parent(self.resolve(path).as_path(), offset)
+    }
+}
+
+/// Deleted entries are volume-wide. An entry whose path lies outside the chroot root can't be
+/// named in this namespace, so its path becomes `None` (its name is kept); it is not dropped.
+impl DeletedFiles for ChRootFileSystem {
+    fn deleted_entries(
+        &self,
+        scope: &FPath,
+    ) -> ForensicResult<(Vec<Recovered<DeletedEntry>>, RecoveryReport)> {
+        let inner = self
+            .fs
+            .as_deleted()
+            .ok_or_else(|| missing("deleted-file"))?;
+        let (entries, report) = inner.deleted_entries(self.resolve(scope).as_path())?;
+        let entries = entries
+            .into_iter()
+            .map(|r| {
+                r.map(|mut e| {
+                    if let Some(p) = e.path.take() {
+                        e.path = self.to_outer(p.as_path());
+                        if e.path.is_none() && e.name.is_none() {
+                            e.name = p.file_name().map(str::to_string);
+                        }
+                    }
+                    e
+                })
+            })
+            .collect();
+        Ok((entries, report))
+    }
+
+    fn open_deleted(
+        &self,
+        scope: &FPath,
+        id: u64,
+    ) -> ForensicResult<Recovered<Box<dyn VirtualFile>>> {
+        let inner = self
+            .fs
+            .as_deleted()
+            .ok_or_else(|| missing("deleted-file"))?;
+        inner.open_deleted(self.resolve(scope).as_path(), id)
     }
 }
 
@@ -252,5 +415,97 @@ mod tst {
         // Confinement is unchanged.
         assert!(!chrfs.exists(FPath::new("..\\outside.txt")));
         assert!(!chrfs.exists(FPath::new("C:\\..\\outside.txt")));
+    }
+
+    #[test]
+    fn capabilities_are_forwarded_only_when_the_wrapped_fs_has_them() {
+        use crate::utils::testing::InMemoryVirtualFileSystem;
+        let plain = ChRootFileSystem::new("vol", Arc::new(InMemoryVirtualFileSystem::new()));
+        assert!(plain.as_streams().is_none());
+        assert!(plain.as_unallocated().is_none());
+        assert!(plain.as_attributes().is_none());
+        assert!(plain.as_media_map().is_none());
+        assert!(plain.as_deleted().is_none());
+    }
+
+    #[test]
+    fn capabilities_are_forwarded_with_chroot_paths() {
+        use crate::core::fs::capable_test_fs::CapableFs;
+        use crate::core::locator::{EvidenceLocator, LocatorSegment};
+        use crate::utils::testing::InMemoryVirtualFileSystem;
+        let inner = InMemoryVirtualFileSystem::new()
+            .with_text_file("vol/docs/a.txt", "hello")
+            .with_text_file("vol/docs/a.txt:ads", "xyz");
+        let chrfs = ChRootFileSystem::new("vol", Arc::new(CapableFs::new(inner)));
+        let a = FPath::new("C:\\docs\\a.txt");
+
+        let streams = chrfs.as_streams().unwrap();
+        let listed = streams.streams(a).unwrap();
+        assert_eq!((listed[0].name.as_str(), listed[0].size), ("ads", 3));
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut streams.open_stream(a, "ads").unwrap(), &mut buf)
+            .unwrap();
+        assert_eq!(buf, "xyz");
+
+        let attrs = chrfs.as_attributes().unwrap().attributes(a).unwrap();
+        assert_eq!(
+            attrs.get("capable.path"),
+            Some(&Field::Text(Text::Owned("vol/docs/a.txt".into())))
+        );
+
+        let parent = chrfs
+            .as_media_map()
+            .unwrap()
+            .to_parent(a, 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parent.locator,
+            EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("media.bin")))
+        );
+        assert_eq!(parent.offset, 1005);
+
+        let regions = chrfs
+            .as_unallocated()
+            .unwrap()
+            .unallocated_regions()
+            .unwrap();
+        assert_eq!(
+            regions,
+            vec![Region {
+                offset: 4096,
+                length: 512
+            }]
+        );
+
+        let deleted = chrfs.as_deleted().unwrap();
+        let (entries, _report) = deleted.deleted_entries(FPath::new("")).unwrap();
+        let paths: Vec<_> = entries
+            .iter()
+            .map(|r| r.value().path.as_ref().map(|p| p.to_string()))
+            .collect();
+        assert_eq!(paths, vec![Some("deleted/gone.txt".to_string()), None]);
+        let mut buf = String::new();
+        std::io::Read::read_to_string(
+            &mut deleted
+                .open_deleted(FPath::new(""), 7)
+                .unwrap()
+                .into_value(),
+            &mut buf,
+        )
+        .unwrap();
+        assert_eq!(buf, "gone");
+    }
+
+    #[test]
+    fn a_deleted_path_outside_the_root_is_not_named_in_the_chroot() {
+        use crate::utils::testing::InMemoryVirtualFileSystem;
+        let chrfs = ChRootFileSystem::new("vol/sub", Arc::new(InMemoryVirtualFileSystem::new()));
+        assert_eq!(
+            chrfs.to_outer(FPath::new("VOL/sub/x.txt")),
+            Some(FPathBuf::from("x.txt"))
+        );
+        assert_eq!(chrfs.to_outer(FPath::new("vol/other/x.txt")), None);
+        assert_eq!(chrfs.to_outer(FPath::new("vol")), None);
     }
 }

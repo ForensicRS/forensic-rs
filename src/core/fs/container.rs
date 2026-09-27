@@ -19,8 +19,10 @@ use crate::core::path::{Component, FPath, FPathBuf};
 use crate::core::resolver::MountResolver;
 use crate::err::{ForensicError, ForensicResult};
 use crate::field::{Field, Text};
+use crate::recovery::{Recovered, RecoveryReport};
 use crate::traits::vfs::{
-    CaseSensitivity, DirEntry, FileAttributes, FileSystem, PathAttributes, SourceKind, VFileType,
+    AlternateStreams, CaseSensitivity, DeletedEntry, DeletedFiles, DirEntry, FileAttributes,
+    FileSystem, MediaMap, MediaOffset, PathAttributes, SourceKind, StreamInfo, VFileType,
     VMetadata, VirtualFile,
 };
 use std::collections::BTreeMap;
@@ -291,6 +293,51 @@ impl ContainerFs {
                 .resolver
                 .supports(crate::traits::format::MountKind::FileSystem)
     }
+
+    /// Whether to claim a path-dependent capability: the base filesystem has it, or a mounted
+    /// container might. Which filesystem answers is only known per path, so a path whose owning
+    /// filesystem lacks the capability gets an explicit error from the forwarding method.
+    fn may_forward(&self, base_has_it: bool) -> bool {
+        base_has_it
+            || self
+                .resolver
+                .supports(crate::traits::format::MountKind::FileSystem)
+    }
+}
+
+fn unsupported(capability: &str, path: &FPath) -> ForensicError {
+    ForensicError::other(
+        "ContainerFs",
+        format!("the filesystem that holds '{path}' has no {capability} support"),
+    )
+}
+
+/// The outer path at which the filesystem that resolved `outer` to `inner` is mounted: `outer`
+/// without the trailing components that `inner` accounts for.
+fn mount_point(outer: &FPath, inner: &FPath) -> FPathBuf {
+    let outer: Vec<&str> = outer
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    let inner_len = inner
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .count();
+    let keep = outer.len().saturating_sub(inner_len);
+    FPathBuf::from(outer[..keep].join("/"))
+}
+
+/// `inner_path`, which is relative to a filesystem mounted at `mount`, in the outer namespace.
+fn to_outer(mount: &FPath, inner_path: &FPath) -> FPathBuf {
+    let rel = inner_path.as_str().trim_start_matches(['/', '\\']);
+    if mount.as_str().is_empty() {
+        FPathBuf::from(rel)
+    } else {
+        FPathBuf::from(format!("{mount}/{rel}"))
+    }
 }
 
 /// Keeps only `Component::Normal` segments, dropping `RootDir`, `Drive`, `CurDir` and
@@ -412,6 +459,94 @@ impl FileSystem for ContainerFs {
     fn as_attributes(&self) -> Option<&dyn PathAttributes> {
         Some(self)
     }
+
+    fn as_streams(&self) -> Option<&dyn AlternateStreams> {
+        self.may_forward(self.base.as_streams().is_some())
+            .then_some(self as &dyn AlternateStreams)
+    }
+
+    fn as_media_map(&self) -> Option<&dyn MediaMap> {
+        self.may_forward(self.base.as_media_map().is_some())
+            .then_some(self as &dyn MediaMap)
+    }
+
+    fn as_deleted(&self) -> Option<&dyn DeletedFiles> {
+        self.may_forward(self.base.as_deleted().is_some())
+            .then_some(self as &dyn DeletedFiles)
+    }
+
+    // `as_unallocated` is deliberately not forwarded: `Unallocated` takes no path, so there is
+    // no way to say which of the (possibly many) mounted filesystems a call means. Mount the
+    // volume directly to reach its free space.
+}
+
+/// Streams of the file at `path`, answered by whichever filesystem holds it. A container file's
+/// own streams come from the filesystem it sits in, not from its contents.
+impl AlternateStreams for ContainerFs {
+    fn streams(&self, path: &FPath) -> ForensicResult<Vec<StreamInfo>> {
+        let (fs, inner, _locator) = self.resolve_chain(path, false)?;
+        fs.as_streams()
+            .ok_or_else(|| unsupported("alternate stream", path))?
+            .streams(inner.as_path())
+    }
+
+    fn open_stream(&self, path: &FPath, stream: &str) -> ForensicResult<Box<dyn VirtualFile>> {
+        let (fs, inner, _locator) = self.resolve_chain(path, false)?;
+        fs.as_streams()
+            .ok_or_else(|| unsupported("alternate stream", path))?
+            .open_stream(inner.as_path(), stream)
+    }
+}
+
+/// Forwards to the filesystem that holds `path`. Its answer is already rooted at this
+/// filesystem's evidence: a mounted filesystem builds its locators from the chain locator this
+/// type handed the resolver. A holder with no media map answers `Ok(None)`, the trait's "no
+/// single parent location".
+impl MediaMap for ContainerFs {
+    fn to_parent(&self, path: &FPath, offset: u64) -> ForensicResult<Option<MediaOffset>> {
+        let (fs, inner, _locator) = self.resolve_chain(path, false)?;
+        match fs.as_media_map() {
+            Some(map) => map.to_parent(inner.as_path(), offset),
+            None => Ok(None),
+        }
+    }
+}
+
+/// `scope` names the volume: `""` for the base filesystem, `disk.raw/p1` for a partition inside
+/// an image. Returned paths are rewritten into this filesystem's namespace.
+impl DeletedFiles for ContainerFs {
+    fn deleted_entries(
+        &self,
+        scope: &FPath,
+    ) -> ForensicResult<(Vec<Recovered<DeletedEntry>>, RecoveryReport)> {
+        let (fs, inner, _locator) = self.resolve_chain(scope, true)?;
+        let deleted = fs
+            .as_deleted()
+            .ok_or_else(|| unsupported("deleted-file", scope))?;
+        let (entries, report) = deleted.deleted_entries(inner.as_path())?;
+        let mount = mount_point(scope, inner.as_path());
+        let entries = entries
+            .into_iter()
+            .map(|r| {
+                r.map(|mut e| {
+                    e.path = e.path.map(|p| to_outer(mount.as_path(), p.as_path()));
+                    e
+                })
+            })
+            .collect();
+        Ok((entries, report))
+    }
+
+    fn open_deleted(
+        &self,
+        scope: &FPath,
+        id: u64,
+    ) -> ForensicResult<Recovered<Box<dyn VirtualFile>>> {
+        let (fs, inner, _locator) = self.resolve_chain(scope, true)?;
+        fs.as_deleted()
+            .ok_or_else(|| unsupported("deleted-file", scope))?
+            .open_deleted(inner.as_path(), id)
+    }
 }
 
 impl PathAttributes for ContainerFs {
@@ -525,6 +660,167 @@ mod tests {
                 .factory(Arc::new(ToyContainerFactory))
                 .build(),
         )
+    }
+
+    /// Mounts the same toy containers as [`ToyContainerFactory`], but as a filesystem that
+    /// answers every capability, so forwarding through `ContainerFs` can be checked.
+    struct CapableToyFactory;
+    impl FormatFactory for CapableToyFactory {
+        fn name(&self) -> &'static str {
+            "capable-toy-container"
+        }
+        fn yields(&self) -> MountKind {
+            MountKind::FileSystem
+        }
+        fn extensions(&self) -> &[&'static str] {
+            &["tc"]
+        }
+        fn probe(
+            &self,
+            file: &mut dyn VirtualFile,
+            ctx: &MountContext<'_>,
+        ) -> ForensicResult<ProbeScore> {
+            ToyContainerFactory.probe(file, ctx)
+        }
+        fn mount(
+            &self,
+            mut file: Box<dyn VirtualFile>,
+            _ctx: &MountContext<'_>,
+        ) -> ForensicResult<Mounted> {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)
+                .map_err(|e| ForensicError::other("toy", e.to_string()))?;
+            let fs = parse_toy_container(&bytes).ok_or_else(|| {
+                ForensicError::other("toy-container", "malformed toy container".to_string())
+            })?;
+            Ok(Mounted::FileSystem(Arc::new(
+                crate::core::fs::capable_test_fs::CapableFs::new(fs),
+            )))
+        }
+    }
+
+    fn capable_fs() -> ContainerFs {
+        let base = InMemoryVirtualFileSystem::new()
+            .with_text_file("plain.txt", "plain")
+            .with_file(
+                "report.tc",
+                build_toy_container(&[("a.txt", "hello"), ("a.txt:ads", "xyz")]),
+            );
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(CapableToyFactory))
+            .build();
+        ContainerFs::new(Arc::new(base), Arc::new(resolver))
+    }
+
+    fn read_string(mut file: Box<dyn VirtualFile>) -> String {
+        let mut out = String::new();
+        file.read_to_string(&mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn capabilities_are_not_claimed_when_nothing_could_answer() {
+        let base = InMemoryVirtualFileSystem::new();
+        let fs = ContainerFs::new(Arc::new(base), Arc::new(MountResolver::builder().build()));
+        assert!(fs.as_streams().is_none());
+        assert!(fs.as_media_map().is_none());
+        assert!(fs.as_deleted().is_none());
+        assert!(fs.as_unallocated().is_none());
+    }
+
+    #[test]
+    fn streams_are_forwarded_to_the_filesystem_inside_a_container() {
+        let fs = capable_fs();
+        let streams = fs
+            .as_streams()
+            .expect("a mounted container may have streams");
+        let listed = streams.streams(FPath::new("report.tc/a.txt")).unwrap();
+        assert_eq!((listed[0].name.as_str(), listed[0].size), ("ads", 3));
+        assert_eq!(
+            read_string(
+                streams
+                    .open_stream(FPath::new("report.tc/a.txt"), "ads")
+                    .unwrap()
+            ),
+            "xyz"
+        );
+        // The base filesystem has no streams: an explicit error, not an empty list.
+        assert!(streams.streams(FPath::new("plain.txt")).is_err());
+    }
+
+    #[test]
+    fn media_map_is_forwarded_and_a_holder_without_one_answers_none() {
+        let fs = capable_fs();
+        let map = fs.as_media_map().unwrap();
+        let parent = map
+            .to_parent(FPath::new("report.tc/a.txt"), 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parent.offset, 1005);
+        assert_eq!(map.to_parent(FPath::new("plain.txt"), 0).unwrap(), None);
+        assert!(map.to_parent(FPath::new("missing.txt"), 0).is_err());
+    }
+
+    #[test]
+    fn deleted_entries_are_scoped_to_a_container_and_named_in_the_outer_namespace() {
+        let fs = capable_fs();
+        let deleted = fs.as_deleted().unwrap();
+        let (entries, _report) = deleted.deleted_entries(FPath::new("report.tc")).unwrap();
+        let paths: Vec<_> = entries
+            .iter()
+            .map(|r| r.value().path.as_ref().map(|p| p.to_string()))
+            .collect();
+        assert_eq!(
+            paths,
+            vec![Some("report.tc/deleted/gone.txt".to_string()), None]
+        );
+        let file = deleted
+            .open_deleted(FPath::new("report.tc"), 7)
+            .unwrap()
+            .into_value();
+        assert_eq!(read_string(file), "gone");
+        // The base filesystem keeps no deleted entries.
+        assert!(deleted.deleted_entries(FPath::new("")).is_err());
+    }
+
+    #[test]
+    fn a_split_image_s_media_map_is_reachable_through_container_paths() {
+        use crate::core::fs::{MEDIA_FILE, SplitRawFactory};
+        let base = InMemoryVirtualFileSystem::new()
+            .with_file("case/disk.001", vec![b'A'; 16])
+            .with_file("case/disk.002", vec![b'B'; 16]);
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(SplitRawFactory::new()))
+            .build();
+        let fs = ContainerFs::new(Arc::new(base), Arc::new(resolver));
+        let at = fs
+            .as_media_map()
+            .unwrap()
+            .to_parent(&FPathBuf::from(format!("case/disk.001/{MEDIA_FILE}")), 17)
+            .unwrap()
+            .unwrap();
+        // Already rooted at the ContainerFs's own evidence: usable against `fs` as is.
+        assert_eq!(at.offset, 1);
+        assert_eq!(
+            at.locator,
+            EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("case/disk.002")))
+        );
+    }
+
+    #[test]
+    fn mount_point_strips_the_part_the_inner_path_accounts_for() {
+        assert_eq!(
+            mount_point(FPath::new("disk.raw/p1/Users"), FPath::new("Users")),
+            FPathBuf::from("disk.raw/p1")
+        );
+        assert_eq!(
+            mount_point(FPath::new("docs"), FPath::new("docs")),
+            FPathBuf::from("")
+        );
+        assert_eq!(
+            to_outer(FPath::new("disk.raw/p1"), FPath::new("/x/y")),
+            FPathBuf::from("disk.raw/p1/x/y")
+        );
     }
 
     /// Counts `metadata()` calls, so the "an ordinary path costs exactly one `metadata()` call"
