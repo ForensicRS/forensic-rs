@@ -186,11 +186,11 @@ impl ArtifactParserFactory for TestParserFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::CancellationToken;
     use crate::core::fs::StdVirtualFS;
     use crate::pipeline::context::TriageContext;
     use crate::pipeline::sources::TriageSources;
     use crate::utils::testing::TestingRegistry;
-    use crate::bridge::CancellationToken;
 
     fn test_sources() -> TriageSources {
         TriageSources::new(
@@ -223,7 +223,9 @@ mod tests {
 
     #[test]
     fn parseable_false_mirrors_unparseable() {
-        let parser = TestParserFactoryBuilder::new("mock_parser").parseable(false).build();
+        let parser = TestParserFactoryBuilder::new("mock_parser")
+            .parseable(false)
+            .build();
         let sources = test_sources();
         let (ctx_owner, cancellation) = test_ctx();
         let ctx = ParseContext::new(&sources, &ctx_owner, &cancellation);
@@ -250,7 +252,11 @@ mod tests {
     #[test]
     fn with_result_supports_partial_failures() {
         let parser = TestParserFactoryBuilder::new("mock_parser")
-            .with_record(ForensicData::new("h", Artifact::Unknown, test_provenance_id()))
+            .with_record(ForensicData::new(
+                "h",
+                Artifact::Unknown,
+                test_provenance_id(),
+            ))
             .with_result(Err(crate::err::ForensicError::missing_data(
                 "test",
                 compact_str::CompactString::const_new("intentional"),

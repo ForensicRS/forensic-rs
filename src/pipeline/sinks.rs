@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
+#[cfg(feature = "serde")]
+use crate::provenance::{Confidence, ProvenanceStore};
 use crate::{
     data::ForensicData, err::ForensicResult, field::Field, utils::time::ForensicTimestamp,
 };
-#[cfg(feature = "serde")]
-use crate::provenance::{Confidence, ProvenanceStore};
 
 use super::{
     finding::{Finding, FindingSeverity},
@@ -744,8 +744,12 @@ mod tests {
         assert!(findings.on_finding(&finding).is_err());
         assert_eq!((findings.total_count(), findings.error_count()), (0, 1));
 
-        let mut provenance = ProvenanceJsonlSink::new(FailingWriter, Vec::new(), ProvenanceStore::new());
+        let mut provenance =
+            ProvenanceJsonlSink::new(FailingWriter, Vec::new(), ProvenanceStore::new());
         assert!(provenance.on_data(&data).is_err());
-        assert_eq!((provenance.record_count(), provenance.error_count()), (0, 1));
+        assert_eq!(
+            (provenance.record_count(), provenance.error_count()),
+            (0, 1)
+        );
     }
 }

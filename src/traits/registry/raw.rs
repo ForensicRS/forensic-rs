@@ -161,7 +161,11 @@ pub trait Registry: Send + Sync {
     /// clearing/capacity. The default delegates to
     /// [`values_raw`](Registry::values_raw) (no savings) — a backend
     /// overrides this only if it can actually avoid the intermediate `Vec`.
-    fn values_raw_into(&self, key: &RawKey, out: &mut Vec<(String, RegValue)>) -> ForensicResult<()> {
+    fn values_raw_into(
+        &self,
+        key: &RawKey,
+        out: &mut Vec<(String, RegValue)>,
+    ) -> ForensicResult<()> {
         out.extend(self.values_raw(key)?);
         Ok(())
     }
@@ -196,7 +200,10 @@ pub trait Registry: Send + Sync {
     /// Like [`keys_raw`](Registry::keys_raw); see
     /// [`values_iter_raw`](Registry::values_iter_raw) for the laziness
     /// contract, the object-safety rationale, and why there's no default.
-    fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>>;
+    fn keys_iter_raw<'a>(
+        &'a self,
+        key: &RawKey,
+    ) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>>;
 }
 
 /// RAII guard for an open registry key, tied to the `&'r T` it was opened
@@ -481,7 +488,7 @@ fn resolve_hive(name: &str) -> ForensicResult<PredefinedHive> {
             return Err(crate::err::ForensicError::other(
                 "registry",
                 format!("unknown hive designator: {other}"),
-            ))
+            ));
         }
     };
     Ok(hive)
@@ -552,7 +559,13 @@ mod tests {
             );
             tree.insert(
                 "Software\\Run".to_string(),
-                (vec![("Updater".to_string(), RegValue::SZ("updater.exe".to_string()))], vec![]),
+                (
+                    vec![(
+                        "Updater".to_string(),
+                        RegValue::SZ("updater.exe".to_string()),
+                    )],
+                    vec![],
+                ),
             );
             MiniRegistry {
                 tree,
@@ -575,7 +588,9 @@ mod tests {
                 .unwrap()
                 .get(&key.raw())
                 .cloned()
-                .ok_or_else(|| crate::err::ForensicError::other("registry", "unknown handle".to_string()))
+                .ok_or_else(|| {
+                    crate::err::ForensicError::other("registry", "unknown handle".to_string())
+                })
         }
     }
 
@@ -584,7 +599,10 @@ mod tests {
             // This minimal double uses one flat tree for every hive it
             // supports; a real backend maps each hive to a distinct root.
             if !matches!(hive, PredefinedHive::LocalMachine | PredefinedHive::Users) {
-                return Err(crate::err::ForensicError::other("registry", "unsupported hive".to_string()));
+                return Err(crate::err::ForensicError::other(
+                    "registry",
+                    "unsupported hive".to_string(),
+                ));
             }
             Ok(self.intern(String::new()))
         }
@@ -596,7 +614,10 @@ mod tests {
                 format!("{parent_path}\\{name}")
             };
             if !self.tree.contains_key(&full) {
-                return Err(crate::err::ForensicError::other("registry", format!("no such key: {full}")));
+                return Err(crate::err::ForensicError::other(
+                    "registry",
+                    format!("no such key: {full}"),
+                ));
             }
             Ok(self.intern(full))
         }
@@ -609,11 +630,17 @@ mod tests {
                 .get(&path)
                 .and_then(|(values, _)| values.iter().find(|(n, _)| n == value))
                 .map(|(_, v)| v.clone())
-                .ok_or_else(|| crate::err::ForensicError::other("registry", "value not found".to_string()))
+                .ok_or_else(|| {
+                    crate::err::ForensicError::other("registry", "value not found".to_string())
+                })
         }
         fn values_raw(&self, key: &RawKey) -> ForensicResult<Vec<(String, RegValue)>> {
             let path = self.path_of(key)?;
-            Ok(self.tree.get(&path).map(|(v, _)| v.clone()).unwrap_or_default())
+            Ok(self
+                .tree
+                .get(&path)
+                .map(|(v, _)| v.clone())
+                .unwrap_or_default())
         }
         fn keys_raw(&self, key: &RawKey) -> ForensicResult<Vec<KeyEntry>> {
             let path = self.path_of(key)?;
@@ -653,7 +680,10 @@ mod tests {
             })
         }
 
-        fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
+        fn keys_iter_raw<'a>(
+            &'a self,
+            key: &RawKey,
+        ) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
             let path = self.path_of(key)?;
             Ok(match self.tree.get(&path) {
                 Some((_, children)) => Box::new(children.iter().map(|name| KeyEntry {
@@ -679,7 +709,10 @@ mod tests {
                     parent_hint: Some("Software\\Run".to_string()),
                 },
                 crate::provenance::Recovery::DeletedMetadata,
-                crate::provenance::Locus::Hive { cell: 0x2C10, value_index: 0 },
+                crate::provenance::Locus::Hive {
+                    cell: 0x2C10,
+                    value_index: 0,
+                },
             )])
         }
 
@@ -691,7 +724,10 @@ mod tests {
                     value: RegValue::SZ("beacon.exe".to_string()),
                 },
                 crate::provenance::Recovery::DeletedMetadata,
-                crate::provenance::Locus::Hive { cell: 0x2C40, value_index: 1 },
+                crate::provenance::Locus::Hive {
+                    cell: 0x2C40,
+                    value_index: 1,
+                },
             )])
         }
     }
@@ -708,16 +744,25 @@ mod tests {
 
         let keys = recovery.deleted_keys().unwrap();
         assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].recovery(), crate::provenance::Recovery::DeletedMetadata);
+        assert_eq!(
+            keys[0].recovery(),
+            crate::provenance::Recovery::DeletedMetadata
+        );
         assert_ne!(keys[0].locus(), crate::provenance::Locus::Api);
         assert_eq!(keys[0].value().name, "OldUpdater");
 
         let values = recovery.deleted_values().unwrap();
         assert_eq!(values.len(), 1);
-        assert_eq!(values[0].recovery(), crate::provenance::Recovery::DeletedMetadata);
+        assert_eq!(
+            values[0].recovery(),
+            crate::provenance::Recovery::DeletedMetadata
+        );
         assert_eq!(
             values[0].locus(),
-            crate::provenance::Locus::Hive { cell: 0x2C40, value_index: 1 }
+            crate::provenance::Locus::Hive {
+                cell: 0x2C40,
+                value_index: 1
+            }
         );
     }
 
@@ -740,7 +785,10 @@ mod tests {
     fn nested_key_open_reads_value() {
         let reg = MiniRegistry::new();
         let run = reg.key("HKLM\\Software\\Run").unwrap();
-        assert_eq!(run.value("Updater").unwrap(), RegValue::SZ("updater.exe".to_string()));
+        assert_eq!(
+            run.value("Updater").unwrap(),
+            RegValue::SZ("updater.exe".to_string())
+        );
     }
 
     #[test]
@@ -776,7 +824,14 @@ mod tests {
         let mut tree = BTreeMap::new();
         tree.insert(
             String::new(),
-            (vec![], vec!["S-1-5-21-1".to_string(), "S-1-5-21-1_Classes".to_string(), ".DEFAULT".to_string()]),
+            (
+                vec![],
+                vec![
+                    "S-1-5-21-1".to_string(),
+                    "S-1-5-21-1_Classes".to_string(),
+                    ".DEFAULT".to_string(),
+                ],
+            ),
         );
         tree.insert("S-1-5-21-1".to_string(), (vec![], vec![]));
         tree.insert("S-1-5-21-1_Classes".to_string(), (vec![], vec![]));
@@ -787,10 +842,13 @@ mod tests {
             counter: Mutex::new(0),
         };
         let mut visited = Vec::new();
-        reg.for_each_user_hive(&mut |sid, _key| {
-            visited.push(sid.to_string());
-            Ok(())
-        }, &mut |sid, e| panic!("{sid}: {e}"))
+        reg.for_each_user_hive(
+            &mut |sid, _key| {
+                visited.push(sid.to_string());
+                Ok(())
+            },
+            &mut |sid, e| panic!("{sid}: {e}"),
+        )
         .unwrap();
         assert_eq!(visited, vec!["S-1-5-21-1".to_string()]);
     }
@@ -800,7 +858,10 @@ mod tests {
         let mut tree = BTreeMap::new();
         tree.insert(
             String::new(),
-            (vec![], vec!["S-1-5-21-2".to_string(), "S-1-5-21-1".to_string()]),
+            (
+                vec![],
+                vec!["S-1-5-21-2".to_string(), "S-1-5-21-1".to_string()],
+            ),
         );
         tree.insert("S-1-5-21-1".to_string(), (vec![], vec![]));
         tree.insert("S-1-5-21-2".to_string(), (vec![], vec![]));
@@ -822,7 +883,10 @@ mod tests {
             &mut |sid, _e| failed.push(sid.to_string()),
         )
         .unwrap();
-        assert_eq!(visited, vec!["S-1-5-21-1".to_string(), "S-1-5-21-2".to_string()]);
+        assert_eq!(
+            visited,
+            vec!["S-1-5-21-1".to_string(), "S-1-5-21-2".to_string()]
+        );
         assert_eq!(failed, vec!["S-1-5-21-1".to_string()]);
     }
 
@@ -888,14 +952,20 @@ mod tests {
         // the first `n` entries via `.next()`/`.take(n)` without collecting
         // into a `Vec` first.
         let mut iter = key.values_iter().unwrap();
-        assert_eq!(iter.next(), Some(("InstallDate".to_string(), RegValue::DWord(20240101))));
+        assert_eq!(
+            iter.next(),
+            Some(("InstallDate".to_string(), RegValue::DWord(20240101)))
+        );
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn resolve_hive_accepts_short_and_long_forms_case_insensitively() {
         assert_eq!(resolve_hive("hklm").unwrap(), PredefinedHive::LocalMachine);
-        assert_eq!(resolve_hive("HKEY_LOCAL_MACHINE").unwrap(), PredefinedHive::LocalMachine);
+        assert_eq!(
+            resolve_hive("HKEY_LOCAL_MACHINE").unwrap(),
+            PredefinedHive::LocalMachine
+        );
         assert!(resolve_hive("NOT_A_HIVE").is_err());
     }
 
@@ -920,7 +990,10 @@ mod tests {
             RegValue::DWord(20240101)
         );
         let run = software.open("Run").unwrap();
-        assert_eq!(run.value("Updater").unwrap(), RegValue::SZ("updater.exe".to_string()));
+        assert_eq!(
+            run.value("Updater").unwrap(),
+            RegValue::SZ("updater.exe".to_string())
+        );
     }
 
     #[test]
@@ -962,5 +1035,4 @@ mod tests {
             RegValue::DWord(20240101)
         );
     }
-
 }

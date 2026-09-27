@@ -52,7 +52,7 @@
 //! | [`TriageSink`] | **none** – only ever called from the main thread |
 
 use std::collections::{BTreeMap, VecDeque};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -67,12 +67,12 @@ use crate::{
 };
 
 use super::{
+    ErrorAction,
     context::{ParseContext, TriageContext},
     finding::{AnomalyTally, Finding},
     processor::{ChannelDestination, RecordProcessor},
     sources::TriageSources,
     traits::{Analyzer, Enricher, TriageSink},
-    ErrorAction,
 };
 
 // ============================================================
@@ -410,8 +410,10 @@ impl StandardParallelTaskBuilder {
             None => {
                 return Err(ForensicError::missing_data(
                     "parser",
-                    CompactString::const_new("StandardParallelTaskBuilder: call .parser() before .build()"),
-                ))
+                    CompactString::const_new(
+                        "StandardParallelTaskBuilder: call .parser() before .build()",
+                    ),
+                ));
             }
         };
         let sources_factory = match self.sources_factory {
@@ -419,8 +421,10 @@ impl StandardParallelTaskBuilder {
             None => {
                 return Err(ForensicError::missing_data(
                     "sources_factory",
-                    CompactString::const_new("StandardParallelTaskBuilder: call .sources() before .build()"),
-                ))
+                    CompactString::const_new(
+                        "StandardParallelTaskBuilder: call .sources() before .build()",
+                    ),
+                ));
             }
         };
         Ok(StandardParallelTask {
@@ -718,8 +722,10 @@ impl AnalysisModuleBuilder {
             None => {
                 return Err(ForensicError::missing_data(
                     "analyzer",
-                    CompactString::const_new("AnalysisModuleBuilder: call .analyzer() before .build()"),
-                ))
+                    CompactString::const_new(
+                        "AnalysisModuleBuilder: call .analyzer() before .build()",
+                    ),
+                ));
             }
         };
         let sources_factory = match self.sources_factory {
@@ -727,8 +733,10 @@ impl AnalysisModuleBuilder {
             None => {
                 return Err(ForensicError::missing_data(
                     "sources_factory",
-                    CompactString::const_new("AnalysisModuleBuilder: call .sources() before .build()"),
-                ))
+                    CompactString::const_new(
+                        "AnalysisModuleBuilder: call .sources() before .build()",
+                    ),
+                ));
             }
         };
         Ok(AnalysisModule {
@@ -1049,7 +1057,10 @@ impl ParallelPipelineBuilder {
     /// Registers every factory in `parsers` for auto-matching — e.g. a downstream crate's own
     /// `standard_parsers()` helper — without a `for` loop of `.parser(...)` calls at every call
     /// site.
-    pub fn parsers(mut self, parsers: impl IntoIterator<Item = Arc<dyn ArtifactParserFactory>>) -> Self {
+    pub fn parsers(
+        mut self,
+        parsers: impl IntoIterator<Item = Arc<dyn ArtifactParserFactory>>,
+    ) -> Self {
         self.parsers.extend(parsers);
         self
     }
@@ -1140,11 +1151,8 @@ mod tests {
         data::ForensicData,
         err::ForensicResult,
         pipeline::{
-            context::ParseContext,
-            finding::Finding,
-            sinks::FindingCollector,
-            sources::TriageSources,
-            traits::TriageSink,
+            context::ParseContext, finding::Finding, sinks::FindingCollector,
+            sources::TriageSources, traits::TriageSink,
         },
         traits::forensic::{ArtifactParserFactory, ParserDescriptor, ParserRun},
         utils::testing::TestParserFactoryBuilder,
@@ -1297,7 +1305,12 @@ mod tests {
     fn task_error_does_not_block_other_tasks() {
         let failing_task = StandardParallelTaskBuilder::new("failing")
             .parser(Arc::new(FailParser {
-                descriptor: ParserDescriptor::new("fail_parser", "fail_parser", "always fails", "0.1"),
+                descriptor: ParserDescriptor::new(
+                    "fail_parser",
+                    "fail_parser",
+                    "always fails",
+                    "0.1",
+                ),
                 push_mode: false,
             }))
             .sources(empty_sources)
@@ -1334,7 +1347,12 @@ mod tests {
         // instead of `open()` itself — exercises `RecordProcessor::parser_error`.
         let failing_task = StandardParallelTaskBuilder::new("failing_push")
             .parser(Arc::new(FailParser {
-                descriptor: ParserDescriptor::new("fail_parser", "fail_parser", "always fails", "0.1"),
+                descriptor: ParserDescriptor::new(
+                    "fail_parser",
+                    "fail_parser",
+                    "always fails",
+                    "0.1",
+                ),
                 push_mode: true,
             }))
             .sources(empty_sources)
@@ -1704,7 +1722,11 @@ mod tests {
             fn open(&self, _ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
                 self.opens.fetch_add(1, Ordering::SeqCst);
                 Ok(ParserRun::pull((0..2).map(|_| {
-                    Ok(ForensicData::new("h", Artifact::Unknown, crate::utils::testing::test_provenance_id()))
+                    Ok(ForensicData::new(
+                        "h",
+                        Artifact::Unknown,
+                        crate::utils::testing::test_provenance_id(),
+                    ))
                 })))
             }
         }
@@ -1766,9 +1788,9 @@ mod tests {
             let host = self.host;
             let mut records = Vec::with_capacity(self.count);
             for i in 0..self.count {
-                let source = ctx.register_source(crate::provenance::SourceKey::Synthetic(
-                    format!("{host}-{i}"),
-                ));
+                let source = ctx.register_source(crate::provenance::SourceKey::Synthetic(format!(
+                    "{host}-{i}"
+                )));
                 let id = source.mint(
                     crate::provenance::Acquisition::LiveApi,
                     crate::provenance::Recovery::Allocated,
@@ -1782,7 +1804,12 @@ mod tests {
     fn minting_task(name: &str, host: &'static str, count: usize) -> StandardParallelTask {
         StandardParallelTaskBuilder::new(name)
             .parser(Arc::new(MintingParser {
-                descriptor: ParserDescriptor::new(name.to_string(), name.to_string(), "mints provenance", "0.1"),
+                descriptor: ParserDescriptor::new(
+                    name.to_string(),
+                    name.to_string(),
+                    "mints provenance",
+                    "0.1",
+                ),
                 host,
                 count,
             }))
@@ -1914,7 +1941,10 @@ mod tests {
                 .vfs()
                 .expect("the parallel pipeline must attach sources before running analyzers");
             let bytes = vfs.read_all(crate::core::path::FPath::new(self.path))?;
-            assert_eq!(bytes, self.expected, "analyzer must read the exact bytes the parser saw");
+            assert_eq!(
+                bytes, self.expected,
+                "analyzer must read the exact bytes the parser saw"
+            );
             Ok(())
         }
     }
@@ -1930,7 +1960,8 @@ mod tests {
             .parser(mock_parser_with_records(1, "host-a"))
             .analyzer(Box::new(NestedPathReadingAnalyzer { path, expected }))
             .sources(move || {
-                let vfs = Arc::new(InMemoryVirtualFileSystem::new().with_file(path, expected.to_vec()));
+                let vfs =
+                    Arc::new(InMemoryVirtualFileSystem::new().with_file(path, expected.to_vec()));
                 TriageSources::builder().vfs(vfs).build()
             })
             .build()

@@ -59,12 +59,12 @@ impl MockEvtxParser {
             descriptor: Self::descriptor_for("System"),
             channel: "System",
             events: vec![
-                (501, 7045, 1718400000),  // Service installed
-                (502, 7036, 1718400060),  // Service state change
-                (503, 104, 1718400120),   // Log cleared! (anti-forensics indicator)
-                (504, 7036, 1718400180),  // Service state change
+                (501, 7045, 1718400000), // Service installed
+                (502, 7036, 1718400060), // Service state change
+                (503, 104, 1718400120),  // Log cleared! (anti-forensics indicator)
+                (504, 7036, 1718400180), // Service state change
                 // Gap: 505 missing
-                (506, 7040, 1718400300),  // Service config change
+                (506, 7040, 1718400300), // Service config change
             ],
         }
     }
@@ -81,21 +81,31 @@ impl ArtifactParserFactory for MockEvtxParser {
         // only thing that knows what its own source key should be.
         let source = ctx.register_source(SourceKey::Path(format!("{channel}.evtx")));
         let events = self.events.clone();
-        let iter = events.into_iter().map(move |(record_id, event_id, unix_secs)| {
-            // Each record gets its own provenance: minted from this parser's
-            // source, as an allocated read from the (simulated) .evtx image.
-            let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
-            let mut data = ForensicData::new("WORKSTATION01",
-                Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown)), provenance);
+        let iter = events
+            .into_iter()
+            .map(move |(record_id, event_id, unix_secs)| {
+                // Each record gets its own provenance: minted from this parser's
+                // source, as an allocated read from the (simulated) .evtx image.
+                let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
+                let mut data = ForensicData::new(
+                    "WORKSTATION01",
+                    Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown)),
+                    provenance,
+                );
 
-            data.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
-            data.insert(Text::Borrowed(EVENT_CODE), Field::U64(event_id));
-            data.insert(Text::Borrowed("event.channel"), Field::Text(Text::Borrowed(channel)));
-            data.insert(Text::Borrowed(TIMESTAMP),
-                Field::Date(ForensicTimestamp::from_unix_secs(unix_secs as i64)));
+                data.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
+                data.insert(Text::Borrowed(EVENT_CODE), Field::U64(event_id));
+                data.insert(
+                    Text::Borrowed("event.channel"),
+                    Field::Text(Text::Borrowed(channel)),
+                );
+                data.insert(
+                    Text::Borrowed(TIMESTAMP),
+                    Field::Date(ForensicTimestamp::from_unix_secs(unix_secs as i64)),
+                );
 
-            Ok(data)
-        });
+                Ok(data)
+            });
 
         Ok(ParserRun::pull(iter))
     }
@@ -115,15 +125,21 @@ struct EventGapDetector {
 
 impl EventGapDetector {
     fn new() -> Self {
-        Self { channels: BTreeMap::new() }
+        Self {
+            channels: BTreeMap::new(),
+        }
     }
 }
 
 impl Analyzer for EventGapDetector {
-    fn name(&self) -> &str { "event_gap_detector" }
+    fn name(&self) -> &str {
+        "event_gap_detector"
+    }
 
     fn supported_artifacts(&self) -> Vec<Artifact> {
-        vec![Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown))]
+        vec![Artifact::Windows(WindowsArtifacts::WinEvt(
+            WindowsEvents::Unknown,
+        ))]
     }
 
     fn analyze(
@@ -153,7 +169,10 @@ impl Analyzer for EventGapDetector {
         };
 
         // Track record for gap analysis in finalize()
-        self.channels.entry(channel.clone()).or_default().push((record_id, ts));
+        self.channels
+            .entry(channel.clone())
+            .or_default()
+            .push((record_id, ts));
 
         // Per-record check: Event ID 104 = "The System log file was cleared"
         if event_id == 104 {
@@ -207,10 +226,21 @@ impl Analyzer for EventGapDetector {
                         missing_count, channel, prev_id, next_id
                     ))
                     .with_timestamp(prev_ts)
-                    .with_artifact(Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Unknown)))
-                    .with_metadata(Text::Borrowed("gap.start_id"), Text::Owned(prev_id.to_string()))
-                    .with_metadata(Text::Borrowed("gap.end_id"), Text::Owned(next_id.to_string()))
-                    .with_metadata(Text::Borrowed("gap.missing_count"), Text::Owned(missing_count.to_string()));
+                    .with_artifact(Artifact::Windows(WindowsArtifacts::WinEvt(
+                        WindowsEvents::Unknown,
+                    )))
+                    .with_metadata(
+                        Text::Borrowed("gap.start_id"),
+                        Text::Owned(prev_id.to_string()),
+                    )
+                    .with_metadata(
+                        Text::Borrowed("gap.end_id"),
+                        Text::Owned(next_id.to_string()),
+                    )
+                    .with_metadata(
+                        Text::Borrowed("gap.missing_count"),
+                        Text::Owned(missing_count.to_string()),
+                    );
 
                     out.push(finding);
                 }
@@ -259,10 +289,12 @@ fn run_parallel() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Findings        : {}", result.findings_count);
     println!();
     for (task, stats) in &result.task_stats {
-        println!("  {task:<28} items={i:>3}  findings={f:>2}",
+        println!(
+            "  {task:<28} items={i:>3}  findings={f:>2}",
             task = task,
-            i    = stats.items_processed,
-            f    = stats.findings_count);
+            i = stats.items_processed,
+            f = stats.findings_count
+        );
     }
 
     Ok(())
@@ -307,9 +339,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The finding count is also tracked by PipelineResult:
     if result.findings_count > 0 {
         println!("--- Findings Summary ---");
-        println!("The pipeline detected {} finding(s):", result.findings_count);
+        println!(
+            "The pipeline detected {} finding(s):",
+            result.findings_count
+        );
         println!("  - Event log gaps (MissingData findings from finalize())");
-        println!("  - Event log cleared indicators (AntiForensics findings from per-record analysis)");
+        println!(
+            "  - Event log cleared indicators (AntiForensics findings from per-record analysis)"
+        );
         println!();
         println!("In production, implement a custom TriageSink to write findings");
         println!("to disk, a database, or any other destination.");

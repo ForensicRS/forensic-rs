@@ -1406,7 +1406,11 @@ impl ForensicError {
     ///     // ... parse sections
     /// }
     /// ```
-    pub fn format_corrupted(artifact_type: &'static str, position: u64, reason: CompactString) -> Self {
+    pub fn format_corrupted(
+        artifact_type: &'static str,
+        position: u64,
+        reason: CompactString,
+    ) -> Self {
         Self::Format(FormatError::Corrupted {
             artifact_type,
             position,
@@ -1695,7 +1699,10 @@ impl ForensicError {
     ///         })
     /// }
     /// ```
-    pub fn access_denied(resource: impl Into<CompactString>, context: impl Into<CompactString>) -> Self {
+    pub fn access_denied(
+        resource: impl Into<CompactString>,
+        context: impl Into<CompactString>,
+    ) -> Self {
         Self::DataAccess(DataAccessError::AccessDenied {
             resource: resource.into(),
             context: context.into(),
@@ -1766,9 +1773,9 @@ impl ForensicError {
     /// [`with_path`](Self::with_path)/[`with_offset`](Self::with_offset) context.
     pub fn is_registry_not_found(&self) -> bool {
         match self {
-            Self::Registry(RegistryError::KeyNotFound { .. } | RegistryError::ValueNotFound { .. }) => {
-                true
-            }
+            Self::Registry(
+                RegistryError::KeyNotFound { .. } | RegistryError::ValueNotFound { .. },
+            ) => true,
             Self::Contextualized { inner, .. } => inner.is_registry_not_found(),
             _ => false,
         }
@@ -1882,7 +1889,11 @@ impl ForensicError {
     ///     }
     /// }
     /// ```
-    pub fn cast_error(from_type: &'static str, to_type: &'static str, reason: CompactString) -> Self {
+    pub fn cast_error(
+        from_type: &'static str,
+        to_type: &'static str,
+        reason: CompactString,
+    ) -> Self {
         Self::Cast(CastError::InvalidConversion {
             from_type,
             to_type,
@@ -2310,7 +2321,9 @@ impl std::error::Error for ForensicError {
                 source: Some(source),
                 ..
             } => Some(source.as_ref()),
-            ForensicError::Contextualized { inner, .. } => std::error::Error::source(inner.as_ref()),
+            ForensicError::Contextualized { inner, .. } => {
+                std::error::Error::source(inner.as_ref())
+            }
             _ => None,
         }
     }
@@ -2390,8 +2403,12 @@ fn path_not_found_auto_populates_path_context() {
 
 #[test]
 fn contextualized_error_clones_and_compares_equal() {
-    let a = ForensicError::no_more_data().with_path("C:\\a").with_offset(1);
-    let b = ForensicError::no_more_data().with_path("C:\\a").with_offset(1);
+    let a = ForensicError::no_more_data()
+        .with_path("C:\\a")
+        .with_offset(1);
+    let b = ForensicError::no_more_data()
+        .with_path("C:\\a")
+        .with_offset(1);
     assert_eq!(a, a.clone());
     assert_eq!(a, b);
 }

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::core::UsersEnvVars;
 use crate::err::{ForensicError, ForensicResult};
-use crate::traits::registry::{windows, Registry, RegistryExt};
+use crate::traits::registry::{Registry, RegistryExt, windows};
 
 const CURRENT_VERSION: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion";
 
@@ -208,7 +208,10 @@ fn system_root(reg: &dyn Registry, report: &mut EnvVarsReport) -> (String, bool)
             reason
         }
     };
-    (report.assume(None, "SystemRoot", r"C:\Windows".into(), reason), false)
+    (
+        report.assume(None, "SystemRoot", r"C:\Windows".into(), reason),
+        false,
+    )
 }
 
 fn program_data(reg: &dyn Registry, report: &mut EnvVarsReport) -> String {
@@ -265,8 +268,9 @@ fn user_specific_env_vars(
     // (not even the pure-string-derived HOMEPATH/HOMEDRIVE/USERNAME). A key
     // that exists but can't be opened is kept as an error.
     let user_root_path = format!(r"HKU\{user}");
-    let shell_folders_path =
-        format!(r"{user_root_path}\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders");
+    let shell_folders_path = format!(
+        r"{user_root_path}\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+    );
     for gate in [&user_root_path, &shell_folders_path] {
         if let Err(e) = reg.key(gate) {
             if !e.is_registry_not_found() {
@@ -278,13 +282,20 @@ fn user_specific_env_vars(
 
     let sid = Some(user);
     let mut to_ret = Vec::with_capacity(12);
-    let app_data = report.read_or_assume(reg, sid, (&shell_folders_path, "AppData"), "APPDATA", || {
-        format!("{}\\AppData\\Roaming", user_profile)
-    });
-    let local_app_data =
-        report.read_or_assume(reg, sid, (&shell_folders_path, "Local AppData"), "LOCALAPPDATA", || {
-            format!("{}\\AppData\\Local", user_profile)
-        });
+    let app_data = report.read_or_assume(
+        reg,
+        sid,
+        (&shell_folders_path, "AppData"),
+        "APPDATA",
+        || format!("{}\\AppData\\Roaming", user_profile),
+    );
+    let local_app_data = report.read_or_assume(
+        reg,
+        sid,
+        (&shell_folders_path, "Local AppData"),
+        "LOCALAPPDATA",
+        || format!("{}\\AppData\\Local", user_profile),
+    );
     to_ret.push((
         "LOCALAPPDATA".into(),
         replace_user_profile(local_app_data, user_profile),
@@ -360,7 +371,9 @@ mod tests {
             RegValue::new_sz(profile),
         );
         reg.add_value(
-            &format!(r"HKU\{SID}\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"),
+            &format!(
+                r"HKU\{SID}\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            ),
             "AppData",
             RegValue::new_sz(r"%USERPROFILE%\AppData\Roaming"),
         );
@@ -402,21 +415,35 @@ mod tests {
     #[test]
     fn values_read_from_the_registry_are_not_fallbacks() {
         let mut reg = with_profile(r"D:\Users\Bob");
-        reg.add_value(NT_CURRENT_VERSION, "SystemRoot", RegValue::new_sz(r"D:\Windows"));
-        reg.add_value(CURRENT_VERSION, "ProgramFilesDir", RegValue::new_sz(r"D:\Program Files"));
+        reg.add_value(
+            NT_CURRENT_VERSION,
+            "SystemRoot",
+            RegValue::new_sz(r"D:\Windows"),
+        );
+        reg.add_value(
+            CURRENT_VERSION,
+            "ProgramFilesDir",
+            RegValue::new_sz(r"D:\Program Files"),
+        );
         reg.add_value(
             CURRENT_VERSION,
             "ProgramFilesDir (x86)",
             RegValue::new_sz(r"D:\Program Files (x86)"),
         );
-        reg.add_value(CURRENT_VERSION, "ProgramW6432Dir", RegValue::new_sz(r"D:\Program Files"));
+        reg.add_value(
+            CURRENT_VERSION,
+            "ProgramW6432Dir",
+            RegValue::new_sz(r"D:\Program Files"),
+        );
         reg.add_value(
             r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
             "Common AppData",
             RegValue::new_sz(r"D:\ProgramData"),
         );
         reg.add_value(
-            &format!(r"HKU\{SID}\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"),
+            &format!(
+                r"HKU\{SID}\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            ),
             "Local AppData",
             RegValue::new_sz(r"%USERPROFILE%\AppData\Local"),
         );

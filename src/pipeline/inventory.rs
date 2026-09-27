@@ -19,7 +19,9 @@ use crate::{
     dictionary,
     err::ForensicResult,
     pipeline::context::ParseContext,
-    provenance::{Acquisition, AnomalyDetail, AnomalyFlags, Anomalies, Parsed, ProvenanceStore, Recovery},
+    provenance::{
+        Acquisition, Anomalies, AnomalyDetail, AnomalyFlags, Parsed, ProvenanceStore, Recovery,
+    },
     traits::forensic::{ArtifactParserFactory, ParserDescriptor, ParserRun},
     traits::vfs::{DirEntry, FileAttributes, FileSystem, FileSystemExt, VFileType},
 };
@@ -161,7 +163,9 @@ impl ArtifactParserFactory for ContainerInventoryParser {
                             let tail = relative_tail(top.path.as_path(), entry.path.as_path());
                             top.locator.clone().push(LocatorSegment::Path(tail))
                         }
-                        None => EvidenceLocator::root().push(LocatorSegment::Path(entry.path.clone())),
+                        None => {
+                            EvidenceLocator::root().push(LocatorSegment::Path(entry.path.clone()))
+                        }
                     };
                     let record = build_record(
                         fs.as_ref(),
@@ -324,7 +328,10 @@ fn build_record(
         }
     }
 
-    data.set(dictionary::FILE_PATH, entry.path.as_path().as_str().to_string());
+    data.set(
+        dictionary::FILE_PATH,
+        entry.path.as_path().as_str().to_string(),
+    );
     if let Some(name) = entry.file_name() {
         data.set(dictionary::FILE_NAME, name.to_string());
     }
@@ -341,7 +348,10 @@ fn build_record(
             });
         }
         let message = errors.join("; ");
-        data.set_parsed("container.error", Parsed::with_anomalies(message, anomalies, id));
+        data.set_parsed(
+            "container.error",
+            Parsed::with_anomalies(message, anomalies, id),
+        );
     }
 
     data
@@ -359,8 +369,8 @@ mod tests {
         err::{ForensicError, ForensicResult},
         field::{Field, Text},
         pipeline::{
-            context::TriageContext, finding::Finding, sources::TriageSources,
-            traits::TriageSink, ErrorAction, TriagePipeline,
+            ErrorAction, TriagePipeline, context::TriageContext, finding::Finding,
+            sources::TriageSources, traits::TriageSink,
         },
         provenance::{Acquisition, Confidence},
         traits::vfs::{
@@ -424,17 +434,26 @@ mod tests {
     fn fake_fs() -> Arc<FakeContainerFs> {
         let inner = InMemoryVirtualFileSystem::new()
             .with_file("report.doc", Vec::new())
-            .with_file("report.doc/Macros/VBA/Module1", b"Sub Foo()\nEnd Sub\n".to_vec())
+            .with_file(
+                "report.doc/Macros/VBA/Module1",
+                b"Sub Foo()\nEnd Sub\n".to_vec(),
+            )
             .with_file("plain.txt", b"just a file, not a container".to_vec());
 
         let mut attrs = BTreeMap::new();
         attrs.insert(
             "report.doc".to_string(),
-            BTreeMap::from([(Text::Borrowed("ole.class_id"), Field::Text(Text::Borrowed("{00020906-0000-0000-C000-000000000046}")))]),
+            BTreeMap::from([(
+                Text::Borrowed("ole.class_id"),
+                Field::Text(Text::Borrowed("{00020906-0000-0000-C000-000000000046}")),
+            )]),
         );
         attrs.insert(
             "report.doc/Macros/VBA/Module1".to_string(),
-            BTreeMap::from([(Text::Borrowed("ole.stream.name"), Field::Text(Text::Borrowed("Module1")))]),
+            BTreeMap::from([(
+                Text::Borrowed("ole.stream.name"),
+                Field::Text(Text::Borrowed("Module1")),
+            )]),
         );
 
         Arc::new(FakeContainerFs {
@@ -461,7 +480,13 @@ mod tests {
         }
     }
 
-    fn run(fs: Arc<dyn FileSystem>) -> (Vec<ForensicData>, crate::pipeline::PipelineResult, crate::provenance::ProvenanceStore) {
+    fn run(
+        fs: Arc<dyn FileSystem>,
+    ) -> (
+        Vec<ForensicData>,
+        crate::pipeline::PipelineResult,
+        crate::provenance::ProvenanceStore,
+    ) {
         let context = TriageContext::new("TEST-HOST", "default");
         let store = context.provenance_store();
         let collector = RecordCollector::default();
@@ -474,7 +499,10 @@ mod tests {
             .build()
             .unwrap();
 
-        let sources = TriageSources::builder().vfs(fs).acquisition(Acquisition::ImageRead).build();
+        let sources = TriageSources::builder()
+            .vfs(fs)
+            .acquisition(Acquisition::ImageRead)
+            .build();
         let result = pipeline.run(&sources).unwrap();
         let records = collector.0.lock().unwrap().clone();
         (records, result, store)
@@ -505,41 +533,64 @@ mod tests {
             .collect();
         assert!(record_types.contains(RECORD_TYPE_CONTAINER));
         assert!(record_types.contains(RECORD_TYPE_MEMBER));
-        assert!(record_types.len() > 1, "expected more than one record_type, got {record_types:?}");
+        assert!(
+            record_types.len() > 1,
+            "expected more than one record_type, got {record_types:?}"
+        );
 
         let container = records
             .iter()
             .find(|d| field_str(d, "container.record_type") == Some(RECORD_TYPE_CONTAINER))
             .expect("a container record");
         assert_eq!(field_str(container, "file.path"), Some("report.doc"));
-        assert_eq!(field_str(container, "ole.class_id"), Some("{00020906-0000-0000-C000-000000000046}"));
+        assert_eq!(
+            field_str(container, "ole.class_id"),
+            Some("{00020906-0000-0000-C000-000000000046}")
+        );
 
         let member = records
             .iter()
             .find(|d| field_str(d, "file.path") == Some("report.doc/Macros/VBA/Module1"))
             .expect("a member record for the deep stream path");
-        assert_eq!(field_str(member, "container.record_type"), Some(RECORD_TYPE_MEMBER));
+        assert_eq!(
+            field_str(member, "container.record_type"),
+            Some(RECORD_TYPE_MEMBER)
+        );
         assert_eq!(field_str(member, "container.parent"), Some("report.doc"));
         assert_eq!(field_str(member, "ole.stream.name"), Some("Module1"));
 
         // An ordinary file that is neither a container nor inside one gets no record at all.
-        assert!(records.iter().all(|d| field_str(d, "file.path") != Some("plain.txt")));
+        assert!(
+            records
+                .iter()
+                .all(|d| field_str(d, "file.path") != Some("plain.txt"))
+        );
     }
 
     #[test]
     fn a_metadata_failure_becomes_an_anomaly_not_a_pipeline_error() {
         let mut fs = fake_fs();
-        Arc::get_mut(&mut fs).unwrap().fail_metadata_for.insert("report.doc/Macros/VBA/Module1".to_string());
+        Arc::get_mut(&mut fs)
+            .unwrap()
+            .fail_metadata_for
+            .insert("report.doc/Macros/VBA/Module1".to_string());
         let fs: Arc<dyn FileSystem> = fs;
 
         let (records, result, store) = run(fs);
-        assert!(result.errors.is_empty(), "a corrupt member must not surface as a pipeline error");
+        assert!(
+            result.errors.is_empty(),
+            "a corrupt member must not surface as a pipeline error"
+        );
 
         let member = records
             .iter()
             .find(|d| field_str(d, "file.path") == Some("report.doc/Macros/VBA/Module1"))
             .expect("a member record for the deep stream path");
-        assert!(field_str(member, "container.error").unwrap_or_default().contains("metadata"));
+        assert!(
+            field_str(member, "container.error")
+                .unwrap_or_default()
+                .contains("metadata")
+        );
         assert_eq!(
             member.confidence(&store),
             Confidence::Low,
@@ -558,10 +609,16 @@ mod tests {
             .build()
             .unwrap();
 
-        let sources = TriageSources::builder().registry(Arc::new(TestingRegistry::new())).build();
+        let sources = TriageSources::builder()
+            .registry(Arc::new(TestingRegistry::new()))
+            .build();
         let result = pipeline.run(&sources).unwrap();
         assert_eq!(result.items_processed, 0);
-        assert!(result.parsers_skipped.contains(&"core.container_inventory".to_string()));
+        assert!(
+            result
+                .parsers_skipped
+                .contains(&"core.container_inventory".to_string())
+        );
         assert!(collector.0.lock().unwrap().is_empty());
     }
 
@@ -577,7 +634,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let sources = TriageSources::builder().vfs(fs as Arc<dyn FileSystem>).build();
+        let sources = TriageSources::builder()
+            .vfs(fs as Arc<dyn FileSystem>)
+            .build();
         let token = CancellationToken::new();
         token.cancel();
         let result = pipeline.run_with_cancellation(&sources, token).unwrap();

@@ -104,7 +104,10 @@ impl TriagePipelineBuilder {
 
     /// Adds every factory in `parsers` — e.g. a downstream crate's own `standard_parsers()`
     /// helper — without a `for` loop of `.parser(...)` calls at every call site.
-    pub fn parsers(mut self, parsers: impl IntoIterator<Item = Arc<dyn ArtifactParserFactory>>) -> Self {
+    pub fn parsers(
+        mut self,
+        parsers: impl IntoIterator<Item = Arc<dyn ArtifactParserFactory>>,
+    ) -> Self {
         self.parsers.extend(parsers);
         self
     }
@@ -234,7 +237,9 @@ impl TriagePipeline {
             };
 
             let mut tally = AnomalyTally::new();
-            let mut dest = SinkDestination { sinks: &mut self.sinks };
+            let mut dest = SinkDestination {
+                sinks: &mut self.sinks,
+            };
             let mut proc = RecordProcessor::new(
                 &mut dest,
                 &mut self.enrichers,
@@ -315,7 +320,6 @@ impl TriagePipeline {
 
 #[cfg(test)]
 mod tests {
-    use compact_str::CompactString;
     use super::*;
     use crate::{
         artifact::{Artifact, RegistryArtifacts, WindowsArtifacts, WindowsEvents},
@@ -326,8 +330,12 @@ mod tests {
         pipeline::sinks::{FindingCollector, TimelineSink},
         traits::forensic::ParserDescriptor,
         traits::vfs::FileSystemExt,
-        utils::testing::{test_provenance_id, InMemoryVirtualFileSystem, TestParserFactoryBuilder, TestingRegistry},
+        utils::testing::{
+            InMemoryVirtualFileSystem, TestParserFactoryBuilder, TestingRegistry,
+            test_provenance_id,
+        },
     };
+    use compact_str::CompactString;
 
     fn mock_parser(
         items: Vec<ForensicResult<ForensicData>>,
@@ -397,7 +405,11 @@ mod tests {
             self.count += 1;
             Ok(())
         }
-        fn finalize(&mut self, _context: &TriageContext, out: &mut Vec<Finding>) -> ForensicResult<()> {
+        fn finalize(
+            &mut self,
+            _context: &TriageContext,
+            out: &mut Vec<Finding>,
+        ) -> ForensicResult<()> {
             if self.count < self.threshold {
                 out.push(Finding::new(
                     FindingSeverity::Medium,
@@ -467,7 +479,13 @@ mod tests {
 
     #[test]
     fn parsers_registers_a_whole_batch_in_one_call() {
-        let one_item = || vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+        let one_item = || {
+            vec![Ok(ForensicData::new(
+                "host1",
+                Artifact::Unknown,
+                test_provenance_id(),
+            ))]
+        };
         let batch: Vec<Arc<dyn crate::traits::forensic::ArtifactParserFactory>> = vec![
             Arc::new(mock_parser(one_item(), Artifact::Unknown).build()),
             Arc::new(mock_parser(one_item(), Artifact::Unknown).build()),
@@ -493,7 +511,11 @@ mod tests {
 
     #[test]
     fn should_enrich_data() {
-        let items = vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+        let items = vec![Ok(ForensicData::new(
+            "host1",
+            Artifact::Unknown,
+            test_provenance_id(),
+        ))];
         let mut pipeline = TriagePipeline::builder()
             .parser(Arc::new(mock_parser(items, Artifact::Unknown).build()))
             .enricher(Box::new(TagEnricher {
@@ -510,7 +532,11 @@ mod tests {
 
     #[test]
     fn should_produce_findings_on_finalize() {
-        let items = vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+        let items = vec![Ok(ForensicData::new(
+            "host1",
+            Artifact::Unknown,
+            test_provenance_id(),
+        ))];
         let mut pipeline = TriagePipeline::builder()
             .parser(Arc::new(mock_parser(items, Artifact::Unknown).build()))
             .analyzer(Box::new(CountAnalyzer::new(5))) // threshold=5, only 1 record → finding
@@ -525,7 +551,13 @@ mod tests {
     #[test]
     fn analyzers_are_finalized_once_after_every_parser() {
         let run = |threshold| {
-            let one = || vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+            let one = || {
+                vec![Ok(ForensicData::new(
+                    "host1",
+                    Artifact::Unknown,
+                    test_provenance_id(),
+                ))]
+            };
             let mut pipeline = TriagePipeline::builder()
                 .parser(Arc::new(mock_parser(one(), Artifact::Unknown).build()))
                 .parser(Arc::new(mock_parser(one(), Artifact::Unknown).build()))
@@ -545,8 +577,16 @@ mod tests {
     #[test]
     fn should_route_data_and_findings_to_sinks() {
         let items = vec![
-            Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
-            Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
+            Ok(ForensicData::new(
+                "host1",
+                Artifact::Unknown,
+                test_provenance_id(),
+            )),
+            Ok(ForensicData::new(
+                "host1",
+                Artifact::Unknown,
+                test_provenance_id(),
+            )),
         ];
 
         // FindingCollector is a stats-only sink — it counts findings by severity.
@@ -565,12 +605,20 @@ mod tests {
     #[test]
     fn should_continue_on_parser_item_error() {
         let items: Vec<ForensicResult<ForensicData>> = vec![
-            Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
+            Ok(ForensicData::new(
+                "host1",
+                Artifact::Unknown,
+                test_provenance_id(),
+            )),
             Err(ForensicError::missing_data(
                 "test missing data",
                 CompactString::const_new("pipeline test"),
             )),
-            Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
+            Ok(ForensicData::new(
+                "host1",
+                Artifact::Unknown,
+                test_provenance_id(),
+            )),
         ];
         let mut pipeline = TriagePipeline::builder()
             .parser(Arc::new(mock_parser(items, Artifact::Unknown).build()))
@@ -586,12 +634,20 @@ mod tests {
     #[test]
     fn should_halt_on_parser_item_error() {
         let items: Vec<ForensicResult<ForensicData>> = vec![
-            Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
+            Ok(ForensicData::new(
+                "host1",
+                Artifact::Unknown,
+                test_provenance_id(),
+            )),
             Err(ForensicError::missing_data(
                 "halt test",
                 CompactString::const_new("pipeline test"),
             )),
-            Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id())),
+            Ok(ForensicData::new(
+                "host1",
+                Artifact::Unknown,
+                test_provenance_id(),
+            )),
         ];
         let mut pipeline = TriagePipeline::builder()
             .parser(Arc::new(mock_parser(items, Artifact::Unknown).build()))
@@ -608,16 +664,16 @@ mod tests {
         let mut data1 = ForensicData::new("host1", Artifact::Unknown, test_provenance_id());
         data1.add_field(
             "@timestamp",
-            Field::Date(crate::utils::time::Filetime::with_ymd_and_hms(
-                2024, 6, 15, 10, 30, 0, 0,
-            ).into()),
+            Field::Date(
+                crate::utils::time::Filetime::with_ymd_and_hms(2024, 6, 15, 10, 30, 0, 0).into(),
+            ),
         );
         let mut data2 = ForensicData::new("host1", Artifact::Unknown, test_provenance_id());
         data2.add_field(
             "@timestamp",
-            Field::Date(crate::utils::time::Filetime::with_ymd_and_hms(
-                2024, 6, 15, 8, 0, 0, 0,
-            ).into()),
+            Field::Date(
+                crate::utils::time::Filetime::with_ymd_and_hms(2024, 6, 15, 8, 0, 0, 0).into(),
+            ),
         );
 
         let mut pipeline = TriagePipeline::builder()
@@ -657,7 +713,11 @@ mod tests {
         }
 
         let items = vec![
-            Ok(ForensicData::new("h", RegistryArtifacts::ShellBags.into(), test_provenance_id())), // should NOT match
+            Ok(ForensicData::new(
+                "h",
+                RegistryArtifacts::ShellBags.into(),
+                test_provenance_id(),
+            )), // should NOT match
             Ok(ForensicData::new(
                 "h",
                 WindowsArtifacts::WinEvt(WindowsEvents::Security).into(),
@@ -683,7 +743,7 @@ mod tests {
         // hand-writes a `Finding` here, yet a parse-time anomaly still shows
         // up in the report — via `set_parsed` folding it into the record and
         // the pipeline's per-parser `AnomalyTally` lowering it at exhaustion.
-        use crate::provenance::{AnomalyFlags, Anomalies, Parsed};
+        use crate::provenance::{Anomalies, AnomalyFlags, Parsed};
 
         let mut data = ForensicData::new("host1", Artifact::Unknown, test_provenance_id());
         let mut anomalies = Anomalies::empty();
@@ -701,7 +761,10 @@ mod tests {
         let result = pipeline.run(&sources).unwrap();
 
         assert_eq!(result.items_processed, 1);
-        assert_eq!(result.findings_count, 1, "the tallied anomaly should promote to exactly one finding");
+        assert_eq!(
+            result.findings_count, 1,
+            "the tallied anomaly should promote to exactly one finding"
+        );
     }
 
     #[test]
@@ -720,13 +783,28 @@ mod tests {
                 _context: &TriageContext,
                 out: &mut Vec<Finding>,
             ) -> ForensicResult<()> {
-                out.push(Finding::new(FindingSeverity::Low, FindingCategory::Other("a".to_string()), "a"));
-                out.push(Finding::new(FindingSeverity::Low, FindingCategory::Other("b".to_string()), "b"));
-                Err(ForensicError::other("test", "intentional failure after pushing findings".to_string()))
+                out.push(Finding::new(
+                    FindingSeverity::Low,
+                    FindingCategory::Other("a".to_string()),
+                    "a",
+                ));
+                out.push(Finding::new(
+                    FindingSeverity::Low,
+                    FindingCategory::Other("b".to_string()),
+                    "b",
+                ));
+                Err(ForensicError::other(
+                    "test",
+                    "intentional failure after pushing findings".to_string(),
+                ))
             }
         }
 
-        let items = vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+        let items = vec![Ok(ForensicData::new(
+            "host1",
+            Artifact::Unknown,
+            test_provenance_id(),
+        ))];
         let mut pipeline = TriagePipeline::builder()
             .parser(Arc::new(mock_parser(items, Artifact::Unknown).build()))
             .analyzer(Box::new(PushThenFailAnalyzer))
@@ -853,7 +931,10 @@ mod tests {
                 .vfs()
                 .expect("pipeline run must install a SourceView with the configured vfs");
             let bytes = vfs.read_all(crate::core::path::FPath::new(self.path))?;
-            assert_eq!(bytes, self.expected, "analyzer must read the exact bytes the parser saw");
+            assert_eq!(
+                bytes, self.expected,
+                "analyzer must read the exact bytes the parser saw"
+            );
             self.reads += 1;
             Ok(())
         }
@@ -861,13 +942,17 @@ mod tests {
 
     #[test]
     fn analyzer_reads_a_nested_path_through_the_context() {
-        let vfs = Arc::new(
-            InMemoryVirtualFileSystem::new()
-                .with_file("report.doc/Macros/VBA/Module1", b"Sub Foo()\nEnd Sub\n".to_vec()),
-        );
+        let vfs = Arc::new(InMemoryVirtualFileSystem::new().with_file(
+            "report.doc/Macros/VBA/Module1",
+            b"Sub Foo()\nEnd Sub\n".to_vec(),
+        ));
         let sources = TriageSources::new(vfs, std::sync::Arc::new(TestingRegistry::new()));
 
-        let items = vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+        let items = vec![Ok(ForensicData::new(
+            "host1",
+            Artifact::Unknown,
+            test_provenance_id(),
+        ))];
         let mut pipeline = TriagePipeline::builder()
             .parser(Arc::new(mock_parser(items, Artifact::Unknown).build()))
             .analyzer(Box::new(NestedPathReadingAnalyzer {

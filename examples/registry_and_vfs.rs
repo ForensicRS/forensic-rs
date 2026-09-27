@@ -64,7 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // List users and get system info via the `windows::` free functions
     // (RFC 0001 P1: Windows semantics live outside the core `Registry` trait).
     let users = windows::users(&registry)?;
-    println!("Users: {:?}", users.iter().map(|u| &u.sid).collect::<Vec<_>>());
+    println!(
+        "Users: {:?}",
+        users.iter().map(|u| &u.sid).collect::<Vec<_>>()
+    );
 
     let sys_root = windows::system_root(&registry)?;
     println!("SystemRoot: {}", sys_root);
@@ -135,8 +138,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provenance = event_log_source.mint(Acquisition::LiveApi, Recovery::Allocated);
 
     // Create with explicit host
-    let mut data = ForensicData::new("WORKSTATION01",
-        Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Security)), provenance);
+    let mut data = ForensicData::new(
+        "WORKSTATION01",
+        Artifact::Windows(WindowsArtifacts::WinEvt(WindowsEvents::Security)),
+        provenance,
+    );
 
     // Insert fields using ECS dictionary constants
     data.add_field(EVENT_CODE, Field::U64(4624));
@@ -146,8 +152,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     data.add_field(SOURCE_PORT, 52341u64.into());
 
     // Insert a timestamp
-    data.add_field(TIMESTAMP,
-        Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 14, 30, 0, 0).into()));
+    data.add_field(
+        TIMESTAMP,
+        Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 14, 30, 0, 0).into()),
+    );
 
     // Typed accessors (with lazy coercion)
     if let FieldAccess::Some(code) = data.get_u64(EVENT_CODE) {
@@ -177,8 +185,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let f1: Field = "hello".into();
     let f2: Field = 42u64.into();
     let f3: Field = std::f64::consts::PI.into();
-    let f4: Field = true.into();   // -> Field::U64(1)
-    let f5: Field = false.into();  // -> Field::U64(0)
+    let f4: Field = true.into(); // -> Field::U64(1)
+    let f5: Field = false.into(); // -> Field::U64(0)
 
     println!("String: {:?}", f1);
     println!("u64:    {:?}", f2);
@@ -202,9 +210,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("From WebKit:     {}", ts4);
 
     // Accessors
-    println!("\nts1 decomposed: {}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-        ts1.year(), ts1.month(), ts1.day(),
-        ts1.hour(), ts1.minute(), ts1.second(), ts1.milliseconds());
+    println!(
+        "\nts1 decomposed: {}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        ts1.year(),
+        ts1.month(),
+        ts1.day(),
+        ts1.hour(),
+        ts1.minute(),
+        ts1.second(),
+        ts1.milliseconds()
+    );
 
     // Output conversions
     println!("ts1 -> unix_secs:    {}", ts1.to_unix_secs());

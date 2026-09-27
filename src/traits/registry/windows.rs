@@ -203,8 +203,8 @@ pub fn build(reg: &dyn Registry) -> ForensicResult<WindowsVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::registry::raw::{KeyEntry, KeyInfo, PredefinedHive, RawKey};
     use crate::traits::registry::RegValue;
+    use crate::traits::registry::raw::{KeyEntry, KeyInfo, PredefinedHive, RawKey};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -227,8 +227,14 @@ mod tests {
             values.insert(
                 r"SOFTWARE\Microsoft\Windows NT\CurrentVersion".to_string(),
                 vec![
-                    ("SystemRoot".to_string(), RegValue::SZ(r"C:\Windows".to_string())),
-                    ("CurrentBuild".to_string(), RegValue::SZ("19045".to_string())),
+                    (
+                        "SystemRoot".to_string(),
+                        RegValue::SZ(r"C:\Windows".to_string()),
+                    ),
+                    (
+                        "CurrentBuild".to_string(),
+                        RegValue::SZ("19045".to_string()),
+                    ),
                 ],
             );
             children.insert(
@@ -246,7 +252,10 @@ mod tests {
                     RegValue::SZ(r"%systemroot%\Users\Bob".to_string()),
                 )],
             );
-            children.insert(String::new(), vec!["S-1-5-21-1".to_string(), "S-1-5-21-2".to_string()]);
+            children.insert(
+                String::new(),
+                vec!["S-1-5-21-1".to_string(), "S-1-5-21-2".to_string()],
+            );
             // Top-level HKEY_USERS entries for `for_each_user_hive`, distinct
             // from the nested ProfileList\<sid> keys above (this flat test
             // double doesn't separate hives into distinct trees).
@@ -275,14 +284,19 @@ mod tests {
                 .unwrap()
                 .get(&key.raw())
                 .cloned()
-                .ok_or_else(|| crate::err::ForensicError::other("registry", "unknown handle".to_string()))
+                .ok_or_else(|| {
+                    crate::err::ForensicError::other("registry", "unknown handle".to_string())
+                })
         }
     }
 
     impl Registry for MiniWindowsRegistry {
         fn root(&self, hive: PredefinedHive) -> ForensicResult<RawKey> {
             if !matches!(hive, PredefinedHive::LocalMachine | PredefinedHive::Users) {
-                return Err(crate::err::ForensicError::other("registry", "unsupported hive".to_string()));
+                return Err(crate::err::ForensicError::other(
+                    "registry",
+                    "unsupported hive".to_string(),
+                ));
             }
             Ok(self.intern(String::new()))
         }
@@ -357,7 +371,10 @@ mod tests {
                 None => Box::new(std::iter::empty()),
             })
         }
-        fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
+        fn keys_iter_raw<'a>(
+            &'a self,
+            key: &RawKey,
+        ) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
             let path = self.path_of(key)?;
             Ok(match self.children.get(&path) {
                 Some(children) => Box::new(children.iter().map(|name| KeyEntry {
@@ -413,7 +430,8 @@ mod tests {
         assert_eq!(errors.len(), 1, "{errors:?}");
 
         // An absent value is not an error.
-        reg.values.remove(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\S-1-5-21-1");
+        reg.values
+            .remove(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\S-1-5-21-1");
         let (profiles, errors) = users_with_errors(&reg).unwrap();
         assert_eq!(profiles.len(), 2);
         assert!(errors.is_empty(), "{errors:?}");

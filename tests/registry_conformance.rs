@@ -10,7 +10,7 @@
 //! semantics are case-insensitive; this is a known gap in the mock.
 
 use forensic_rs::err::{ForensicError, RegistryError};
-use forensic_rs::traits::registry::{windows, PredefinedHive, RegValue, Registry, RegistryExt};
+use forensic_rs::traits::registry::{PredefinedHive, RegValue, Registry, RegistryExt, windows};
 use forensic_rs::utils::testing::TestingRegistry;
 
 const SID: &str = "S-1-5-21-1366093794-4292800403-1155380978-513";
@@ -61,7 +61,13 @@ fn keys_and_values_enumeration_matches_seeded_data(reg: &TestingRegistry) {
     names.sort();
     assert_eq!(
         names,
-        vec!["APPDATA", "LOCALAPPDATA", "USERDOMAIN", "USERNAME", "USERPROFILE"]
+        vec![
+            "APPDATA",
+            "LOCALAPPDATA",
+            "USERDOMAIN",
+            "USERNAME",
+            "USERPROFILE"
+        ]
     );
 }
 
@@ -152,10 +158,13 @@ fn root_errors_cleanly_for_unsupported_hive(reg: &TestingRegistry) {
 
 fn for_each_user_hive_visits_seeded_sid_only(reg: &TestingRegistry) {
     let mut visited = Vec::new();
-    reg.for_each_user_hive(&mut |sid, _key| {
-        visited.push(sid.to_string());
-        Ok(())
-    }, &mut |sid, e| panic!("{sid}: {e}"))
+    reg.for_each_user_hive(
+        &mut |sid, _key| {
+            visited.push(sid.to_string());
+            Ok(())
+        },
+        &mut |sid, e| panic!("{sid}: {e}"),
+    )
     .unwrap();
     assert_eq!(visited, vec![SID.to_string()]);
 }

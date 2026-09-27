@@ -45,7 +45,10 @@ impl TestingRegistry {
         }
     }
     pub fn increase_counter(&self) -> isize {
-        let mut borrowed = self.counter.lock().expect("TestingRegistry counter lock poisoned");
+        let mut borrowed = self
+            .counter
+            .lock()
+            .expect("TestingRegistry counter lock poisoned");
         let ret = *borrowed;
         *borrowed += 1;
         ret
@@ -58,7 +61,7 @@ impl TestingRegistry {
                     .cell
                     .entry(path.to_string())
                     .or_insert(MountedCell::new(path))
-                    .add_value("", value, data)
+                    .add_value("", value, data);
             }
         };
         self.cell
@@ -229,7 +232,7 @@ impl MountedCell {
                 return match self.keys.get(path) {
                     Some(v) => v.get_values(""),
                     None => Vec::new(),
-                }
+                };
             }
         };
         match self.keys.get(first) {
@@ -247,7 +250,7 @@ impl MountedCell {
                 return match self.keys.get(path) {
                     Some(v) => v.get_keys(""),
                     None => Vec::new(),
-                }
+                };
             }
         };
         match self.keys.get(first) {
@@ -330,7 +333,7 @@ impl Registry for TestingRegistry {
                 return Err(ForensicError::other(
                     "TestingRegistry",
                     format!("hive not supported by this testing double: {hive}"),
-                ))
+                ));
             }
         };
         if !self.contains(hive_prefix) {
@@ -422,12 +425,20 @@ impl Registry for TestingRegistry {
     ) -> crate::err::ForensicResult<()> {
         let path = self.path_of_raw(key)?;
         if let Some(cell) = self.cell_at(&path) {
-            out.extend(cell.values.iter().map(|(name, value)| (name.clone(), value.clone())));
+            out.extend(
+                cell.values
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            );
         }
         Ok(())
     }
 
-    fn keys_raw_into(&self, key: &RawKey, out: &mut Vec<KeyEntry>) -> crate::err::ForensicResult<()> {
+    fn keys_raw_into(
+        &self,
+        key: &RawKey,
+        out: &mut Vec<KeyEntry>,
+    ) -> crate::err::ForensicResult<()> {
         let path = self.path_of_raw(key)?;
         if let Some(cell) = self.cell_at(&path) {
             out.extend(cell.key_entries());
@@ -441,7 +452,11 @@ impl Registry for TestingRegistry {
     ) -> crate::err::ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + 'a>> {
         let path = self.path_of_raw(key)?;
         Ok(match self.cell_at(&path) {
-            Some(cell) => Box::new(cell.values.iter().map(|(name, value)| (name.clone(), value.clone()))),
+            Some(cell) => Box::new(
+                cell.values
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            ),
             None => Box::new(std::iter::empty()),
         })
     }
@@ -535,10 +550,13 @@ mod new_registry_trait_tests {
     fn for_each_user_hive_finds_seeded_sid() {
         let reg = TestingRegistry::new();
         let mut visited = Vec::new();
-        reg.for_each_user_hive(&mut |sid, _key| {
-            visited.push(sid.to_string());
-            Ok(())
-        }, &mut |sid, e| panic!("{sid}: {e}"))
+        reg.for_each_user_hive(
+            &mut |sid, _key| {
+                visited.push(sid.to_string());
+                Ok(())
+            },
+            &mut |sid, e| panic!("{sid}: {e}"),
+        )
         .unwrap();
         assert_eq!(
             visited,
@@ -587,7 +605,10 @@ mod new_registry_trait_tests {
         reg.set_last_write(r"HKLM\SOFTWARE\Vendor\App", ts);
         let vendor = reg.key(r"HKLM\SOFTWARE\Vendor").unwrap();
         let children = vendor.keys().unwrap();
-        assert_eq!((children[0].name.as_str(), children[0].last_write), ("App", Some(ts)));
+        assert_eq!(
+            (children[0].name.as_str(), children[0].last_write),
+            ("App", Some(ts))
+        );
         let app = reg.key(r"HKLM\SOFTWARE\Vendor\App").unwrap();
         assert_eq!(app.info().unwrap().last_write_time, Some(ts));
     }
@@ -598,7 +619,10 @@ mod new_registry_trait_tests {
         let mut cell = MountedCell::new("HKLM");
         cell.add_key("SOFTWARE");
         cell.add_key(r"SYSTEM\Select");
-        assert_eq!(cell.get_keys(""), vec!["SOFTWARE".to_string(), "SYSTEM".to_string()]);
+        assert_eq!(
+            cell.get_keys(""),
+            vec!["SOFTWARE".to_string(), "SYSTEM".to_string()]
+        );
         assert!(cell.contains_key(r"SYSTEM\Select"));
     }
 }

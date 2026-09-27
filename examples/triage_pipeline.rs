@@ -45,8 +45,12 @@ impl ArtifactParserFactory for AutorunParser {
     }
 
     fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
-        let registry = ctx.registry()
-            .ok_or_else(|| ForensicError::missing_data("Registry source required", CompactString::const_new("AutorunParser")))?;
+        let registry = ctx.registry().ok_or_else(|| {
+            ForensicError::missing_data(
+                "Registry source required",
+                CompactString::const_new("AutorunParser"),
+            )
+        })?;
         // Registered here, not injected at construction — the parser is the
         // only thing that knows what its own source key should be.
         let source = ctx.register_source(SourceKey::Live {
@@ -57,7 +61,10 @@ impl ArtifactParserFactory for AutorunParser {
         let mut records = Vec::new();
 
         for user in &users {
-            let run_path = format!(r"HKU\{}\Software\Microsoft\Windows\CurrentVersion\Run", user.sid);
+            let run_path = format!(
+                r"HKU\{}\Software\Microsoft\Windows\CurrentVersion\Run",
+                user.sid
+            );
             let key = match registry.key(&run_path) {
                 Ok(k) => k,
                 // No Run key for this user is normal, not an error...
@@ -91,12 +98,24 @@ impl ArtifactParserFactory for AutorunParser {
                 // Minted with the run's acquisition (live API, image read, ...), not a
                 // hardcoded one: the parser doesn't know how the registry was acquired.
                 let provenance = source.mint(ctx.acquisition(), Recovery::Allocated);
-                let mut data = ForensicData::new(ctx.host(),
-                    Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)), provenance);
-                data.insert(Text::Borrowed("autorun.name"), Field::Text(Text::Owned(value_name.clone())));
-                data.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Owned(format!("{:?}", reg_val))));
+                let mut data = ForensicData::new(
+                    ctx.host(),
+                    Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)),
+                    provenance,
+                );
+                data.insert(
+                    Text::Borrowed("autorun.name"),
+                    Field::Text(Text::Owned(value_name.clone())),
+                );
+                data.insert(
+                    Text::Borrowed("autorun.value"),
+                    Field::Text(Text::Owned(format!("{:?}", reg_val))),
+                );
                 // A SID is an identifier, not a user name.
-                data.insert(Text::Borrowed(USER_ID), Field::Text(Text::Owned(user.sid.clone())));
+                data.insert(
+                    Text::Borrowed(USER_ID),
+                    Field::Text(Text::Owned(user.sid.clone())),
+                );
                 if let Some(ts) = key_last_write {
                     data.insert(Text::Borrowed("autorun.key_last_write"), Field::Date(ts));
                 }
@@ -119,14 +138,22 @@ struct UserProfileEnricher {
 
 impl UserProfileEnricher {
     fn new() -> Self {
-        Self { cache: BTreeMap::new() }
+        Self {
+            cache: BTreeMap::new(),
+        }
     }
 }
 
 impl Enricher for UserProfileEnricher {
-    fn name(&self) -> &str { "user_profile_enricher" }
+    fn name(&self) -> &str {
+        "user_profile_enricher"
+    }
 
-    fn enrich(&mut self, data: &mut ForensicData, context: &mut TriageContext) -> ForensicResult<()> {
+    fn enrich(
+        &mut self,
+        data: &mut ForensicData,
+        context: &mut TriageContext,
+    ) -> ForensicResult<()> {
         let sid = match data.field(USER_ID) {
             Some(Field::Text(t)) => t.to_string(),
             _ => return Ok(()),
@@ -134,7 +161,10 @@ impl Enricher for UserProfileEnricher {
 
         // Check local cache first
         if let Some(username) = self.cache.get(&sid) {
-            data.insert(Text::Borrowed("user.resolved_name"), Field::Text(Text::Owned(username.clone())));
+            data.insert(
+                Text::Borrowed("user.resolved_name"),
+                Field::Text(Text::Owned(username.clone())),
+            );
             return Ok(());
         }
 
@@ -143,15 +173,24 @@ impl Enricher for UserProfileEnricher {
         if let Some(Field::Text(name)) = context.get(&ctx_key) {
             let name = name.to_string();
             self.cache.insert(sid, name.clone());
-            data.insert(Text::Borrowed("user.resolved_name"), Field::Text(Text::Owned(name)));
+            data.insert(
+                Text::Borrowed("user.resolved_name"),
+                Field::Text(Text::Owned(name)),
+            );
             return Ok(());
         }
 
         // Simulate SID resolution (in real code, this would query the registry)
         let resolved = format!("User_{}", &sid[sid.len().saturating_sub(3)..]);
         self.cache.insert(sid, resolved.clone());
-        context.set(Text::Owned(ctx_key), Field::Text(Text::Owned(resolved.clone())));
-        data.insert(Text::Borrowed("user.resolved_name"), Field::Text(Text::Owned(resolved)));
+        context.set(
+            Text::Owned(ctx_key),
+            Field::Text(Text::Owned(resolved.clone())),
+        );
+        data.insert(
+            Text::Borrowed("user.resolved_name"),
+            Field::Text(Text::Owned(resolved)),
+        );
         Ok(())
     }
 }
@@ -163,10 +202,14 @@ impl Enricher for UserProfileEnricher {
 struct SuspiciousAutorunAnalyzer;
 
 impl Analyzer for SuspiciousAutorunAnalyzer {
-    fn name(&self) -> &str { "suspicious_autorun" }
+    fn name(&self) -> &str {
+        "suspicious_autorun"
+    }
 
     fn supported_artifacts(&self) -> Vec<Artifact> {
-        vec![Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns))]
+        vec![Artifact::Windows(WindowsArtifacts::Registry(
+            RegistryArtifacts::AutoRuns,
+        ))]
     }
 
     fn analyze(
@@ -191,7 +234,8 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
 
         for (pattern, reason) in suspicious_patterns {
             if value.contains(pattern) {
-                let name = data.field("autorun.name")
+                let name = data
+                    .field("autorun.name")
                     .map(|f| format!("{:?}", f))
                     .unwrap_or_default();
 
@@ -201,7 +245,9 @@ impl Analyzer for SuspiciousAutorunAnalyzer {
                     format!("Suspicious autorun: {}", name),
                 )
                 .with_description(format!("{}: {}", reason, value))
-                .with_artifact(Artifact::Windows(WindowsArtifacts::Registry(RegistryArtifacts::AutoRuns)))
+                .with_artifact(Artifact::Windows(WindowsArtifacts::Registry(
+                    RegistryArtifacts::AutoRuns,
+                )))
                 .with_related_data(data.clone());
 
                 out.push(finding);
@@ -223,16 +269,25 @@ struct ReportSink {
 
 impl ReportSink {
     fn new() -> Self {
-        Self { record_count: 0, finding_count: 0 }
+        Self {
+            record_count: 0,
+            finding_count: 0,
+        }
     }
 }
 
 impl TriageSink for ReportSink {
-    fn name(&self) -> &str { "report_sink" }
+    fn name(&self) -> &str {
+        "report_sink"
+    }
 
     fn on_data(&mut self, data: &ForensicData) -> ForensicResult<()> {
         self.record_count += 1;
-        println!("  [RECORD] host={} artifact={}", data.host(), data.artifact());
+        println!(
+            "  [RECORD] host={} artifact={}",
+            data.host(),
+            data.artifact()
+        );
         for (key, value) in data.iter() {
             println!("    {} = {:?}", key, value);
         }
@@ -241,7 +296,10 @@ impl TriageSink for ReportSink {
 
     fn on_finding(&mut self, finding: &Finding) -> ForensicResult<()> {
         self.finding_count += 1;
-        println!("  [FINDING] [{}] [{}] {}", finding.severity, finding.category, finding.title);
+        println!(
+            "  [FINDING] [{}] [{}] {}",
+            finding.severity, finding.category, finding.title
+        );
         if !finding.description.is_empty() {
             println!("    Description: {}", finding.description);
         }
@@ -266,14 +324,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add some autorun entries to the test registry
     let user_sid = "S-1-5-21-1366093794-4292800403-1155380978-513";
-    let run_path = format!(r"{}\Software\Microsoft\Windows\CurrentVersion\Run", user_sid);
+    let run_path = format!(
+        r"{}\Software\Microsoft\Windows\CurrentVersion\Run",
+        user_sid
+    );
 
-    registry.add_value(&format!("HKU\\{}", run_path), "SecurityHealth",
-        RegValue::new_sz(r"C:\Windows\System32\SecurityHealthSystray.exe"));
-    registry.add_value(&format!("HKU\\{}", run_path), "SuspiciousTask",
-        RegValue::new_sz(r"powershell.exe -ep bypass -file C:\temp\update.ps1"));
-    registry.add_value(&format!("HKU\\{}", run_path), "OneDrive",
-        RegValue::new_sz(r"C:\Users\Tester\AppData\Local\Microsoft\OneDrive\OneDrive.exe /background"));
+    registry.add_value(
+        &format!("HKU\\{}", run_path),
+        "SecurityHealth",
+        RegValue::new_sz(r"C:\Windows\System32\SecurityHealthSystray.exe"),
+    );
+    registry.add_value(
+        &format!("HKU\\{}", run_path),
+        "SuspiciousTask",
+        RegValue::new_sz(r"powershell.exe -ep bypass -file C:\temp\update.ps1"),
+    );
+    registry.add_value(
+        &format!("HKU\\{}", run_path),
+        "OneDrive",
+        RegValue::new_sz(
+            r"C:\Users\Tester\AppData\Local\Microsoft\OneDrive\OneDrive.exe /background",
+        ),
+    );
 
     let vfs = StdVirtualFS::new();
 
@@ -289,7 +361,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .analyzer(Box::new(SuspiciousAutorunAnalyzer))
         .sink(Box::new(ReportSink::new()))
         .sink(Box::new(TimelineSink::new(TIMESTAMP)))
-        .sink(Box::new(FindingCollector::with_min_severity(FindingSeverity::Low)))
+        .sink(Box::new(FindingCollector::with_min_severity(
+            FindingSeverity::Low,
+        )))
         .on_parser_error(ErrorAction::Continue)
         .build()?;
 

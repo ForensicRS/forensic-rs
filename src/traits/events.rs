@@ -322,20 +322,28 @@ mod tests {
         assert!(EventLogQuery::new().matches(&record));
 
         // Matching event ID
-        assert!(EventLogQuery::new()
-            .with_event_ids(&[4624, 4625])
-            .matches(&record));
-        assert!(!EventLogQuery::new()
-            .with_event_ids(&[4625])
-            .matches(&record));
+        assert!(
+            EventLogQuery::new()
+                .with_event_ids(&[4624, 4625])
+                .matches(&record)
+        );
+        assert!(
+            !EventLogQuery::new()
+                .with_event_ids(&[4625])
+                .matches(&record)
+        );
 
         // Matching channel
-        assert!(EventLogQuery::new()
-            .with_channels(&["Security"])
-            .matches(&record));
-        assert!(!EventLogQuery::new()
-            .with_channels(&["System"])
-            .matches(&record));
+        assert!(
+            EventLogQuery::new()
+                .with_channels(&["Security"])
+                .matches(&record)
+        );
+        assert!(
+            !EventLogQuery::new()
+                .with_channels(&["System"])
+                .matches(&record)
+        );
 
         // Matching time range
         let query = EventLogQuery::new().with_time_range(
@@ -351,20 +359,28 @@ mod tests {
         assert!(!query.matches(&record));
 
         // Matching level
-        assert!(EventLogQuery::new()
-            .with_levels(&[EventLevel::Information])
-            .matches(&record));
-        assert!(!EventLogQuery::new()
-            .with_levels(&[EventLevel::Error])
-            .matches(&record));
+        assert!(
+            EventLogQuery::new()
+                .with_levels(&[EventLevel::Information])
+                .matches(&record)
+        );
+        assert!(
+            !EventLogQuery::new()
+                .with_levels(&[EventLevel::Error])
+                .matches(&record)
+        );
 
         // Matching provider
-        assert!(EventLogQuery::new()
-            .with_providers(&["Microsoft-Windows-Security-Auditing"])
-            .matches(&record));
-        assert!(!EventLogQuery::new()
-            .with_providers(&["OtherProvider"])
-            .matches(&record));
+        assert!(
+            EventLogQuery::new()
+                .with_providers(&["Microsoft-Windows-Security-Auditing"])
+                .matches(&record)
+        );
+        assert!(
+            !EventLogQuery::new()
+                .with_providers(&["OtherProvider"])
+                .matches(&record)
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::{
     artifact::Artifact,
     bridge::CancellationToken,
-    context::{initialize_context, ForensicContext},
+    context::{ForensicContext, initialize_context},
     core::locator::{EvidenceLocator, LocatorSegment},
     err::ForensicError,
     field::{Field, Ip, Text},
@@ -12,7 +12,7 @@ use crate::{
     provenance::{Acquisition, ProvenanceStore, SourceHandle, SourceKey},
     secrets::{Secret, SecretRequest},
     traits::forensic::{Requirement, Resolution, TargetSpec, UnavailableReason},
-    traits::format::{Mounted, MountKind},
+    traits::format::{MountKind, Mounted},
     traits::registry::Registry,
     traits::vfs::{FileSystem, FileSystemExt, SourceKind, VirtualFile},
     utils::time::ForensicTimestamp,
@@ -63,14 +63,24 @@ pub struct SourceView {
 
 impl Default for SourceView {
     fn default() -> Self {
-        Self { vfs: None, registry: None, acquisition: Acquisition::LiveApi, source_kind: None }
+        Self {
+            vfs: None,
+            registry: None,
+            acquisition: Acquisition::LiveApi,
+            source_kind: None,
+        }
     }
 }
 
 impl SourceView {
     pub(crate) fn from_sources(sources: &TriageSources) -> Self {
         let (acquisition, source_kind) = derive_acquisition(sources);
-        Self { vfs: sources.vfs().cloned(), registry: sources.registry().cloned(), acquisition, source_kind }
+        Self {
+            vfs: sources.vfs().cloned(),
+            registry: sources.registry().cloned(),
+            acquisition,
+            source_kind,
+        }
     }
 
     /// The run's filesystem source, if one was configured. Reaching inside a nested container
@@ -101,7 +111,10 @@ impl SourceView {
     /// supports the probe. `None` means "can't answer" (no VFS, or this backend doesn't surface
     /// per-path facts) -- never "the path has no attributes"; that distinction is the inner
     /// `ForensicResult`'s to make.
-    pub fn attributes(&self, path: &crate::core::path::FPath) -> Option<crate::err::ForensicResult<BTreeMap<Text, Field>>> {
+    pub fn attributes(
+        &self,
+        path: &crate::core::path::FPath,
+    ) -> Option<crate::err::ForensicResult<BTreeMap<Text, Field>>> {
         Some(self.vfs.as_ref()?.as_attributes()?.attributes(path))
     }
 }
@@ -300,7 +313,10 @@ pub struct ParseContext<'a> {
 /// confidence for evidence that was never actually shown to have come from an image.
 pub(crate) fn derive_acquisition(sources: &TriageSources) -> (Acquisition, Option<SourceKind>) {
     let source_kind = sources.vfs().map(|fs| fs.source());
-    let acquisition = sources.acquisition().or_else(|| source_kind.map(Acquisition::from)).unwrap_or(Acquisition::LiveApi);
+    let acquisition = sources
+        .acquisition()
+        .or_else(|| source_kind.map(Acquisition::from))
+        .unwrap_or(Acquisition::LiveApi);
     (acquisition, source_kind)
 }
 
@@ -460,12 +476,14 @@ impl<'a> ParseContext<'a> {
         file: Box<dyn VirtualFile>,
         want: MountKind,
     ) -> crate::err::ForensicResult<Mounted> {
-        let vfs = self
-            .sources
-            .vfs()
-            .ok_or_else(|| ForensicError::other("ParseContext::mount", "no VFS configured".to_string()))?;
+        let vfs = self.sources.vfs().ok_or_else(|| {
+            ForensicError::other("ParseContext::mount", "no VFS configured".to_string())
+        })?;
         let resolver = self.sources.mount_resolver().ok_or_else(|| {
-            ForensicError::other("ParseContext::mount", "no MountResolver configured".to_string())
+            ForensicError::other(
+                "ParseContext::mount",
+                "no MountResolver configured".to_string(),
+            )
         })?;
         resolver.resolve(vfs, locator, file, Some(want), &self.cancellation)
     }

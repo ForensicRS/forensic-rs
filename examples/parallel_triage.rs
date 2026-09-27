@@ -52,13 +52,18 @@ struct MockMftParser {
 impl MockMftParser {
     fn new() -> Self {
         Self {
-            descriptor: ParserDescriptor::new("mft_parser", "mft_parser", "Mock MFT parser", "0.1.0")
-                .with_artifacts(vec![mft_artifact()]),
+            descriptor: ParserDescriptor::new(
+                "mft_parser",
+                "mft_parser",
+                "Mock MFT parser",
+                "0.1.0",
+            )
+            .with_artifacts(vec![mft_artifact()]),
             records: vec![
-                (r"C:\Windows\System32\cmd.exe",            1001),
-                (r"C:\Windows\Temp\suspicious.ps1",         1002),
-                (r"C:\Users\Alice\Documents\report.docx",   1003),
-                (r"C:\Windows\Temp\update.exe",             1004),
+                (r"C:\Windows\System32\cmd.exe", 1001),
+                (r"C:\Windows\Temp\suspicious.ps1", 1002),
+                (r"C:\Users\Alice\Documents\report.docx", 1003),
+                (r"C:\Windows\Temp\update.exe", 1004),
             ],
         }
     }
@@ -72,15 +77,23 @@ impl ArtifactParserFactory for MockMftParser {
     fn open(&self, ctx: &ParseContext<'_>) -> ForensicResult<ParserRun> {
         let source = ctx.register_source(SourceKey::Path(r"C:\$MFT".to_string()));
         let records = self.records.clone();
-        let items: Vec<ForensicResult<ForensicData>> = records.into_iter().map(|(path, inode)| {
-            let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
-            let mut d = ForensicData::new("WORKSTATION01", mft_artifact(), provenance);
-            d.insert(Text::Borrowed("file.path"),  Field::Text(Text::Owned(path.to_string())));
-            d.insert(Text::Borrowed("file.inode"), Field::U64(inode));
-            d.insert(Text::Borrowed(TIMESTAMP),
-                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
-            Ok(d)
-        }).collect();
+        let items: Vec<ForensicResult<ForensicData>> = records
+            .into_iter()
+            .map(|(path, inode)| {
+                let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
+                let mut d = ForensicData::new("WORKSTATION01", mft_artifact(), provenance);
+                d.insert(
+                    Text::Borrowed("file.path"),
+                    Field::Text(Text::Owned(path.to_string())),
+                );
+                d.insert(Text::Borrowed("file.inode"), Field::U64(inode));
+                d.insert(
+                    Text::Borrowed(TIMESTAMP),
+                    Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()),
+                );
+                Ok(d)
+            })
+            .collect();
         Ok(ParserRun::pull(items.into_iter()))
     }
 }
@@ -119,16 +132,24 @@ impl ArtifactParserFactory for MockEvtxParser {
         let channel = self.channel;
         let source = ctx.register_source(SourceKey::Path(format!("{channel}.evtx")));
         let events = self.events.clone();
-        let items: Vec<ForensicResult<ForensicData>> = events.into_iter().map(|(record_id, event_id)| {
-            let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
-            let mut d = ForensicData::new("WORKSTATION01", evt_artifact(), provenance);
-            d.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
-            d.insert(Text::Borrowed("event.code"),      Field::U64(event_id));
-            d.insert(Text::Borrowed("event.channel"),   Field::Text(Text::Borrowed(channel)));
-            d.insert(Text::Borrowed(TIMESTAMP),
-                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
-            Ok(d)
-        }).collect();
+        let items: Vec<ForensicResult<ForensicData>> = events
+            .into_iter()
+            .map(|(record_id, event_id)| {
+                let provenance = source.mint(Acquisition::ImageRead, Recovery::Allocated);
+                let mut d = ForensicData::new("WORKSTATION01", evt_artifact(), provenance);
+                d.insert(Text::Borrowed("event.record_id"), Field::U64(record_id));
+                d.insert(Text::Borrowed("event.code"), Field::U64(event_id));
+                d.insert(
+                    Text::Borrowed("event.channel"),
+                    Field::Text(Text::Borrowed(channel)),
+                );
+                d.insert(
+                    Text::Borrowed(TIMESTAMP),
+                    Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()),
+                );
+                Ok(d)
+            })
+            .collect();
         Ok(ParserRun::pull(items.into_iter()))
     }
 }
@@ -153,9 +174,15 @@ impl MockAutorunParser {
             )
             .with_artifacts(vec![autorun_artifact()]),
             entries: vec![
-                ("Malware",  r"powershell.exe -ep bypass C:\temp\malware.ps1"),
-                ("OneDrive", r"C:\Users\Alice\AppData\Local\Microsoft\OneDrive\OneDrive.exe"),
-                ("Teams",    r"C:\Users\Alice\AppData\Local\Microsoft\Teams\Update.exe --processStart Teams.exe"),
+                ("Malware", r"powershell.exe -ep bypass C:\temp\malware.ps1"),
+                (
+                    "OneDrive",
+                    r"C:\Users\Alice\AppData\Local\Microsoft\OneDrive\OneDrive.exe",
+                ),
+                (
+                    "Teams",
+                    r"C:\Users\Alice\AppData\Local\Microsoft\Teams\Update.exe --processStart Teams.exe",
+                ),
             ],
         }
     }
@@ -173,16 +200,30 @@ impl ArtifactParserFactory for MockAutorunParser {
         });
         let sid = "S-1-5-21-1366093794-4292800403-1155380978-513";
         let entries = self.entries.clone();
-        let items: Vec<ForensicResult<ForensicData>> = entries.into_iter().map(|(name, cmd)| {
-            let provenance = source.mint(Acquisition::LiveApi, Recovery::Allocated);
-            let mut d = ForensicData::new("WORKSTATION01", autorun_artifact(), provenance);
-            d.insert(Text::Borrowed("autorun.name"),  Field::Text(Text::Borrowed(name)));
-            d.insert(Text::Borrowed("autorun.value"), Field::Text(Text::Borrowed(cmd)));
-            d.insert(Text::Borrowed("autorun.user"),  Field::Text(Text::Borrowed(sid)));
-            d.insert(Text::Borrowed(TIMESTAMP),
-                Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()));
-            Ok(d)
-        }).collect();
+        let items: Vec<ForensicResult<ForensicData>> = entries
+            .into_iter()
+            .map(|(name, cmd)| {
+                let provenance = source.mint(Acquisition::LiveApi, Recovery::Allocated);
+                let mut d = ForensicData::new("WORKSTATION01", autorun_artifact(), provenance);
+                d.insert(
+                    Text::Borrowed("autorun.name"),
+                    Field::Text(Text::Borrowed(name)),
+                );
+                d.insert(
+                    Text::Borrowed("autorun.value"),
+                    Field::Text(Text::Borrowed(cmd)),
+                );
+                d.insert(
+                    Text::Borrowed("autorun.user"),
+                    Field::Text(Text::Borrowed(sid)),
+                );
+                d.insert(
+                    Text::Borrowed(TIMESTAMP),
+                    Field::Date(Filetime::with_ymd_and_hms(2024, 6, 15, 10, 0, 0, 0).into()),
+                );
+                Ok(d)
+            })
+            .collect();
         Ok(ParserRun::pull(items.into_iter()))
     }
 }
@@ -195,8 +236,12 @@ impl ArtifactParserFactory for MockAutorunParser {
 struct TempWriteAnalyzer;
 
 impl Analyzer for TempWriteAnalyzer {
-    fn name(&self) -> &str { "temp_write_analyzer" }
-    fn supported_artifacts(&self) -> Vec<Artifact> { vec![mft_artifact()] }
+    fn name(&self) -> &str {
+        "temp_write_analyzer"
+    }
+    fn supported_artifacts(&self) -> Vec<Artifact> {
+        vec![mft_artifact()]
+    }
 
     fn analyze(
         &mut self,
@@ -232,12 +277,20 @@ struct EventGapAnalyzer {
 }
 
 impl EventGapAnalyzer {
-    fn new() -> Self { Self { channels: BTreeMap::new() } }
+    fn new() -> Self {
+        Self {
+            channels: BTreeMap::new(),
+        }
+    }
 }
 
 impl Analyzer for EventGapAnalyzer {
-    fn name(&self) -> &str { "event_gap_analyzer" }
-    fn supported_artifacts(&self) -> Vec<Artifact> { vec![evt_artifact()] }
+    fn name(&self) -> &str {
+        "event_gap_analyzer"
+    }
+    fn supported_artifacts(&self) -> Vec<Artifact> {
+        vec![evt_artifact()]
+    }
 
     fn analyze(
         &mut self,
@@ -245,10 +298,9 @@ impl Analyzer for EventGapAnalyzer {
         _context: &TriageContext,
         _out: &mut Vec<Finding>,
     ) -> ForensicResult<()> {
-        if let (Some(Field::Text(ch)), Some(Field::U64(rid))) = (
-            data.field("event.channel"),
-            data.field("event.record_id"),
-        ) {
+        if let (Some(Field::Text(ch)), Some(Field::U64(rid))) =
+            (data.field("event.channel"), data.field("event.record_id"))
+        {
             self.channels.entry(ch.to_string()).or_default().push(*rid);
         }
         Ok(())
@@ -280,10 +332,14 @@ impl Analyzer for EventGapAnalyzer {
 struct SuspiciousAutorunAnalyzer;
 
 impl Analyzer for SuspiciousAutorunAnalyzer {
-    fn name(&self) -> &str { "suspicious_autorun" }
+    fn name(&self) -> &str {
+        "suspicious_autorun"
+    }
     // No supported_artifacts() override → accepts everything; useful when
     // combined with an explicit parser (as in the StandardParallelTask below).
-    fn supported_artifacts(&self) -> Vec<Artifact> { vec![] }
+    fn supported_artifacts(&self) -> Vec<Artifact> {
+        vec![]
+    }
 
     fn analyze(
         &mut self,
@@ -327,11 +383,18 @@ struct ReportSink {
 }
 
 impl ReportSink {
-    fn new() -> Self { Self { records: 0, findings: Vec::new() } }
+    fn new() -> Self {
+        Self {
+            records: 0,
+            findings: Vec::new(),
+        }
+    }
 }
 
 impl TriageSink for ReportSink {
-    fn name(&self) -> &str { "report_sink" }
+    fn name(&self) -> &str {
+        "report_sink"
+    }
 
     fn on_data(&mut self, _data: &ForensicData) -> ForensicResult<()> {
         self.records += 1;
@@ -341,8 +404,8 @@ impl TriageSink for ReportSink {
     fn on_finding(&mut self, finding: &Finding) -> ForensicResult<()> {
         self.findings.push(format!(
             "[{sev}] [{cat}] {title}",
-            sev   = finding.severity,
-            cat   = finding.category,
+            sev = finding.severity,
+            cat = finding.category,
             title = finding.title,
         ));
         Ok(())
@@ -469,12 +532,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Per-task Stats ===");
     for (task, stats) in &result.task_stats {
-        println!("  {task:<28} items={i:>3}  findings={f:>2}",
+        println!(
+            "  {task:<28} items={i:>3}  findings={f:>2}",
             task = task,
-            i    = stats.items_processed,
-            f    = stats.findings_count);
+            i = stats.items_processed,
+            f = stats.findings_count
+        );
     }
 
     Ok(())
 }
-

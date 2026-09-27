@@ -223,7 +223,9 @@ impl Anomalies {
     /// Sets a flag and records a human-readable elaboration for it.
     pub fn add_detail(&mut self, detail: AnomalyDetail) {
         self.flags |= detail.kind;
-        self.detail.get_or_insert_with(|| Box::new(Vec::new())).push(detail);
+        self.detail
+            .get_or_insert_with(|| Box::new(Vec::new()))
+            .push(detail);
     }
 
     /// Folds another instance's anomalies into this one: ORs the flags and
