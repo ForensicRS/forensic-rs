@@ -163,7 +163,11 @@ fn walk_visits_every_file_without_duplicates(fs: &dyn FileSystem) {
     for entry in fs.walk(FPath::new(""), &WalkOptions::default()) {
         let entry = entry.unwrap();
         if entry.file_type == VFileType::File {
-            assert!(seen.insert(entry.path.as_str().to_string()), "duplicate: {}", entry.path);
+            assert!(
+                seen.insert(entry.path.as_str().to_string()),
+                "duplicate: {}",
+                entry.path
+            );
             count += 1;
         }
     }
@@ -259,7 +263,10 @@ mod std_fs {
     #[test]
     fn open_and_read_existing_file_test() {
         let (fs, _dir, root) = fixture();
-        assert_eq!(fs.read_all(full(&root, "a.txt").as_path()).unwrap(), b"hello");
+        assert_eq!(
+            fs.read_all(full(&root, "a.txt").as_path()).unwrap(),
+            b"hello"
+        );
     }
 
     #[test]
@@ -296,7 +303,10 @@ mod std_fs {
     #[test]
     fn zero_byte_file_reads_as_empty_not_error_test() {
         let (fs, _dir, root) = fixture();
-        assert_eq!(fs.read_all(full(&root, "empty.txt").as_path()).unwrap(), b"");
+        assert_eq!(
+            fs.read_all(full(&root, "empty.txt").as_path()).unwrap(),
+            b""
+        );
     }
 
     #[test]

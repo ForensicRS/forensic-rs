@@ -54,8 +54,7 @@ pub fn decompress(in_buf: &[u8], out_buf: &mut Vec<u8>) -> ForensicResult<()> {
                         break;
                     }
 
-                    copy_token =
-                        u16::from_le_bytes([in_buf[in_idx], in_buf[in_idx + 1]]) as usize;
+                    copy_token = u16::from_le_bytes([in_buf[in_idx], in_buf[in_idx + 1]]) as usize;
                     in_idx += 2;
 
                     let mut pos = out_idx - out_base_idx - 1;
@@ -146,8 +145,8 @@ mod tests {
         // length=4) duplicating them, producing "abcdabcd".
         let compressed: [u8; 24] = [
             0x0c, 0x00, // chunk1 header: uncompressed, len=13
-            b'H', b'e', b'l', b'l', b'o', b',', b' ', b'w', b'o', b'r', b'l', b'd', b'!',
-            0x06, 0x80, // chunk2 header: compressed, len=7
+            b'H', b'e', b'l', b'l', b'o', b',', b' ', b'w', b'o', b'r', b'l', b'd', b'!', 0x06,
+            0x80, // chunk2 header: compressed, len=7
             0x10, // flags: bits0-3 literal, bit4 match
             b'a', b'b', b'c', b'd', 0x01, 0x30, // copy-token: offset=4, length=4
         ];

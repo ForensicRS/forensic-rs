@@ -85,7 +85,12 @@ struct ResidentEntry {
 
 impl ResidentCache {
     fn new(max_bytes: u64) -> Self {
-        Self { entries: BTreeMap::new(), total_bytes: 0, max_bytes, next_tick: 0 }
+        Self {
+            entries: BTreeMap::new(),
+            total_bytes: 0,
+            max_bytes,
+            next_tick: 0,
+        }
     }
 
     /// Reads a still-resident entry and marks it most-recently-used. `None` means either never
@@ -114,7 +119,14 @@ impl ResidentCache {
         }
         let tick = self.next_tick;
         self.next_tick += 1;
-        self.entries.insert(locator.clone(), ResidentEntry { mounted, weight, last_used: tick });
+        self.entries.insert(
+            locator.clone(),
+            ResidentEntry {
+                mounted,
+                weight,
+                last_used: tick,
+            },
+        );
         self.total_bytes += weight;
 
         while self.total_bytes > self.max_bytes {
@@ -155,7 +167,10 @@ impl MountResolver {
     /// this is not monotonic -- it can decrease as older mounts are evicted to make room for
     /// newer ones under `Limits::max_resident_bytes`.
     pub fn cache_len(&self) -> usize {
-        self.resident.lock().expect("MountResolver cache poisoned").len()
+        self.resident
+            .lock()
+            .expect("MountResolver cache poisoned")
+            .len()
     }
 
     /// Registered factories that could produce `want` (or all of them, if
@@ -272,10 +287,7 @@ impl MountResolver {
         }
 
         let mut working_file = file;
-        let size = working_file
-            .metadata()
-            .map(|meta| meta.size)
-            .unwrap_or(0);
+        let size = working_file.metadata().map(|meta| meta.size).unwrap_or(0);
 
         // Whether this locator's bytes were already charged against `expanded_bytes` /
         // `visited_content` by an earlier resolve -- possibly since evicted from `resident`,
@@ -439,7 +451,10 @@ impl MountResolverBuilder {
     /// `standard_factories()` helper — without a `for` loop of `.factory(...)` calls at
     /// every call site.
     #[must_use]
-    pub fn factories(mut self, factories: impl IntoIterator<Item = Arc<dyn FormatFactory>>) -> Self {
+    pub fn factories(
+        mut self,
+        factories: impl IntoIterator<Item = Arc<dyn FormatFactory>>,
+    ) -> Self {
         self.factories.extend(factories);
         self
     }
@@ -471,9 +486,9 @@ impl MountResolverBuilder {
         MountResolver {
             factories: self.factories,
             limits,
-            spill: self
-                .spill
-                .unwrap_or_else(|| Arc::new(MemorySpillStore::new(limits.materialize_in_memory_limit))),
+            spill: self.spill.unwrap_or_else(|| {
+                Arc::new(MemorySpillStore::new(limits.materialize_in_memory_limit))
+            }),
             digest_factory: self.digest_factory,
             resident: Mutex::new(ResidentCache::new(limits.max_resident_bytes)),
             charged: Mutex::new(BTreeSet::new()),
@@ -531,12 +546,20 @@ mod tests {
         fn yields(&self) -> MountKind {
             MountKind::Registry
         }
-        fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> Result_<ProbeScore> {
+        fn probe(
+            &self,
+            file: &mut dyn VirtualFile,
+            _ctx: &MountContext<'_>,
+        ) -> Result_<ProbeScore> {
             let start = file.stream_position().unwrap_or(0);
             let mut magic = [0u8; 3];
             let matched = file.read_exact(&mut magic).is_ok() && &magic == b"REG";
             let _ = file.seek(SeekFrom::Start(start));
-            Ok(if matched { ProbeScore::Strong } else { ProbeScore::No })
+            Ok(if matched {
+                ProbeScore::Strong
+            } else {
+                ProbeScore::No
+            })
         }
         fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> Result_<Mounted> {
             Ok(Mounted::Registry(Arc::new(TestingRegistry::empty())))
@@ -553,7 +576,9 @@ mod tests {
 
     #[test]
     fn resolves_and_caches_by_locator() {
-        let resolver = MountResolver::builder().factory(Arc::new(RegistryFactory)).build();
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .build();
         let fs = fs();
         let locator = locator_at("hive.dat");
         let cancel = CancellationToken::new();
@@ -573,10 +598,18 @@ mod tests {
 
     #[test]
     fn unsupported_bytes_report_no_factory_claims_them() {
-        let resolver = MountResolver::builder().factory(Arc::new(RegistryFactory)).build();
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .build();
         let fs = fs();
         let cancel = CancellationToken::new();
-        let result = resolver.resolve(&fs, &locator_at("plain.txt"), open("not a hive"), None, &cancel);
+        let result = resolver.resolve(
+            &fs,
+            &locator_at("plain.txt"),
+            open("not a hive"),
+            None,
+            &cancel,
+        );
         assert!(result.is_err());
     }
 
@@ -617,7 +650,9 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Root A: 5 bytes. Resolves first, so under the old bug it pins the global denominator.
-        resolver.resolve(&fs, &locator_at("a"), open("REG12"), None, &cancel).unwrap();
+        resolver
+            .resolve(&fs, &locator_at("a"), open("REG12"), None, &cancel)
+            .unwrap();
 
         // Root B: 50 bytes, completely unrelated to A. Its own size is a perfectly reasonable
         // denominator for its own expansion (ratio 1:1 against itself), but under the old bug
@@ -643,7 +678,11 @@ mod tests {
             fn yields(&self) -> MountKind {
                 MountKind::Database
             }
-            fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> Result_<ProbeScore> {
+            fn probe(
+                &self,
+                file: &mut dyn VirtualFile,
+                _ctx: &MountContext<'_>,
+            ) -> Result_<ProbeScore> {
                 let start = file.stream_position().unwrap_or(0);
                 let mut magic = [0u8; 3];
                 let matched = file.read_exact(&mut magic).is_ok() && &magic == b"REG";
@@ -651,10 +690,20 @@ mod tests {
                 // Weaker than RegistryFactory's `Strong`, so an untargeted resolve still
                 // deterministically picks the registry mount -- this factory only ever wins
                 // when `want` explicitly filters it in.
-                Ok(if matched { ProbeScore::Weak } else { ProbeScore::No })
+                Ok(if matched {
+                    ProbeScore::Weak
+                } else {
+                    ProbeScore::No
+                })
             }
-            fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> Result_<Mounted> {
-                Ok(Mounted::Database(Arc::new(crate::utils::testing::InMemoryForensicDb::new())))
+            fn mount(
+                &self,
+                _file: Box<dyn VirtualFile>,
+                _ctx: &MountContext<'_>,
+            ) -> Result_<Mounted> {
+                Ok(Mounted::Database(Arc::new(
+                    crate::utils::testing::InMemoryForensicDb::new(),
+                )))
             }
         }
 
@@ -666,15 +715,29 @@ mod tests {
         let locator = locator_at("dual.dat");
         let cancel = CancellationToken::new();
 
-        let first = resolver.resolve(&fs, &locator, open("REG-first"), None, &cancel).unwrap();
-        assert!(first.as_registry().is_some(), "untargeted resolve picks the higher-scoring factory");
+        let first = resolver
+            .resolve(&fs, &locator, open("REG-first"), None, &cancel)
+            .unwrap();
+        assert!(
+            first.as_registry().is_some(),
+            "untargeted resolve picks the higher-scoring factory"
+        );
 
         // Same locator, same bytes, but now explicitly asking for the OTHER kind. Without the
         // fix this returns the cached Registry mount and `as_database()` is `None`.
         let second = resolver
-            .resolve(&fs, &locator, open("REG-second"), Some(MountKind::Database), &cancel)
+            .resolve(
+                &fs,
+                &locator,
+                open("REG-second"),
+                Some(MountKind::Database),
+                &cancel,
+            )
             .unwrap();
-        assert!(second.as_database().is_some(), "a kind-mismatched cache entry must not be returned");
+        assert!(
+            second.as_database().is_some(),
+            "a kind-mismatched cache entry must not be returned"
+        );
     }
 
     #[test]
@@ -730,13 +793,18 @@ mod tests {
             }
         }
         fn finish(self: Box<Self>) -> ContentAddress {
-            ContentAddress::new(DigestAlgorithm::Other("fake-test-digest"), self.acc.to_le_bytes().to_vec())
+            ContentAddress::new(
+                DigestAlgorithm::Other("fake-test-digest"),
+                self.acc.to_le_bytes().to_vec(),
+            )
         }
     }
 
     #[test]
     fn cancellation_is_honoured_before_any_probing() {
-        let resolver = MountResolver::builder().factory(Arc::new(RegistryFactory)).build();
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .build();
         let fs = fs();
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -746,7 +814,9 @@ mod tests {
 
     #[test]
     fn want_filter_skips_factories_yielding_a_different_kind() {
-        let resolver = MountResolver::builder().factory(Arc::new(RegistryFactory)).build();
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .build();
         let fs = fs();
         let cancel = CancellationToken::new();
         let result = resolver.resolve(
@@ -761,7 +831,9 @@ mod tests {
 
     #[test]
     fn probe_only_reports_a_match_without_mounting_or_caching() {
-        let resolver = MountResolver::builder().factory(Arc::new(RegistryFactory)).build();
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .build();
         let fs = fs();
         let cancel = CancellationToken::new();
         let mut file = open("REG-anything");
@@ -774,7 +846,9 @@ mod tests {
 
     #[test]
     fn probe_only_reports_no_match_for_unrecognized_bytes() {
-        let resolver = MountResolver::builder().factory(Arc::new(RegistryFactory)).build();
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .build();
         let fs = fs();
         let cancel = CancellationToken::new();
         let mut file = open("not a hive");
@@ -786,7 +860,9 @@ mod tests {
 
     #[test]
     fn supports_reports_registered_mount_kinds() {
-        let resolver = MountResolver::builder().factory(Arc::new(RegistryFactory)).build();
+        let resolver = MountResolver::builder()
+            .factory(Arc::new(RegistryFactory))
+            .build();
         assert!(resolver.supports(MountKind::Registry));
         assert!(!resolver.supports(MountKind::Database));
     }
@@ -796,16 +872,28 @@ mod tests {
         // Every mount below is 5 bytes; a 12-byte budget can hold at most 2 at once.
         let resolver = MountResolver::builder()
             .factory(Arc::new(RegistryFactory))
-            .limits(Limits { max_resident_bytes: 12, ..Limits::default() })
+            .limits(Limits {
+                max_resident_bytes: 12,
+                ..Limits::default()
+            })
             .build();
         let fs = fs();
         let cancel = CancellationToken::new();
 
         for i in 0..5 {
             resolver
-                .resolve(&fs, &locator_at(&format!("m{i}")), open(format!("REG{i:02}")), None, &cancel)
+                .resolve(
+                    &fs,
+                    &locator_at(&format!("m{i}")),
+                    open(format!("REG{i:02}")),
+                    None,
+                    &cancel,
+                )
                 .unwrap();
-            assert!(resolver.cache_len() <= 2, "resident cache exceeded its byte budget after mount {i}");
+            assert!(
+                resolver.cache_len() <= 2,
+                "resident cache exceeded its byte budget after mount {i}"
+            );
         }
     }
 
@@ -826,12 +914,16 @@ mod tests {
         let fs = fs();
         let cancel = CancellationToken::new();
 
-        resolver.resolve(&fs, &locator_at("a"), open("REG12"), None, &cancel).unwrap();
+        resolver
+            .resolve(&fs, &locator_at("a"), open("REG12"), None, &cancel)
+            .unwrap();
         assert_eq!(resolver.cache_len(), 1);
 
         // Distinct locator, same weight: evicts "a" from the resident cache and consumes the
         // rest of the expanded-bytes budget (5 + 5 == 10, right at the limit).
-        resolver.resolve(&fs, &locator_at("b"), open("REG34"), None, &cancel).unwrap();
+        resolver
+            .resolve(&fs, &locator_at("b"), open("REG34"), None, &cancel)
+            .unwrap();
         assert_eq!(resolver.cache_len(), 1);
 
         // "a" is no longer resident, but it WAS already charged once. If this re-mount charged
@@ -839,7 +931,9 @@ mod tests {
         let result = resolver.resolve(&fs, &locator_at("a"), open("REG12"), None, &cancel);
         match result {
             Ok(_) => {}
-            Err(e) => panic!("re-mounting an evicted-but-already-charged locator must not re-charge the budget: {e}"),
+            Err(e) => panic!(
+                "re-mounting an evicted-but-already-charged locator must not re-charge the budget: {e}"
+            ),
         }
     }
 
@@ -847,15 +941,27 @@ mod tests {
     fn a_single_mount_larger_than_the_whole_budget_is_still_returned_but_not_retained() {
         let resolver = MountResolver::builder()
             .factory(Arc::new(RegistryFactory))
-            .limits(Limits { max_resident_bytes: 5, ..Limits::default() })
+            .limits(Limits {
+                max_resident_bytes: 5,
+                ..Limits::default()
+            })
             .build();
         let fs = fs();
         let cancel = CancellationToken::new();
 
         let big = format!("REG{}", "x".repeat(17)); // 20 bytes, over the 5-byte cache budget
-        let mounted = resolver.resolve(&fs, &locator_at("huge"), open(big), None, &cancel).unwrap();
-        assert!(mounted.as_registry().is_some(), "an oversized-for-the-cache mount is still handed back");
-        assert_eq!(resolver.cache_len(), 0, "but it is never retained in the resident cache");
+        let mounted = resolver
+            .resolve(&fs, &locator_at("huge"), open(big), None, &cancel)
+            .unwrap();
+        assert!(
+            mounted.as_registry().is_some(),
+            "an oversized-for-the-cache mount is still handed back"
+        );
+        assert_eq!(
+            resolver.cache_len(),
+            0,
+            "but it is never retained in the resident cache"
+        );
     }
 
     #[test]
@@ -868,15 +974,24 @@ mod tests {
             fn yields(&self) -> MountKind {
                 MountKind::Registry
             }
-            fn probe(&self, _file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> Result_<ProbeScore> {
+            fn probe(
+                &self,
+                _file: &mut dyn VirtualFile,
+                _ctx: &MountContext<'_>,
+            ) -> Result_<ProbeScore> {
                 Ok(ProbeScore::No)
             }
-            fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> Result_<Mounted> {
+            fn mount(
+                &self,
+                _file: Box<dyn VirtualFile>,
+                _ctx: &MountContext<'_>,
+            ) -> Result_<Mounted> {
                 unreachable!("never probes Strong enough to be asked to mount")
             }
         }
 
-        let batch: Vec<Arc<dyn FormatFactory>> = vec![Arc::new(RegistryFactory), Arc::new(AnotherRegistryFactory)];
+        let batch: Vec<Arc<dyn FormatFactory>> =
+            vec![Arc::new(RegistryFactory), Arc::new(AnotherRegistryFactory)];
         let resolver = MountResolver::builder().factories(batch).build();
         let names: Vec<&str> = resolver.factories().map(|f| f.name()).collect();
         assert_eq!(names, vec!["test-registry", "test-registry-2"]);

@@ -1,5 +1,5 @@
 #[cfg(feature = "serde")]
-use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Visitor};
 
 use crate::field::Text;
 
@@ -830,7 +830,7 @@ pub fn other_artifact_from_str(txt: &str) -> OtherOS {
             return OtherOS {
                 os: std::borrow::Cow::Owned(txt.to_string()),
                 artifact: std::borrow::Cow::Owned("Unknown".to_string()),
-            }
+            };
         }
     };
     OtherOS {
@@ -996,7 +996,10 @@ mod tests {
 
     #[test]
     fn linux_unknown_display_is_plain_unknown() {
-        assert_eq!(Artifact::Linux(LinuxArtifacts::Unknown).to_string(), "Linux::Unknown");
+        assert_eq!(
+            Artifact::Linux(LinuxArtifacts::Unknown).to_string(),
+            "Linux::Unknown"
+        );
     }
 
     #[test]

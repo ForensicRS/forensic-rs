@@ -422,7 +422,11 @@ pub trait FormatFactory: Send + Sync {
 
     /// Content-based sniff. Must restore the stream position before
     /// returning, on every path including an error return.
-    fn probe(&self, file: &mut dyn VirtualFile, ctx: &MountContext<'_>) -> ForensicResult<ProbeScore>;
+    fn probe(
+        &self,
+        file: &mut dyn VirtualFile,
+        ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore>;
 
     /// Mount the file as this factory's [`MountKind`]. Only called after
     /// this factory won the deterministic tie-break among every factory

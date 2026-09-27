@@ -23,10 +23,12 @@ fn timestamp_from(
     match ts_res {
         Ok(ts) => ForensicTimestamp::try_from_system_time(ts)
             .map(Some)
-            .map_err(|_| ForensicError::illegal_timestamp(
-                0,
-                format!("timestamp {ts:?} cannot be represented").into(),
-            )),
+            .map_err(|_| {
+                ForensicError::illegal_timestamp(
+                    0,
+                    format!("timestamp {ts:?} cannot be represented").into(),
+                )
+            }),
         Err(why) => {
             if why.kind() == ErrorKind::Unsupported {
                 Ok(None)

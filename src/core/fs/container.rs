@@ -18,11 +18,11 @@ use crate::core::locator::{EvidenceLocator, LocatorSegment};
 use crate::core::path::{Component, FPath, FPathBuf};
 use crate::core::resolver::MountResolver;
 use crate::err::{ForensicError, ForensicResult};
-use crate::traits::vfs::{
-    CaseSensitivity, DirEntry, FileAttributes, FileSystem, PathAttributes, SourceKind, VFileType, VMetadata,
-    VirtualFile,
-};
 use crate::field::{Field, Text};
+use crate::traits::vfs::{
+    CaseSensitivity, DirEntry, FileAttributes, FileSystem, PathAttributes, SourceKind, VFileType,
+    VMetadata, VirtualFile,
+};
 use std::collections::BTreeMap;
 
 /// Controls which files [`ContainerFs`] is willing to even attempt mounting as containers.
@@ -113,7 +113,12 @@ impl ContainerFs {
     /// but `ContainerFs` is the first thing that makes it easy to reach by accident.
     pub fn new(base: Arc<dyn FileSystem>, resolver: Arc<MountResolver>) -> Self {
         let policy = DescentPolicy::from_resolver(&resolver);
-        Self { base, resolver, policy, cancellation: crate::bridge::CancellationToken::default() }
+        Self {
+            base,
+            resolver,
+            policy,
+            cancellation: crate::bridge::CancellationToken::default(),
+        }
     }
 
     #[must_use]
@@ -159,7 +164,11 @@ impl ContainerFs {
     /// container's own root); when `false`, a bare container path with no tail is instead an
     /// ordinary open of a `File` (used by `open`/`metadata`, which must return the container's
     /// own bytes/metadata unless a caller is asking to look *inside* it).
-    fn resolve_chain(&self, path: &FPath, inclusive: bool) -> ForensicResult<(Arc<dyn FileSystem>, FPathBuf, EvidenceLocator)> {
+    fn resolve_chain(
+        &self,
+        path: &FPath,
+        inclusive: bool,
+    ) -> ForensicResult<(Arc<dyn FileSystem>, FPathBuf, EvidenceLocator)> {
         let mut fs: Arc<dyn FileSystem> = Arc::clone(&self.base);
         let mut rest = FPathBuf::from(path.as_str());
         let mut locator = EvidenceLocator::root();
@@ -186,14 +195,24 @@ impl ContainerFs {
             if hops >= self.policy.max_container_depth {
                 return Err(ForensicError::other(
                     "ContainerFs",
-                    format!("container depth exceeds the {}-hop descent policy limit at {path}", self.policy.max_container_depth),
+                    format!(
+                        "container depth exceeds the {}-hop descent policy limit at {path}",
+                        self.policy.max_container_depth
+                    ),
                 ));
             }
             // Cheap path-level self-containment check (e.g. a.zip nested inside a.zip): a real
             // content cycle is still caught by the resolver's own digest-based interning, when
             // one is configured; this catches the identical-path case even without one.
-            if locator.segments().iter().any(|s| matches!(s, LocatorSegment::Path(p) if *p == head)) {
-                return Err(ForensicError::other("ContainerFs", format!("cyclic container path at {head}")));
+            if locator
+                .segments()
+                .iter()
+                .any(|s| matches!(s, LocatorSegment::Path(p) if *p == head))
+            {
+                return Err(ForensicError::other(
+                    "ContainerFs",
+                    format!("cyclic container path at {head}"),
+                ));
             }
 
             let meta = fs.metadata(head.as_path())?;
@@ -203,11 +222,18 @@ impl ContainerFs {
 
             let file = fs.open(head.as_path())?;
             locator = locator.push(LocatorSegment::Path(head.clone()));
-            let mounted = self
-                .resolver
-                .resolve(&fs, &locator, file, Some(crate::traits::format::MountKind::FileSystem), &self.cancellation)?;
+            let mounted = self.resolver.resolve(
+                &fs,
+                &locator,
+                file,
+                Some(crate::traits::format::MountKind::FileSystem),
+                &self.cancellation,
+            )?;
             let Some(next_fs) = mounted.as_file_system() else {
-                return Err(ForensicError::other("ContainerFs", format!("'{head}' did not mount as a FileSystem")));
+                return Err(ForensicError::other(
+                    "ContainerFs",
+                    format!("'{head}' did not mount as a FileSystem"),
+                ));
             };
             fs = Arc::clone(next_fs);
             rest = tail;
@@ -219,7 +245,10 @@ impl ContainerFs {
     /// mount) is itself a plausible container per the descent policy -- the check `metadata`
     /// uses to decide whether to set [`FileAttributes::CONTAINER`].
     fn looks_like_a_container(&self, path: &FPath, size: u64) -> bool {
-        self.policy.should_probe(path, size) && self.resolver.supports(crate::traits::format::MountKind::FileSystem)
+        self.policy.should_probe(path, size)
+            && self
+                .resolver
+                .supports(crate::traits::format::MountKind::FileSystem)
     }
 }
 
@@ -257,13 +286,18 @@ impl FileSystem for ContainerFs {
         fs.metadata(inner.as_path())
     }
 
-    fn read_dir(&self, path: &FPath) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+    fn read_dir(
+        &self,
+        path: &FPath,
+    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
         if let Ok(iter) = self.base.read_dir(path) {
             // Annotate every entry the base fs already populated `metadata` for; an entry with
             // no opportunistic metadata falls back to `Walk::is_container`'s own `metadata()`
             // call, which reaches this type's `metadata()` impl and gets the same annotation.
             let policy = &self.policy;
-            let supports_fs = self.resolver.supports(crate::traits::format::MountKind::FileSystem);
+            let supports_fs = self
+                .resolver
+                .supports(crate::traits::format::MountKind::FileSystem);
             return Ok(Box::new(iter.map(move |entry| {
                 let mut entry = entry?;
                 if supports_fs && entry.file_type == VFileType::File {
@@ -281,7 +315,11 @@ impl FileSystem for ContainerFs {
         // makes a bare container path resolve to (its mounted fs, "", locator) so both cases
         // share one code path.
         let (fs, inner, _locator) = self.resolve_chain(path, true)?;
-        let dir_path = if inner.as_str().is_empty() { FPathBuf::from("") } else { inner };
+        let dir_path = if inner.as_str().is_empty() {
+            FPathBuf::from("")
+        } else {
+            inner
+        };
         let max_entries = self.resolver.limits().max_entries_per_container;
         let outer_prefix = path.as_str().to_string();
 
@@ -291,16 +329,26 @@ impl FileSystem for ContainerFs {
             if n as u64 >= max_entries {
                 out.push(Err(ForensicError::other(
                     "ContainerFs",
-                    format!("container entry count exceeds the {max_entries}-entry limit at {path}"),
+                    format!(
+                        "container entry count exceeds the {max_entries}-entry limit at {path}"
+                    ),
                 )));
                 break;
             }
             match item {
                 Ok(mut child) => {
                     // Rewrite the mounted fs's own-relative path to the outer transparent path.
-                    let leaf = child.path.as_str().rsplit(['/', '\\']).next().unwrap_or(child.path.as_str());
-                    let rewritten =
-                        if outer_prefix.is_empty() { leaf.to_string() } else { format!("{outer_prefix}/{leaf}") };
+                    let leaf = child
+                        .path
+                        .as_str()
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(child.path.as_str());
+                    let rewritten = if outer_prefix.is_empty() {
+                        leaf.to_string()
+                    } else {
+                        format!("{outer_prefix}/{leaf}")
+                    };
                     child.path = FPathBuf::from(rewritten);
                     out.push(Ok(child));
                 }
@@ -333,8 +381,14 @@ impl PathAttributes for ContainerFs {
         let mut out = BTreeMap::new();
         let (fs, inner, locator) = self.resolve_chain(path, true)?;
         if locator.depth() > 0 {
-            out.insert(Text::Borrowed("container.depth"), Field::U64(locator.depth() as u64));
-            out.insert(Text::Borrowed("container.locator"), Field::Text(Text::Owned(locator.to_string())));
+            out.insert(
+                Text::Borrowed("container.depth"),
+                Field::U64(locator.depth() as u64),
+            );
+            out.insert(
+                Text::Borrowed("container.locator"),
+                Field::Text(Text::Owned(locator.to_string())),
+            );
         }
         if let Some(attrs) = fs.as_attributes() {
             out.extend(attrs.attributes(inner.as_path())?);
@@ -370,7 +424,11 @@ mod tests {
     fn parse_toy_container(bytes: &[u8]) -> Option<InMemoryVirtualFileSystem> {
         let rest = bytes.strip_prefix(MAGIC)?;
         let mut fs = InMemoryVirtualFileSystem::new();
-        for entry in std::str::from_utf8(rest).ok()?.split('|').filter(|s| !s.is_empty()) {
+        for entry in std::str::from_utf8(rest)
+            .ok()?
+            .split('|')
+            .filter(|s| !s.is_empty())
+        {
             let (name, content) = entry.split_once('=')?;
             fs.add_file(name, content.as_bytes().to_vec());
         }
@@ -388,24 +446,42 @@ mod tests {
         fn extensions(&self) -> &[&'static str] {
             &["tc"]
         }
-        fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+        fn probe(
+            &self,
+            file: &mut dyn VirtualFile,
+            _ctx: &MountContext<'_>,
+        ) -> ForensicResult<ProbeScore> {
             let start = file.stream_position().unwrap_or(0);
             let mut magic = vec![0u8; MAGIC.len()];
             let matched = file.read_exact(&mut magic).is_ok() && magic == MAGIC;
             let _ = file.seek(SeekFrom::Start(start));
-            Ok(if matched { ProbeScore::Strong } else { ProbeScore::No })
+            Ok(if matched {
+                ProbeScore::Strong
+            } else {
+                ProbeScore::No
+            })
         }
-        fn mount(&self, mut file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+        fn mount(
+            &self,
+            mut file: Box<dyn VirtualFile>,
+            _ctx: &MountContext<'_>,
+        ) -> ForensicResult<Mounted> {
             let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).map_err(|e| ForensicError::other("toy", e.to_string()))?;
-            let fs = parse_toy_container(&bytes)
-                .ok_or_else(|| ForensicError::other("toy-container", "malformed toy container".to_string()))?;
+            file.read_to_end(&mut bytes)
+                .map_err(|e| ForensicError::other("toy", e.to_string()))?;
+            let fs = parse_toy_container(&bytes).ok_or_else(|| {
+                ForensicError::other("toy-container", "malformed toy container".to_string())
+            })?;
             Ok(Mounted::FileSystem(Arc::new(fs)))
         }
     }
 
     fn resolver() -> Arc<MountResolver> {
-        Arc::new(MountResolver::builder().factory(Arc::new(ToyContainerFactory)).build())
+        Arc::new(
+            MountResolver::builder()
+                .factory(Arc::new(ToyContainerFactory))
+                .build(),
+        )
     }
 
     /// Counts `metadata()` calls, so the "an ordinary path costs exactly one `metadata()` call"
@@ -422,7 +498,10 @@ mod tests {
             self.metadata_calls.fetch_add(1, Ordering::Relaxed);
             self.inner.metadata(path)
         }
-        fn read_dir(&self, path: &FPath) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+        fn read_dir(
+            &self,
+            path: &FPath,
+        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
             self.inner.read_dir(path)
         }
         fn source(&self) -> SourceKind {
@@ -444,54 +523,70 @@ mod tests {
 
     #[test]
     fn transparent_path_reaches_a_file_inside_a_mounted_container() {
-        let base =
-            InMemoryVirtualFileSystem::new().with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
+        let base = InMemoryVirtualFileSystem::new()
+            .with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
         let fs = ContainerFs::new(Arc::new(base), resolver());
-        assert_eq!(fs.read_all(FPath::new("report.tc/inner.txt")).unwrap(), b"hello");
+        assert_eq!(
+            fs.read_all(FPath::new("report.tc/inner.txt")).unwrap(),
+            b"hello"
+        );
     }
 
     #[test]
     fn the_container_file_itself_keeps_file_type_file_and_gains_the_container_bit() {
-        let base =
-            InMemoryVirtualFileSystem::new().with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
+        let base = InMemoryVirtualFileSystem::new()
+            .with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
         let fs = ContainerFs::new(Arc::new(base), resolver());
         let meta = fs.metadata(FPath::new("report.tc")).unwrap();
         assert_eq!(meta.file_type, VFileType::File);
         assert!(meta.attributes.contains(FileAttributes::CONTAINER));
         // read_all on the container path itself must still return its ORIGINAL bytes, not its
         // contents-as-a-directory -- this is the whole point of the transparent scheme.
-        assert_eq!(fs.read_all(FPath::new("report.tc")).unwrap(), build_toy_container(&[("inner.txt", "hello")]));
+        assert_eq!(
+            fs.read_all(FPath::new("report.tc")).unwrap(),
+            build_toy_container(&[("inner.txt", "hello")])
+        );
     }
 
     #[test]
     fn read_dir_on_the_container_lists_its_contents_at_the_outer_path() {
-        let base = InMemoryVirtualFileSystem::new()
-            .with_file("report.tc", build_toy_container(&[("inner.txt", "hello"), ("other.txt", "world")]));
+        let base = InMemoryVirtualFileSystem::new().with_file(
+            "report.tc",
+            build_toy_container(&[("inner.txt", "hello"), ("other.txt", "world")]),
+        );
         let fs = ContainerFs::new(Arc::new(base), resolver());
-        let mut names: Vec<String> =
-            fs.read_dir(FPath::new("report.tc")).unwrap().map(|e| e.unwrap().path.to_string()).collect();
+        let mut names: Vec<String> = fs
+            .read_dir(FPath::new("report.tc"))
+            .unwrap()
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
         names.sort();
         assert_eq!(names, vec!["report.tc/inner.txt", "report.tc/other.txt"]);
     }
 
     #[test]
     fn walk_with_descend_into_containers_reaches_nested_content() {
-        let base =
-            InMemoryVirtualFileSystem::new().with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
+        let base = InMemoryVirtualFileSystem::new()
+            .with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
         let fs = ContainerFs::new(Arc::new(base), resolver());
         let opts = crate::core::fs::walk::WalkOptions::default().with_descend_into_containers(true);
-        let mut names: Vec<String> = fs.walk(FPath::new(""), &opts).map(|e| e.unwrap().path.to_string()).collect();
+        let mut names: Vec<String> = fs
+            .walk(FPath::new(""), &opts)
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
         names.sort();
         assert_eq!(names, vec!["report.tc", "report.tc/inner.txt"]);
     }
 
     #[test]
     fn walk_without_the_option_does_not_descend() {
-        let base =
-            InMemoryVirtualFileSystem::new().with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
+        let base = InMemoryVirtualFileSystem::new()
+            .with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
         let fs = ContainerFs::new(Arc::new(base), resolver());
-        let names: Vec<String> =
-            fs.walk(FPath::new(""), &Default::default()).map(|e| e.unwrap().path.to_string()).collect();
+        let names: Vec<String> = fs
+            .walk(FPath::new(""), &Default::default())
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
         assert_eq!(names, vec!["report.tc"]);
     }
 
@@ -517,7 +612,10 @@ mod tests {
         inner_container.push(b'|');
 
         let base = InMemoryVirtualFileSystem::new().with_file("a.tc", inner_container);
-        let policy = DescentPolicy { max_container_depth: 1, ..DescentPolicy::from_resolver(&resolver()) };
+        let policy = DescentPolicy {
+            max_container_depth: 1,
+            ..DescentPolicy::from_resolver(&resolver())
+        };
         let fs = ContainerFs::new(Arc::new(base), resolver()).with_policy(policy);
 
         // One hop (into a.tc) succeeds; a second hop (into b.tc) exceeds the depth-1 policy.
@@ -528,11 +626,15 @@ mod tests {
     #[test]
     fn entry_limit_is_enforced_in_read_dir() {
         let entries: Vec<(&str, &str)> = vec![("a", "1"), ("b", "2"), ("c", "3")];
-        let base = InMemoryVirtualFileSystem::new().with_file("report.tc", build_toy_container(&entries));
+        let base =
+            InMemoryVirtualFileSystem::new().with_file("report.tc", build_toy_container(&entries));
         let resolver = Arc::new(
             MountResolver::builder()
                 .factory(Arc::new(ToyContainerFactory))
-                .limits(Limits { max_entries_per_container: 2, ..Limits::default() })
+                .limits(Limits {
+                    max_entries_per_container: 2,
+                    ..Limits::default()
+                })
                 .build(),
         );
         let fs = ContainerFs::new(Arc::new(base), resolver);
@@ -557,8 +659,8 @@ mod tests {
     fn a_file_with_an_unlisted_extension_is_never_attempted_as_a_container() {
         // Same magic bytes, but a ".txt" extension the default policy doesn't allow -- proves
         // the extension gate, not just the magic probe, controls descent.
-        let base =
-            InMemoryVirtualFileSystem::new().with_file("report.txt", build_toy_container(&[("inner.txt", "hello")]));
+        let base = InMemoryVirtualFileSystem::new()
+            .with_file("report.txt", build_toy_container(&[("inner.txt", "hello")]));
         let fs = ContainerFs::new(Arc::new(base), resolver());
         let meta = fs.metadata(FPath::new("report.txt")).unwrap();
         assert!(!meta.attributes.contains(FileAttributes::CONTAINER));
@@ -567,11 +669,18 @@ mod tests {
 
     #[test]
     fn path_attributes_forward_container_depth_for_a_nested_path() {
-        let base =
-            InMemoryVirtualFileSystem::new().with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
+        let base = InMemoryVirtualFileSystem::new()
+            .with_file("report.tc", build_toy_container(&[("inner.txt", "hello")]));
         let fs = ContainerFs::new(Arc::new(base), resolver());
-        let attrs = fs.as_attributes().unwrap().attributes(FPath::new("report.tc/inner.txt")).unwrap();
-        assert_eq!(attrs.get(&Text::Borrowed("container.depth")), Some(&Field::U64(1)));
+        let attrs = fs
+            .as_attributes()
+            .unwrap()
+            .attributes(FPath::new("report.tc/inner.txt"))
+            .unwrap();
+        assert_eq!(
+            attrs.get(&Text::Borrowed("container.depth")),
+            Some(&Field::U64(1))
+        );
     }
 
     #[test]
@@ -589,10 +698,14 @@ mod tests {
         // fs's own base bytes are what get mounted (the raw resolver cache correctness itself is
         // covered by core/resolver.rs's own tests).
         let shared = resolver();
-        let base_a =
-            Arc::new(InMemoryVirtualFileSystem::new().with_file("x.tc", build_toy_container(&[("a.txt", "A")])));
-        let base_b =
-            Arc::new(InMemoryVirtualFileSystem::new().with_file("x.tc", build_toy_container(&[("a.txt", "A")])));
+        let base_a = Arc::new(
+            InMemoryVirtualFileSystem::new()
+                .with_file("x.tc", build_toy_container(&[("a.txt", "A")])),
+        );
+        let base_b = Arc::new(
+            InMemoryVirtualFileSystem::new()
+                .with_file("x.tc", build_toy_container(&[("a.txt", "A")])),
+        );
         let fs_a = ContainerFs::new(base_a, Arc::clone(&shared));
         let fs_b = ContainerFs::new(base_b, shared);
         assert_eq!(fs_a.read_all(FPath::new("x.tc/a.txt")).unwrap(), b"A");

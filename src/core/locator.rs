@@ -169,7 +169,10 @@ mod tests {
             });
         assert_eq!(locator.depth(), 2);
         match locator.segments() {
-            [LocatorSegment::Path(_), LocatorSegment::ArchiveEntry { name, .. }] => {
+            [
+                LocatorSegment::Path(_),
+                LocatorSegment::ArchiveEntry { name, .. },
+            ] => {
                 assert_eq!(name, "evil.exe");
             }
             other => panic!("unexpected segments: {other:?}"),

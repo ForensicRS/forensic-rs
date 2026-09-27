@@ -15,7 +15,7 @@ mod registry;
 mod vfs;
 
 pub use db::{InMemoryForensicDb, InMemoryTable};
-pub use events::{basic_event_log, TestingEventLogReader};
+pub use events::{TestingEventLogReader, basic_event_log};
 pub use factories::TestingFormatFactory;
 pub use hooks::TestingProviderHook;
 pub use parser::{TestParserFactory, TestParserFactoryBuilder};
@@ -39,14 +39,16 @@ pub fn test_provenance_id() -> ProvenanceId {
 
 pub fn init_testing_logger() {
     let rcv = crate::logging::testing_logger_dummy();
-    std::thread::spawn(move || loop {
-        let msg = match rcv.recv() {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        println!(
-            "{:?} - {} - {}:{} - {}",
-            msg.level, msg.module, msg.file, msg.line, msg.data
-        );
+    std::thread::spawn(move || {
+        loop {
+            let msg = match rcv.recv() {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            println!(
+                "{:?} - {} - {}:{} - {}",
+                msg.level, msg.module, msg.file, msg.line, msg.data
+            );
+        }
     });
 }
