@@ -253,6 +253,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ParallelPipelineBuilder` injected it into every auto-matched `AnalysisModule`. It now declares
   `CommonArtifact::ContainerInventory`, and its records carry that instead of
   `CommonArtifact::Other("container_inventory")`.
+- `TriagePipeline` called `Analyzer::finalize` after every parser instead of once per run, so a
+  cross-parser analyzer could not tell "not seen yet" from "absent" and aggregate findings fired
+  once per parser. It now finalizes once, after the last parser, like `ParallelPipeline`'s
+  `AnalysisModule` (still skipped when the run halts).
 - Binary offset validation is overflow-safe, and new fallible endian-explicit unpack helpers prevent truncated artifact data from panicking.
 - `ForensicError` now preserves original `std::io::Error` values created through `From<std::io::Error>` or `io_error_with_source()`, exposing them through `Error::source()`.
 - Parallel pipeline worker panics are reported as task errors without preventing healthy tasks from completing.

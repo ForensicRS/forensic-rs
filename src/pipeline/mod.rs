@@ -270,7 +270,6 @@ impl TriagePipeline {
                     .expect("is_halted() implies halt_error is Some"));
             }
 
-            proc.finalize_analyzers();
             proc.flush_tally();
             let outcome = proc.finish();
 
@@ -279,6 +278,29 @@ impl TriagePipeline {
             result.findings_count += outcome.findings;
             result.errors.extend(outcome.errors);
         }
+
+        // Finalize analyzers once, after every parser, so a cross-parser analyzer can tell "not
+        // seen" from "absent" -- the same contract as `ParallelPipeline`'s `AnalysisModule`.
+        let mut tally = AnomalyTally::new();
+        let mut dest = SinkDestination {
+            sinks: &mut self.sinks,
+        };
+        let mut final_proc = RecordProcessor::new(
+            &mut dest,
+            &mut self.enrichers,
+            &mut self.analyzers,
+            &analyzer_artifacts,
+            &mut self.context,
+            &mut tally,
+            &cancellation,
+            self.error_action,
+            false,
+            "",
+        );
+        final_proc.finalize_analyzers();
+        let final_outcome = final_proc.finish();
+        result.findings_count += final_outcome.findings;
+        result.errors.extend(final_outcome.errors);
 
         // Finalize all sinks
         for sink in &mut self.sinks {
@@ -498,6 +520,26 @@ mod tests {
         let result = pipeline.run(&sources).unwrap();
         assert_eq!(result.items_processed, 1);
         assert_eq!(result.findings_count, 1);
+    }
+
+    #[test]
+    fn analyzers_are_finalized_once_after_every_parser() {
+        let run = |threshold| {
+            let one = || vec![Ok(ForensicData::new("host1", Artifact::Unknown, test_provenance_id()))];
+            let mut pipeline = TriagePipeline::builder()
+                .parser(Arc::new(mock_parser(one(), Artifact::Unknown).build()))
+                .parser(Arc::new(mock_parser(one(), Artifact::Unknown).build()))
+                .analyzer(Box::new(CountAnalyzer::new(threshold)))
+                .build()
+                .unwrap();
+            pipeline.run(&test_sources()).unwrap()
+        };
+        // Two records in total. Finalized per parser, a threshold of 2 would already fire after
+        // the first parser (1 < 2), and a threshold of 3 would fire twice.
+        let result = run(2);
+        assert_eq!(result.items_processed, 2);
+        assert_eq!(result.findings_count, 0);
+        assert_eq!(run(3).findings_count, 1);
     }
 
     #[test]

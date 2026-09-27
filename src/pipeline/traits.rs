@@ -41,7 +41,8 @@ pub trait Enricher {
 ///
 /// Two analysis phases:
 /// - `analyze()`: called per record — fast per-item checks
-/// - `finalize()`: called after a parser is exhausted — aggregate/cross-record analysis
+/// - `finalize()`: called once per run, after every parser is exhausted — aggregate and
+///   cross-parser analysis (in `ParallelPipeline`, once per `AnalysisModule`)
 pub trait Analyzer {
     /// Short identifier for this analyzer.
     fn name(&self) -> &str;
@@ -57,8 +58,9 @@ pub trait Analyzer {
         context: &TriageContext,
         out: &mut Vec<Finding>,
     ) -> ForensicResult<()>;
-    /// Produce aggregate findings after all records from a parser have been processed,
-    /// pushing them to `out`. Default implementation produces none.
+    /// Produce aggregate findings once every parser in the run has been processed, pushing
+    /// them to `out`. Not called when the run halts on an error. Default implementation
+    /// produces none.
     fn finalize(&mut self, context: &TriageContext, out: &mut Vec<Finding>) -> ForensicResult<()> {
         let _ = (context, out);
         Ok(())
