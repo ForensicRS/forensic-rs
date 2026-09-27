@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `utils::win::decompress::lznt1::decompress_bounded(input, out, max_out)`: LZNT1 with an output
   cap, for attacker-influenced input.
 
+- `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
+  `dictionary::USER_ID` (`user.id`) constant.
+
 - `ContainerFs`/`DescentPolicy` (`src/core/fs/container.rs`): a `FileSystem` decorator over
   `Arc<dyn FileSystem>` + `Arc<MountResolver>` that makes container files transparently
   walkable -- `C:\docs\report.doc\Macros\VBA\Module1` is an ordinary path, no `[mount]` marker

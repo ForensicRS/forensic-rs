@@ -9,6 +9,8 @@ pub const EVENT_CATEGORY: &str = "event.category";
 /// Some event sources use event codes to identify messages unambiguously, regardless of message language or wording adjustments over time. An example of this is the Windows Event ID.
 pub const EVENT_CODE: &str = "event.code";
 
+/// Unique identifier of the user. On Windows, the SID.
+pub const USER_ID: &str = "user.id";
 pub const USER_NAME: &str = "user.name";
 pub const USER_DOMAIN: &str = "user.domain";
 pub const SOURCE_IP: &str = "source.ip";

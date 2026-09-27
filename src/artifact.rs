@@ -107,6 +107,8 @@ pub enum RegistryArtifacts {
     TypedPaths,
     /// RecentDocs
     RecentDocs,
+    /// Explorer FeatureUsage (taskbar interaction counters): `HKU\<sid>\Software\Microsoft\Windows\CurrentVersion\Explorer\FeatureUsage`
+    FeatureUsage,
     Other(String),
     #[default]
     Unknown,
@@ -264,6 +266,7 @@ impl std::fmt::Display for RegistryArtifacts {
             RegistryArtifacts::Bam => write!(f, "Bam"),
             RegistryArtifacts::TypedPaths => write!(f, "TypedPaths"),
             RegistryArtifacts::RecentDocs => write!(f, "RecentDocs"),
+            RegistryArtifacts::FeatureUsage => write!(f, "FeatureUsage"),
             RegistryArtifacts::Other(v) => write!(f, "{}", v),
             RegistryArtifacts::Unknown => write!(f, "Unknown"),
         }
@@ -735,6 +738,7 @@ pub fn registry_artifacts_from_str(txt: &str) -> RegistryArtifacts {
         "Bam" => RegistryArtifacts::Bam,
         "TypedPaths" => RegistryArtifacts::TypedPaths,
         "RecentDocs" => RegistryArtifacts::RecentDocs,
+        "FeatureUsage" => RegistryArtifacts::FeatureUsage,
         _ => RegistryArtifacts::Other(txt.to_string()),
     }
 }
@@ -900,6 +904,7 @@ mod tests {
         roundtrip(RegistryArtifacts::Bam.into());
         roundtrip(RegistryArtifacts::TypedPaths.into());
         roundtrip(RegistryArtifacts::RecentDocs.into());
+        roundtrip(RegistryArtifacts::FeatureUsage.into());
         roundtrip(RegistryArtifacts::Unknown.into());
         roundtrip(RegistryArtifacts::Other("Custom".to_string()).into());
     }
