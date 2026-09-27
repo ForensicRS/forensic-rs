@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed, looking through path/offset context.
 - `windows::users_with_errors`: the user list plus every failure met while building it. Absent
   data (no `ProfileList`, no `ProfileImagePath`) is not an error.
+- `registry::extra::env_vars::get_env_vars_of_users_report`, returning an `EnvVarsReport`: the
+  same variables as `get_env_vars_of_users`, plus an `EnvFallback` for every value that was
+  assumed rather than read (`C:\Windows`, `C:`, `C:\Program Files`, per-user `TMP`, ...) and the
+  reads that failed. Paths resolved from assumed values can now be told apart from real ones.
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,
@@ -289,6 +293,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ForensicError::other(..)`, so code tested against it could not tell "absent" from "failed".
   It now returns `RegistryError::KeyNotFound`, `ValueNotFound` and `InvalidHandle`, like
   frnsc-hive. `MountedCell::add_key` recursed forever on a path with no separator.
+- `get_env_vars_of_users` read `ProgrammFilesDir` (misspelled), so `ProgramFiles` was always the
+  default `C:\Program Files`. It also panicked on a `SystemRoot` or profile path whose second
+  byte is not a character boundary, and a single unreadable user hive made it fail for every
+  user.
 - Binary offset validation is overflow-safe, and new fallible endian-explicit unpack helpers prevent truncated artifact data from panicking.
 - `ForensicError` now preserves original `std::io::Error` values created through `From<std::io::Error>` or `io_error_with_source()`, exposing them through `Error::source()`.
 - Parallel pipeline worker panics are reported as task errors without preventing healthy tasks from completing.
