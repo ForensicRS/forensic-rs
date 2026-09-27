@@ -353,8 +353,18 @@ pub trait FileSystemExt: FileSystem {
         crate::core::fs::walk::Walk::new(self, root, opts.clone())
     }
 
+    /// Every path matching `pattern`. Lenient: unreadable directories and
+    /// entries met along the walk are skipped (and logged by the walk). Use
+    /// [`glob_report`](Self::glob_report) to get them.
     fn glob(&self, pattern: &str) -> ForensicResult<Vec<FPathBuf>> {
         Ok(self.glob_iter(pattern).collect())
+    }
+
+    /// Every path matching `pattern`, plus the walk errors that
+    /// [`glob`](Self::glob) skips, so a caller can tell a subtree that went
+    /// unexamined from one that has no matches.
+    fn glob_report(&self, pattern: &str) -> ForensicResult<crate::core::fs::glob::GlobOutcome> {
+        Ok(self.glob_iter(pattern).into_outcome())
     }
 
     fn glob_iter(&self, pattern: &str) -> crate::core::fs::glob::Glob<'_, Self> {

@@ -1781,6 +1781,19 @@ impl ForensicError {
         }
     }
 
+    /// Whether this is a filesystem path that doesn't exist: either
+    /// [`DataAccessError::PathNotFound`] or an I/O error of kind
+    /// [`std::io::ErrorKind::NotFound`]. Looks through
+    /// [`with_path`](Self::with_path)/[`with_offset`](Self::with_offset) context.
+    pub fn is_path_not_found(&self) -> bool {
+        match self {
+            Self::DataAccess(DataAccessError::PathNotFound { .. }) => true,
+            Self::Io { kind, .. } => *kind == std::io::ErrorKind::NotFound,
+            Self::Contextualized { inner, .. } => inner.is_path_not_found(),
+            _ => false,
+        }
+    }
+
     /// Creates a registry value type validation error
     ///
     /// Use this when a registry value exists but has the wrong data type.

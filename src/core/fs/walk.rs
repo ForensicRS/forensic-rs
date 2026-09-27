@@ -107,6 +107,19 @@ impl<'a, T: FileSystem + ?Sized> Walk<'a, T> {
         walk
     }
 
+    /// Drops the error from opening the walk's root directory when `pred`
+    /// holds for it, so the walk yields nothing instead. Must be called
+    /// before the first `next()`. `Glob` uses it to treat a missing literal
+    /// prefix as "no matches" rather than a failed read.
+    pub(crate) fn clear_root_error_if(
+        &mut self,
+        pred: impl FnOnce(&crate::err::ForensicError) -> bool,
+    ) {
+        if self.pending_error.as_ref().is_some_and(pred) {
+            self.pending_error = None;
+        }
+    }
+
     fn push_dir(&mut self, path: &FPath, depth: u32) {
         match self.fs.read_dir(path) {
             Ok(iter) => self.stack.push((iter, depth)),
