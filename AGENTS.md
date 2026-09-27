@@ -30,13 +30,13 @@ src/
   lib.rs              — Module declarations + `prelude` with all public re-exports
   traits/             — Core abstraction traits (the "interfaces" of the framework)
     vfs.rs            — FileSystem, FileSystemExt, VirtualFile, VMetadata, DirEntry, VFileType, SourceKind, CaseSensitivity
-    forensic.rs       — ArtifactParserFactory, ParserDescriptor, ParserRun, ParserOutput, OutputFlow, ArtifactStream, PushDriver, IntoTimeline, IntoActivity, Requirement, Resolution, UnavailableReason, SchemaFingerprint, TargetSpec, KeySpec, ChannelSpec
+    forensic.rs       — ArtifactParserFactory, ParserDescriptor, ParserRun, ParserOutput, OutputFlow, ArtifactStream, PushDriver, IntoTimeline, IntoActivity, Requirement, Resolution, UnavailableReason, SchemaFingerprint, TargetSpec, KeySpec, ChannelSpec, ArtifactRef
     format.rs         — FormatFactory, Mounted, MountKind, ProbeScore, MountContext, StructuredObject, FileSet/FileSetMember/FileSetRole (unified sniff-and-mount contract, replacing the old vfs.rs FileSystemFactory and traits/factories.rs)
     digest.rs         — Digest, DigestAlgorithm, ContentAddress (content-hashing contract, no hashing dependency taken)
     sql.rs            — SqlStatement, SqlDb, ColumnValue
     db.rs             — ForensicDb, ForensicRows, ForensicValue, ForensicRow, RowIterator, RecoverRows, EmptyRows (ForensicDb::as_recovery() capability probe; allocated()/recovery()/locus()/scan_report() on a row cursor)
     events.rs         — EventLogReader, EventLogIterator, EventLogQuery, EventRecord, EventLevel
-    registry/         — mod.rs: RegValue (13 variants), RegValueRef, RegistryBuffer; raw.rs: Registry, RegistryExt, RegKey, RawKey, PredefinedHive; windows.rs: system_root(), users(), build() free functions
+    registry/         — mod.rs: RegValue (13 variants), RegValueRef, RegistryBuffer; raw.rs: Registry, RegistryExt (incl. expand_key_pattern()), RegKey, RawKey, PredefinedHive; windows.rs: system_root(), users(), build(), program_files(), program_files_x86(), program_data(), all_users_profile() free functions
       extra/          — Registry helpers (e.g., get_env_vars_of_users())
   capabilities/       — MCP-facing authorization layer: gate access to sources, expose them as discoverable tools/resources
     access.rs         — AccessContext, AccessKind, AccessRequest, AccessDecision, AccessAuditEvent, AccessAuditSink, AccessPolicy, AuditedAccessPolicy, AllowAllPolicy, DenyAllPolicy
@@ -48,15 +48,20 @@ src/
     value.rs          — CapabilityValue (lossless, protocol-neutral value type exchanged by tools/resource providers)
     pipeline.rs       — PipelineSourceKind, AccessRequirements, AuthorizedSourceFactory, PipelineTaskFactory, PipelineTaskTool (authorization prerequisites for wiring an Analyzer into a capability tool)
     bridge_adapter.rs — BridgeResourceProvider (adapts a legacy `ForensicProvider` bridge provider to the protocol-neutral ResourceProvider API)
+  catalog/            — Artifact locations: where on a host an artifact lives, in the ForensicArtifacts definition vocabulary (the data itself lives in frnsc-artifacts; not the same as provenance::Locus)
+    mod.rs            — ArtifactSource, ArtifactDefinition, SourceEntry, RegistryValueRef, Os, Separator, ArtifactCatalog (lookup by name or alias)
+    slice.rs          — SliceCatalog, CatalogIndexEntry: sorted-slice catalog, built at run time (`new`) or over generated `static` data (`from_static` + `validate`)
+    expand.rs         — expand(), Expansion, ExpandedGlob/Key/Value, UnresolvedSource: a definition made concrete for one HostProfile; a missing host fact becomes a search pattern plus a note, never a default
+    resolve.rs        — resolve_expansion(), ArtifactResolution, ResolvedFile/Key/Value: an Expansion matched against a FileSystem and Registry
   pipeline/           — Triage orchestration: run Parsers/Analyzers/Enrichers over evidence and route Findings to sinks
     finding.rs        — Finding, FindingSeverity, FindingCategory, AnomalyTally
     traits.rs         — Analyzer, Enricher, TriageSink
     mod.rs            — TriagePipeline, TriagePipelineBuilder, ErrorAction, PipelineResult (serial pipeline orchestration/routing)
     parallel.rs       — ParallelPipeline, ParallelPipelineBuilder, AnalysisModule, PipelineEvent, TaskStats (thread-pool parallel triage pipeline)
     processor.rs      — RecordProcessor, RecordDestination (pub(crate); the one enrich→tally→analyze→route body shared by the serial and parallel drivers)
-    context.rs        — TriageContext (shared run context: host/tenant/artifact metadata, shared KV store, ProvenanceStore), ParseContext (what one ArtifactParserFactory::open() call sees: sources, host, acquisition, cancellation, register_source())
+    context.rs        — TriageContext (shared run context: host/tenant/artifact metadata, shared KV store, ProvenanceStore), ParseContext (what one ArtifactParserFactory::open() call sees: sources, host, acquisition, cancellation, register_source(), the cached host_profile(), resolve()/resolve_files()/resolve_artifact())
     registry.rs       — ParserRegistry (ID-keyed store of ArtifactParserFactory instances, backing AccessRequirements::parser(id))
-    sources.rs        — TriageSources, TriageSourcesBuilder (VFS/registry evidence sources available to parsers, plus optional MountResolver/SecretProvider attachments)
+    sources.rs        — TriageSources, TriageSourcesBuilder (VFS/registry evidence sources available to parsers, plus optional MountResolver/SecretProvider/ArtifactCatalog attachments)
     sinks.rs          — TimelineSink, FindingCollector, JsonlTimelineSink, JsonlFindingSink, ProvenanceJsonlSink (the only sink whose output keeps provenance)
     timeline.rs       — EventId, TimelineStore, InMemoryTimelineStore, TimelineRecordSink: an ordered, deduped timeline (TimelineSink is stats-only; this is the "implement a custom TriageSink" it points to)
   provenance/         — Where a value came from and how much to trust it — tracked separately from the value itself
@@ -92,7 +97,7 @@ src/
       chroot.rs       — ChRootFileSystem: path-remapping FileSystem wrapper (wraps an Arc<dyn FileSystem>)
       mount.rs        — MountTable, OverlayFs: layered filesystem composition
       walk.rs         — Walk, WalkOptions: lazy streaming directory-tree traversal (FileSystemExt::walk)
-      glob.rs         — Glob: pattern matching over FileSystem paths (FileSystemExt::glob/glob_iter)
+      glob.rs         — Glob, GlobOutcome: pattern matching over FileSystem paths (`*`, `?`, `[..]`, `**`, bounded `**N`; FileSystemExt::glob/glob_iter/glob_report)
       window.rs       — into_read_at, LockedReadAt, WindowReadAt, ConcatReadAt, ReadAtFile: shared positional byte sources for image/volume factories
       split_raw.rs    — SplitRawFactory, SplitRawFs: `name.001`, `.002`, ... joined into one `media` file (the only image format core ships)
   field/
@@ -120,7 +125,7 @@ src/
   evidence.rs         — EvidenceSet, EvidenceItem, EvidenceItemId: an investigation's ordered set of evidence items, each lazily resolving into a TriageSources view
   collection.rs       — CollectionManifest, ToolIdentity, CollectionError, StaticCollectionManifest: what a collection tool (KAPE, CyLR, ...) says it did and what it failed to collect
   coverage.rs         — CoverageReport, CoverageGap, CoverageGapReason: CollectionManifest targets checked against what's actually present in the evidence
-  host_profile.rs     — HostProfile: a host's identity facts (computer name, system root, OS version, users), every field Option<Tracked<T>> so an unresolved fact never defaults
+  host_profile.rs     — HostProfile: a host's identity facts (computer name, system root, OS version, users, install locations), every field Option<Tracked<T>> so an unresolved fact never defaults
   entity.rs           — EntityId, EntityKind: content-derived, stable-across-runs identity for correlation subjects (Host, User, Executable, File, Process, ...)
   fact_store.rs       — FactStore, InMemoryFactStore, ObservationOutcome, FactRecord: cross-artifact corroboration — append-only observations, agreement merges provenance, disagreement is retained not overwritten
   logging/            — Logger, Level, channel-based log macros (error!, warn!, info!, debug!, trace!) — engineer-facing diagnostics only, not forensic alerts (see Findings vs. logs vs. errors below)
@@ -152,13 +157,15 @@ Key prelude exports:
 - `MountResolver`, `MountResolverBuilder` — drives `FormatFactory` probing/mounting, caches by `EvidenceLocator`, enforces `Limits`
 - `Limits`, `LimitExceeded`, `SpillStore`, `MemorySpillStore` — resource budgets for hostile/untrusted evidence containers
 - `Digest`, `DigestAlgorithm`, `ContentAddress` — content-hashing contract (trait only, no hashing dependency)
-- `Requirement`, `Resolution`, `UnavailableReason`, `SchemaFingerprint`, `TargetSpec`, `KeySpec`, `ChannelSpec` — what a parser needs beyond a bare VFS/registry handle, declared on `ParserDescriptor::requirements` and resolved via `ParseContext::resolve()`/`ParseContext::mount()`
+- `Requirement`, `Resolution`, `UnavailableReason`, `SchemaFingerprint`, `TargetSpec`, `KeySpec`, `ChannelSpec`, `ArtifactRef` — what a parser needs beyond a bare VFS/registry handle, declared on `ParserDescriptor::requirements` and resolved via `ParseContext::resolve()`/`ParseContext::mount()`
+- `ArtifactCatalog`, `ArtifactDefinition`, `ArtifactSource`, `SourceEntry`, `Os`, `Separator`, `SliceCatalog`, `Expansion`, `ArtifactResolution`, `ResolvedFile` — artifact locations (`src/catalog/`): a parser declares `Requirement::artifact("WindowsAMCacheHveFile")` instead of hardcoding paths, and `ParseContext::resolve_artifact()` returns every file, registry key and value for this host from the run's catalog (`TriageSourcesBuilder::catalog`). Expanded paths are drive-less and rooted at the evidence root (`\Windows\Prefetch\*.pf`). `catalog::expand` is not in the prelude (it would clash with `provenance::expand`)
+- `GlobOutcome` — `FileSystemExt::glob_report()`'s matches plus the walk errors `glob()` skips
 - `Secret`, `SecretKind`, `SecretRequest`, `SecretProvider` — externally supplied key material for decrypting evidence-derived ciphertext
 - `Investigation`, `InvestigationId`, `TenantId` — small, opaque investigation identity (not case management) that provenance/coverage reporting seals against
 - `EvidenceSet`, `EvidenceItem`, `EvidenceItemId` — an investigation's ordered set of evidence items, each lazily resolving into a `TriageSources` view
 - `CollectionManifest`, `ToolIdentity`, `CollectionError`, `StaticCollectionManifest` — what a collection tool (KAPE, CyLR, ...) says it did, and what it itself failed to collect
 - `CoverageReport`, `CoverageGap`, `CoverageGapReason` — `CollectionManifest` targets checked against what evidence is actually present, with the reason for each gap
-- `HostProfile` — a host's identity facts (computer name, system root, OS version, users), every field `Option<Tracked<T>>`
+- `HostProfile` — a host's identity facts (computer name, system root, OS version, users, `program_files`/`program_files_x86`/`program_data`/`all_users_profile`), every field `Option<Tracked<T>>`
 - `EventId`, `TimelineStore`, `InMemoryTimelineStore`, `TimelineRecordSink`, `InsertOutcome` — a stable-identity, ordered, deduped timeline; `TimelineData`/`TimeContext`/`IntoTimeline`/`IntoActivity` (`src/traits/forensic.rs`) are what a timeline event actually holds
 - `EntityId`, `EntityKind` — content-derived, stable-across-runs identity for correlation subjects
 - `FactStore`, `InMemoryFactStore`, `ObservationOutcome`, `FactRecord`, `FactObservation` — cross-artifact corroboration: append-only observations about an `EntityId`, agreement merges provenance, disagreement is retained not overwritten
@@ -761,7 +768,7 @@ for entry in vfs.walk(FPath::new("/var/log"), &WalkOptions::default()) {
 
 ### Iterating registry keys (Registry)
 
-There is no recursive registry walk built into the core API; `RegKey::keys()` lists one level of child key names, and `RegistryExt::for_each_user_hive()` expands a callback over every user SID under `HKEY_USERS`:
+There is no recursive registry walk built into the core API; `RegKey::keys()` lists one level of child key names, `RegistryExt::for_each_user_hive()` expands a callback over every user SID under `HKEY_USERS`, and `RegistryExt::expand_key_pattern()` expands a glob-style key path (`HKU\*\Software\...\Run`, `...\Extensions\**5`) into the keys that exist:
 
 ```rust
 let key = reader.key(r"HKLM\SOFTWARE\Microsoft")?;

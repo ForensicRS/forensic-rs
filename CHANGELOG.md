@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Artifact locations (`src/catalog/`), in the ForensicArtifacts definition vocabulary:
+  `ArtifactSource`, `ArtifactDefinition`, `SourceEntry`, `Os`, `Separator`,
+  `RegistryValueRef`, the `ArtifactCatalog` trait and `SliceCatalog` (buildable as a `static`).
+  `catalog::expand` turns a definition into drive-less globs and registry key patterns for one
+  `HostProfile`; a missing host fact becomes a search pattern plus a note, never a default.
+  `catalog::resolve_expansion` matches the result against a `FileSystem` and `Registry`.
+- `Requirement::Artifact(ArtifactRef)` and `Requirement::artifact(name)`,
+  `TriageSourcesBuilder::catalog`, and `ParseContext::{host_profile, resolve_artifact,
+  resolve_artifact_for, resolve_files}`. `ParseContext::resolve` handles `Requirement::Artifact`.
+- Glob: bounded `**N`, `[..]` character classes, a pruned walk when the pattern has no
+  unbounded `**`, and `FileSystemExt::glob_report` / `GlobOutcome` with the walk errors that
+  `glob()` skips.
+- `RegistryExt::expand_key_pattern`: glob-style key paths expanded to the keys that exist.
+- `HostProfile::{program_files, program_files_x86, program_data, all_users_profile}` and the
+  matching `windows::` readers.
+- `ForensicError::is_path_not_found()`.
+
 - `dictionary::FILE_ATTRIBUTES` (`file.attributes`) and `dictionary::FILE_UID` (`file.uid`, the
   owner UID or SID).
 - `utils::testing::conformance` and the exported `fs_conformance_battery!` macro: the shared
@@ -253,6 +270,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `windows::users` expands a leading `%SystemDrive%` (and `%windir%`) in `ProfileImagePath`, as
+  Vista and later write it; profile paths used to keep the literal variable.
+- `Glob` no longer drops walk errors silently: it collects them (`Glob::errors`,
+  `FileSystemExt::glob_report`). `glob()` itself stays lenient.
 - `lznt1::decompress` panicked on hostile input:
   - on a lone trailing byte (the header read);
   - on a copy token as the first item of a chunk (`produced - 1` underflow);
