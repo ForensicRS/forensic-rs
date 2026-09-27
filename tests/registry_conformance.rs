@@ -3,20 +3,13 @@
 //! written as free functions (not a macro) so a future backend can opt in
 //! by adding one more call at the bottom.
 //!
-//! Two RFC-listed assertions are intentionally **not** included, because
-//! `TestingRegistry` (a `BTreeMap`-backed mock, unchanged by this
-//! workstream) doesn't implement the behavior they'd assert:
-//! - Case-insensitive key/value name lookups — `MountedCell` does exact
-//!   `BTreeMap` string matching. Real Windows registry semantics are
-//!   case-insensitive; this is a pre-existing gap in the mock, not
-//!   something introduced or fixed here.
-//! - `KeyNotFound` vs `ValueNotFound` as distinguishable error variants —
-//!   `TestingRegistry`'s new `Registry` impl reports both via
-//!   `ForensicError::other(...)`, deliberately avoiding a dependency on
-//!   `RegistryError::{KeyNotFound,ValueNotFound}`'s still-`RegHiveKey`-typed
-//!   fields (workstream D9, deferred to the final cutover). Both cases do
-//!   still error, just without a distinguishable variant yet.
+//! One RFC-listed assertion is intentionally **not** included, because
+//! `TestingRegistry` (a `BTreeMap`-backed mock) doesn't implement the
+//! behavior it would assert: case-insensitive key/value name lookups —
+//! `MountedCell` does exact `BTreeMap` string matching. Real Windows registry
+//! semantics are case-insensitive; this is a known gap in the mock.
 
+use forensic_rs::err::{ForensicError, RegistryError};
 use forensic_rs::traits::registry::{windows, PredefinedHive, RegValue, Registry, RegistryExt};
 use forensic_rs::utils::testing::TestingRegistry;
 
@@ -44,10 +37,15 @@ fn value_round_trips_seeded_sz(reg: &TestingRegistry) {
 }
 
 fn missing_key_and_missing_value_both_error(reg: &TestingRegistry) {
-    assert!(reg.key(r"HKLM\Nope").is_err());
-    assert!(reg
-        .value(&format!(r"HKU\{SID}\Volatile Environment"), "NoSuchValue")
-        .is_err());
+    // Typed, so a caller can tell "absent" from "failed" without knowing the backend.
+    assert!(matches!(
+        reg.key(r"HKLM\Nope"),
+        Err(ForensicError::Registry(RegistryError::KeyNotFound { .. }))
+    ));
+    assert!(matches!(
+        reg.value(&format!(r"HKU\{SID}\Volatile Environment"), "NoSuchValue"),
+        Err(ForensicError::Registry(RegistryError::ValueNotFound { .. }))
+    ));
 }
 
 fn keys_and_values_enumeration_matches_seeded_data(reg: &TestingRegistry) {

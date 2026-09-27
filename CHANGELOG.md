@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`can_parse`, `open`, drain the run) instead of building a whole `TriagePipeline` with a custom
   `TriageSink`.
 - `dictionary::TIMESTAMP` (`@timestamp`), so crates stop writing the literal.
+- `TestingRegistry::add_key` and `TestingRegistry::set_last_write`, plus
+  `MountedCell::last_write`: tests can now check that key timestamps are carried through.
+  Keys have no timestamp until one is set.
 - `RegistryArtifacts::FeatureUsage` (Explorer taskbar interaction counters) and the ECS
   `dictionary::USER_ID` (`user.id`) constant.
 - Storage media support (disk images and volume systems as ordinary `FormatFactory` hops,
@@ -273,6 +276,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the SID in `user.name` and dropped registry errors. It now uses `ctx.host()` and
   `ctx.acquisition()`, writes the SID to `user.id`, keeps the Run key's last write as its own
   field instead of a timestamp, and emits failures as `Err` items (a missing key is skipped).
+- `TestingRegistry` reported a missing key, missing value or unknown handle as
+  `ForensicError::other(..)`, so code tested against it could not tell "absent" from "failed".
+  It now returns `RegistryError::KeyNotFound`, `ValueNotFound` and `InvalidHandle`, like
+  frnsc-hive. `MountedCell::add_key` recursed forever on a path with no separator.
 - Binary offset validation is overflow-safe, and new fallible endian-explicit unpack helpers prevent truncated artifact data from panicking.
 - `ForensicError` now preserves original `std::io::Error` values created through `From<std::io::Error>` or `io_error_with_source()`, exposing them through `Error::source()`.
 - Parallel pipeline worker panics are reported as task errors without preventing healthy tasks from completing.
