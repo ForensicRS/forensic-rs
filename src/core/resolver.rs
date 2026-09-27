@@ -28,7 +28,7 @@ use crate::core::limits::{LimitExceeded, Limits, MemorySpillStore, SpillStore};
 use crate::core::locator::{EvidenceLocator, LocatorSegment};
 use crate::err::{ForensicError, ForensicResult};
 use crate::traits::digest::{ContentAddress, Digest};
-use crate::traits::format::{FormatFactory, MountContext, MountKind, Mounted, ProbeScore};
+use crate::traits::format::{FormatFactory, HopCost, MountContext, MountKind, Mounted, ProbeScore};
 use crate::traits::vfs::{FileSystem, VirtualFile};
 
 /// Resolves one containment/interpretation/embedding hop at a time,
@@ -289,49 +289,6 @@ impl MountResolver {
         let mut working_file = file;
         let size = working_file.metadata().map(|meta| meta.size).unwrap_or(0);
 
-        // Whether this locator's bytes were already charged against `expanded_bytes` /
-        // `visited_content` by an earlier resolve -- possibly since evicted from `resident`,
-        // possibly still there but under a `want` this call doesn't match. Either way, this is
-        // not new expansion: the bytes were already accounted for once, and re-materializing an
-        // already-validated mount must not cost the run's budget a second time, nor spuriously
-        // re-trigger the duplicate-content check against content that legitimately recurs here
-        // by construction (it's the same locator).
-        let already_charged = self
-            .charged
-            .lock()
-            .expect("MountResolver charged-set poisoned")
-            .contains(locator);
-
-        if !already_charged {
-            let would_total = self.expanded_bytes.load(Ordering::Relaxed) + size;
-            if would_total > self.limits.max_expanded_bytes {
-                return Err(ForensicError::other(
-                    "MountResolver",
-                    LimitExceeded::ExpandedBytes {
-                        would_total,
-                        max: self.limits.max_expanded_bytes,
-                    }
-                    .to_string(),
-                ));
-            }
-            let root_key = locator.segments().first().cloned();
-            let root = {
-                let mut guard = self.root_bytes.lock().expect("MountResolver root poisoned");
-                *guard.entry(root_key).or_insert(size.max(1))
-            };
-            let ratio = would_total / root;
-            if ratio > self.limits.max_expansion_ratio as u64 {
-                return Err(ForensicError::other(
-                    "MountResolver",
-                    LimitExceeded::ExpansionRatio {
-                        observed: ratio.min(u32::MAX as u64) as u32,
-                        max: self.limits.max_expansion_ratio,
-                    }
-                    .to_string(),
-                ));
-            }
-        }
-
         let ctx = MountContext::new(
             fs,
             locator,
@@ -344,39 +301,10 @@ impl MountResolver {
             cancellation,
         );
 
-        // Content interning: only pay the cost of a full read when a digest is actually
-        // configured, AND only on the first time this locator is charged. Re-running it on a
-        // re-mount would insert the same content address a second time and spuriously report a
-        // "cycle or duplicate content" error against bytes that are legitimately recurring here
-        // -- they're the same locator's own bytes, re-materialized after eviction, not a new
-        // occurrence of duplicate content.
-        if !already_charged {
-            if let Some(make_digest) = &self.digest_factory {
-                let materialized = self.spill.spill(&mut *working_file, Some(size))?;
-                working_file = materialized;
-                let mut buf = Vec::new();
-                working_file
-                    .read_to_end(&mut buf)
-                    .map_err(|e| ForensicError::other("MountResolver", e.to_string()))?;
-                working_file
-                    .seek(SeekFrom::Start(0))
-                    .map_err(|e| ForensicError::other("MountResolver", e.to_string()))?;
-                let mut digest = make_digest();
-                digest.update(&buf);
-                let address = digest.finish();
-                let mut visited = self
-                    .visited_content
-                    .lock()
-                    .expect("MountResolver visited-content poisoned");
-                if !visited.insert(address) {
-                    return Err(ForensicError::other(
-                        "MountResolver",
-                        format!("cycle or duplicate content detected at {locator}"),
-                    ));
-                }
-            }
-        }
-
+        // Pick the winner first: which budgets apply depends on what the winning factory's
+        // mount does with the bytes (`HopCost`), not merely on how many bytes there are.
+        // Probing is a header sniff, so running it before the budget checks costs nothing a
+        // refused hop would have saved.
         let mut best: Option<(ProbeScore, &Arc<dyn FormatFactory>)> = None;
         for factory in &self.factories {
             if let Some(want) = want {
@@ -406,20 +334,134 @@ impl MountResolver {
                 format!("no registered format factory claims {locator}"),
             ));
         };
+        let expands = factory.hop_cost() == HopCost::Expansion;
+
+        // Whether this locator's bytes were already charged against `expanded_bytes` /
+        // `visited_content` by an earlier resolve -- possibly since evicted from `resident`,
+        // possibly still there but under a `want` this call doesn't match. Either way, this is
+        // not new expansion: the bytes were already accounted for once, and re-materializing an
+        // already-validated mount must not cost the run's budget a second time, nor spuriously
+        // re-trigger the duplicate-content check against content that legitimately recurs here
+        // by construction (it's the same locator).
+        let already_charged = self
+            .charged
+            .lock()
+            .expect("MountResolver charged-set poisoned")
+            .contains(locator);
+
+        // A `HopCost::View` hop creates no bytes, so it is neither charged nor interned: a
+        // partition or an image's media stream is the evidence itself, not an expansion of it,
+        // and hashing a 500 GB disk to detect a zip-bomb cycle would cost more than the whole
+        // rest of the run.
+        if expands && !already_charged {
+            let would_total = self.expanded_bytes.load(Ordering::Relaxed) + size;
+            if would_total > self.limits.max_expanded_bytes {
+                return Err(ForensicError::other(
+                    "MountResolver",
+                    LimitExceeded::ExpandedBytes {
+                        would_total,
+                        max: self.limits.max_expanded_bytes,
+                    }
+                    .to_string(),
+                ));
+            }
+            let root_key = locator.segments().first().cloned();
+            let root = {
+                let mut guard = self.root_bytes.lock().expect("MountResolver root poisoned");
+                *guard.entry(root_key).or_insert(size.max(1))
+            };
+            let ratio = would_total / root;
+            if ratio > self.limits.max_expansion_ratio as u64 {
+                return Err(ForensicError::other(
+                    "MountResolver",
+                    LimitExceeded::ExpansionRatio {
+                        observed: ratio.min(u32::MAX as u64) as u32,
+                        max: self.limits.max_expansion_ratio,
+                    }
+                    .to_string(),
+                ));
+            }
+
+            // Content interning: only pay the cost of a full read when a digest is actually
+            // configured, AND only on the first time this locator is charged. Re-running it on a
+            // re-mount would insert the same content address a second time and spuriously report
+            // a "cycle or duplicate content" error against bytes that are legitimately recurring
+            // here -- they're the same locator's own bytes, re-materialized after eviction, not a
+            // new occurrence of duplicate content.
+            if let Some(make_digest) = &self.digest_factory {
+                let mut digest = make_digest();
+                working_file =
+                    self.hash_content(working_file, size, digest.as_mut(), cancellation)?;
+                let address = digest.finish();
+                let mut visited = self
+                    .visited_content
+                    .lock()
+                    .expect("MountResolver visited-content poisoned");
+                if !visited.insert(address) {
+                    return Err(ForensicError::other(
+                        "MountResolver",
+                        format!("cycle or duplicate content detected at {locator}"),
+                    ));
+                }
+            }
+        }
 
         let mounted = factory.mount(working_file, &ctx)?;
         if !already_charged {
-            self.expanded_bytes.fetch_add(size, Ordering::Relaxed);
+            if expands {
+                self.expanded_bytes.fetch_add(size, Ordering::Relaxed);
+            }
             self.charged
                 .lock()
                 .expect("MountResolver charged-set poisoned")
                 .insert(locator.clone());
         }
+        // A view holds no copy of its input, so it costs the byte-bounded cache nothing; charging
+        // it the input size would evict an image's mount the moment it was made, and re-mount it
+        // (re-reading its partition table or chunk index) on every path resolved through it.
+        let weight = if expands { size } else { 0 };
         self.resident
             .lock()
             .expect("MountResolver cache poisoned")
-            .insert(locator.clone(), mounted.clone(), size);
+            .insert(locator.clone(), mounted.clone(), weight);
         Ok(mounted)
+    }
+
+    /// Feeds `file`'s content to `digest` and hands back a file positioned at its start.
+    ///
+    /// Streams in fixed-size chunks when the file can seek back to its start, so the content
+    /// check costs one buffer of memory however large the file is. Only a file that cannot seek
+    /// is materialized through the `SpillStore` first -- the one case where the bytes must be
+    /// kept to be read twice.
+    fn hash_content(
+        &self,
+        mut file: Box<dyn VirtualFile>,
+        size: u64,
+        digest: &mut dyn Digest,
+        cancellation: &crate::bridge::CancellationToken,
+    ) -> ForensicResult<Box<dyn VirtualFile>> {
+        let io = |e: std::io::Error| ForensicError::other("MountResolver", e.to_string());
+        if file.seek(SeekFrom::Start(0)).is_err() {
+            file = self.spill.spill(&mut *file, Some(size))?;
+        }
+        let mut buf = vec![0u8; 64 << 10];
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(ForensicError::other(
+                    "MountResolver",
+                    "cancelled".to_string(),
+                ));
+            }
+            let n = match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(io(e)),
+            };
+            digest.update(&buf[..n]);
+        }
+        file.seek(SeekFrom::Start(0)).map_err(io)?;
+        Ok(file)
     }
 }
 

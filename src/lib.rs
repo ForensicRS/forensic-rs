@@ -76,8 +76,8 @@ pub mod prelude {
         SchemaFingerprint, TargetSpec, TimeContext, TimelineData, UnavailableReason,
     };
     pub use crate::traits::format::{
-        FileSet, FileSetMember, FileSetRole, FormatFactory, MountContext, MountKind, Mounted,
-        ProbeScore, StructuredObject,
+        FileSet, FileSetMember, FileSetRole, FormatFactory, HopCost, MountContext, MountKind,
+        Mounted, ProbeScore, StructuredObject,
     };
     pub use crate::traits::registry::windows;
     pub use crate::traits::registry::*;

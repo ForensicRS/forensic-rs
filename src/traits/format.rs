@@ -277,6 +277,28 @@ pub enum ProbeScore {
     Exact,
 }
 
+/// Whether mounting one hop creates new bytes, or only re-addresses bytes that already exist.
+///
+/// [`MountResolver`](crate::core::resolver::MountResolver)'s zip-bomb budgets
+/// ([`Limits::max_expanded_bytes`], [`Limits::max_expansion_ratio`]) and content interning are
+/// about the first case. Applying them to the second refuses every real disk image at its
+/// first hop: a 500 GB E01 is not a 500 GB "expansion", it is the evidence itself.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HopCost {
+    /// The mount produces bytes that did not exist in the input (a decompressed archive
+    /// entry, a decoded stream), or holds a copy of the input. Charged against every budget.
+    #[default]
+    Expansion,
+    /// The mount addresses bytes of the input in place, or a bounded, self-describing
+    /// reconstruction of them: a partition window, a raw image's concatenated segments, an
+    /// E01's chunks up to the media size its own header declares. Not charged against the
+    /// expansion budgets, not content-interned, and held in the resolver's cache at no byte
+    /// cost -- whatever index the mount keeps (an E01 chunk table) is the factory's own to
+    /// bound.
+    View,
+}
+
 /// Everything a [`FormatFactory`] is allowed to see and use while probing or
 /// mounting one hop.
 ///
@@ -441,6 +463,13 @@ pub trait FormatFactory: Send + Sync {
     /// through `probe` is unaffected either way).
     fn extensions(&self) -> &[&'static str] {
         &[]
+    }
+
+    /// Whether this factory's mounts expand bytes or only view them. Defaults to the safe
+    /// answer, [`HopCost::Expansion`]; override only when the mount never copies or decodes
+    /// the input beyond a size the input itself declares (see [`HopCost::View`]).
+    fn hop_cost(&self) -> HopCost {
+        HopCost::Expansion
     }
 }
 
