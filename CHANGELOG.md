@@ -231,6 +231,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned the bare file instead of listing its contents: only a container on the base
   filesystem was looked inside. Now any file the descent policy considers a container is, at any
   depth; `PathAttributes` on a nested ordinary file still answers for the file itself.
+- `ChRootFileSystem` stripped every `:` from path segments, so an NTFS stream path such as
+  `$Extend\$UsnJrnl:$J` could not be reached through a chroot. Only a drive marker is dropped now
+  (a whole `X:` segment, or one trailing `:`); a colon inside a segment is kept.
 - Binary offset validation is overflow-safe, and new fallible endian-explicit unpack helpers prevent truncated artifact data from panicking.
 - `ForensicError` now preserves original `std::io::Error` values created through `From<std::io::Error>` or `io_error_with_source()`, exposing them through `Error::source()`.
 - Parallel pipeline worker panics are reported as task errors without preventing healthy tasks from completing.

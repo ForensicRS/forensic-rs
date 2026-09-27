@@ -41,14 +41,21 @@ impl ChRootFileSystem {
     /// against the chroot's root. Every component that would escape or
     /// bypass the root (`RootDir`, a drive designator, `.`, `..`) is
     /// dropped rather than honored — a lookup can never resolve outside
-    /// `self.path`. `':'` inside a segment is also stripped, so a
-    /// Windows-style drive marker embedded mid-path (e.g. a mistakenly
-    /// doubled `Windows:\System32`) doesn't produce a stray colon.
+    /// `self.path`.
+    ///
+    /// A drive marker embedded mid-path is dropped too: a segment that is
+    /// exactly `X:` goes away, and a single trailing `:` is trimmed (a
+    /// mistakenly doubled `Windows:\System32`). A colon *inside* a segment
+    /// is kept, because it is meaningful: NTFS alternate data streams are
+    /// named `file:stream` (`$Extend\$UsnJrnl:$J`).
     fn resolve(&self, path: &FPath) -> FPathBuf {
         let mut child = FPathBuf::new();
         for comp in path.components() {
             if let Component::Normal(s) = comp {
-                let cleaned = s.replace(':', "");
+                if is_drive_marker(s) {
+                    continue;
+                }
+                let cleaned = s.strip_suffix(':').unwrap_or(s);
                 if !cleaned.trim().is_empty() {
                     child.push(cleaned);
                 }
@@ -56,6 +63,12 @@ impl ChRootFileSystem {
         }
         self.path.join(child.as_str())
     }
+}
+
+/// `X:` exactly — a drive designator that did not come first in the path.
+fn is_drive_marker(segment: &str) -> bool {
+    let b = segment.as_bytes();
+    b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
 impl FileSystem for ChRootFileSystem {
@@ -83,7 +96,13 @@ impl FileSystem for ChRootFileSystem {
         let iter = self.fs.read_dir(self.resolve(path).as_path())?;
         Ok(Box::new(iter.map(move |entry| {
             entry.map(|mut e| {
-                let leaf = e.path.as_str().rsplit(['/', '\\']).next().unwrap_or(e.path.as_str()).to_string();
+                let leaf = e
+                    .path
+                    .as_str()
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(e.path.as_str())
+                    .to_string();
                 e.path = if outer_prefix.is_empty() {
                     FPathBuf::from(leaf)
                 } else {
@@ -182,7 +201,10 @@ mod tst {
         std::fs::create_dir_all(root.join("subdir")).unwrap();
         std::fs::write(root.join("subdir").join("leaf.txt"), CONTENT).unwrap();
 
-        let chrfs = ChRootFileSystem::new(root.to_string_lossy().into_owned(), Arc::new(StdVirtualFS::new()));
+        let chrfs = ChRootFileSystem::new(
+            root.to_string_lossy().into_owned(),
+            Arc::new(StdVirtualFS::new()),
+        );
 
         let root_entries: Vec<_> = FileSystem::read_dir(&chrfs, FPath::new(""))
             .unwrap()
@@ -197,8 +219,38 @@ mod tst {
         assert_eq!(sub_entries, vec!["subdir/leaf.txt".to_string()]);
 
         // And the returned path must be directly usable against this same filesystem.
-        assert_eq!(chrfs.read_all(FPath::new(&sub_entries[0])).unwrap(), CONTENT.as_bytes());
+        assert_eq!(
+            chrfs.read_all(FPath::new(&sub_entries[0])).unwrap(),
+            CONTENT.as_bytes()
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn colons_inside_segments_are_kept_so_ads_paths_resolve() {
+        use crate::utils::testing::InMemoryVirtualFileSystem;
+        let inner = InMemoryVirtualFileSystem::new()
+            .with_text_file("evidence/$Extend/$UsnJrnl:$J", CONTENT)
+            .with_text_file("evidence/Windows/System32/cmd.exe", CONTENT)
+            .with_text_file("outside.txt", CONTENT);
+        let chrfs = ChRootFileSystem::new("evidence", Arc::new(inner));
+        assert_eq!(
+            chrfs.read_all(FPath::new("$Extend\\$UsnJrnl:$J")).unwrap(),
+            CONTENT.as_bytes()
+        );
+        assert_eq!(
+            chrfs
+                .read_all(FPath::new("C:\\$Extend\\$UsnJrnl:$J"))
+                .unwrap(),
+            CONTENT.as_bytes()
+        );
+        // Drive markers are still dropped, first or embedded, and a trailing ':' is trimmed.
+        assert!(chrfs.exists(FPath::new("C:\\Windows\\System32\\cmd.exe")));
+        assert!(chrfs.exists(FPath::new("Windows\\C:\\System32\\cmd.exe")));
+        assert!(chrfs.exists(FPath::new("Windows:\\System32\\cmd.exe")));
+        // Confinement is unchanged.
+        assert!(!chrfs.exists(FPath::new("..\\outside.txt")));
+        assert!(!chrfs.exists(FPath::new("C:\\..\\outside.txt")));
     }
 }
