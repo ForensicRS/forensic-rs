@@ -37,6 +37,17 @@ pub enum LocatorSegment {
     Cell(u32),
     /// A table within a mounted database.
     Table(CompactString),
+    /// A volume within a volume system (an MBR/GPT partition, an LVM logical volume).
+    /// `index` is the entry's position in the volume system's own table -- its stable identity,
+    /// kept even when two entries overlap or one is empty -- and `offset`/`len` are where the
+    /// table says it lies in its parent, in bytes. Distinct from [`LocatorSegment::Offset`],
+    /// which is an anonymous byte range: a partition is a structure the evidence itself
+    /// declares, and a report needs to say *which* one.
+    Volume { index: u32, offset: u64, len: u64 },
+    /// A point-in-time snapshot of its parent (a Volume Shadow Copy, an APFS snapshot),
+    /// identified by its position in the parent's snapshot store, oldest first -- the same
+    /// numbering as [`Acquisition::VssSnapshot`](crate::provenance::Acquisition::VssSnapshot).
+    Snapshot { id: u32 },
 }
 
 impl fmt::Display for LocatorSegment {
@@ -57,6 +68,10 @@ impl fmt::Display for LocatorSegment {
             LocatorSegment::Offset { offset, len: None } => write!(f, "[offset {offset}]"),
             LocatorSegment::Cell(cell) => write!(f, "[cell {cell}]"),
             LocatorSegment::Table(name) => write!(f, "[table {name}]"),
+            LocatorSegment::Volume { index, offset, len } => {
+                write!(f, "[volume {index} @{offset}+{len}]")
+            }
+            LocatorSegment::Snapshot { id } => write!(f, "[snapshot {id}]"),
         }
     }
 }
@@ -188,6 +203,35 @@ mod tests {
         assert_eq!(parent.depth(), 1);
         assert_eq!(parent.parent().unwrap().depth(), 0);
         assert!(parent.parent().unwrap().parent().is_none());
+    }
+
+    #[test]
+    fn volume_and_snapshot_segments_render_their_identity() {
+        let locator = EvidenceLocator::root()
+            .push(LocatorSegment::Path(FPathBuf::from("disk.raw")))
+            .push(LocatorSegment::Volume {
+                index: 1,
+                offset: 1_048_576,
+                len: 4096,
+            })
+            .push(LocatorSegment::Snapshot { id: 3 });
+        assert_eq!(
+            locator.to_string(),
+            "disk.raw / [volume 1 @1048576+4096] / [snapshot 3]"
+        );
+        // Same byte range, different table entry: a distinct piece of evidence.
+        assert_ne!(
+            LocatorSegment::Volume {
+                index: 0,
+                offset: 512,
+                len: 512
+            },
+            LocatorSegment::Volume {
+                index: 1,
+                offset: 512,
+                len: 512
+            },
+        );
     }
 
     #[test]
