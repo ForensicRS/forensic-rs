@@ -5,6 +5,8 @@
 /// ECS `@timestamp`: when the event happened, read from the evidence. Leave it unset rather
 /// than filling it with a parse time or a key's last-write time that isn't the event time.
 pub const TIMESTAMP: &str = "@timestamp";
+/// ECS `message`: the log message itself, or a summary if the source doesn't have one.
+pub const MESSAGE: &str = "message";
 pub const EVENT_OUTCOME: &str = "event.outcome";
 /// The action captured by the event. This describes the information in the event. It is more specific than event.category. Examples are group-add, process-started, file-created. The value is normally defined by the implementer.
 pub const EVENT_ACTION: &str = "event.action";
@@ -129,3 +131,10 @@ pub const LOG_SYSLOG_FACILITY_CODE: &str = "log.syslog.facility.code";
 pub const LOG_SYSLOG_SEVERITY_CODE: &str = "log.syslog.severity.code";
 /// ECS `log.syslog.priority`: syslog priority of the event, if available (facility * 8 + severity).
 pub const LOG_SYSLOG_PRIORITY: &str = "log.syslog.priority";
+
+/// ECS `package.name`: package name.
+pub const PACKAGE_NAME: &str = "package.name";
+/// ECS `package.version`: package version.
+pub const PACKAGE_VERSION: &str = "package.version";
+/// ECS `package.architecture`: package architecture.
+pub const PACKAGE_ARCHITECTURE: &str = "package.architecture";
