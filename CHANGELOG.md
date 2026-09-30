@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `dictionary::FILE_ATTRIBUTES` (`file.attributes`) and `dictionary::FILE_UID` (`file.uid`, the
   owner UID or SID).
+- `dictionary::ARTIFACT_DEFINITION` (`artifact.definition`), joining `ARTIFACT_NAME`/`_PATH`/
+  `_HOST`/`_TENANT`: which artifact-catalog definition matched the file a record came from. A
+  forensic-rs extension, not an ECS field. Replaces a crate-local `pub const` that
+  `frnsc-winevt` and `frnsc-esedb` had each declared identically.
 - `utils::testing::conformance` and the exported `fs_conformance_battery!` macro: the shared
   `FileSystem` conformance battery, so downstream backends (volume systems, NTFS, archives) run
   exactly the assertions core's own backends run.

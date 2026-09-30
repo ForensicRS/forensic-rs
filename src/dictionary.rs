@@ -69,6 +69,14 @@ pub const ARTIFACT_NAME: &str = "artifact.name";
 pub const ARTIFACT_PATH: &str = "artifact.path";
 pub const ARTIFACT_HOST: &str = "artifact.host";
 pub const ARTIFACT_TENANT: &str = "artifact.tenant";
+/// Which artifact-catalog definition matched the file a record came from — the *path-derived*
+/// attribution, carried beside a record's own self-reported identity (an event log's
+/// `event.channel`, say), so a planted or renamed artifact is visible in the record instead of
+/// being silently reconciled.
+///
+/// A forensic-rs extension, not an ECS field: there is no `artifact.definition` in ECS, and
+/// neither is the rest of this `artifact.*` family.
+pub const ARTIFACT_DEFINITION: &str = "artifact.definition";
 
 pub const PROCESS_EXECUTABLE: &str = "process.executable";
 /// ECS `process.name`: the process name, usually the executable's file name (`cmd.exe`).
