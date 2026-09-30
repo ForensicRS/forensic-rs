@@ -133,6 +133,12 @@ pub enum LinuxArtifacts {
     Accounts,
     /// authorized_keys / known_hosts / sshd_config
     Ssh,
+    /// utmp/wtmp/lastlog login records
+    Utmp,
+    /// auditd logs
+    Audit,
+    /// package manager database (dpkg/rpm/...)
+    Packages,
     Other(String),
     #[default]
     Unknown,
@@ -245,6 +251,9 @@ impl std::fmt::Display for LinuxArtifacts {
             LinuxArtifacts::Journal => write!(f, "Journal"),
             LinuxArtifacts::Accounts => write!(f, "Accounts"),
             LinuxArtifacts::Ssh => write!(f, "Ssh"),
+            LinuxArtifacts::Utmp => write!(f, "Utmp"),
+            LinuxArtifacts::Audit => write!(f, "Audit"),
+            LinuxArtifacts::Packages => write!(f, "Packages"),
             LinuxArtifacts::Other(v) => write!(f, "{}", v),
             LinuxArtifacts::Unknown => write!(f, "Unknown"),
         }
@@ -786,6 +795,9 @@ pub fn linux_artifacts_from_str(txt: &str) -> LinuxArtifacts {
         "Journal" => LinuxArtifacts::Journal,
         "Accounts" => LinuxArtifacts::Accounts,
         "Ssh" => LinuxArtifacts::Ssh,
+        "Utmp" => LinuxArtifacts::Utmp,
+        "Audit" => LinuxArtifacts::Audit,
+        "Packages" => LinuxArtifacts::Packages,
         _ => LinuxArtifacts::Other(txt.to_string()),
     }
 }
@@ -965,6 +977,9 @@ mod tests {
         roundtrip(Artifact::Linux(LinuxArtifacts::Journal));
         roundtrip(Artifact::Linux(LinuxArtifacts::Accounts));
         roundtrip(Artifact::Linux(LinuxArtifacts::Ssh));
+        roundtrip(Artifact::Linux(LinuxArtifacts::Utmp));
+        roundtrip(Artifact::Linux(LinuxArtifacts::Audit));
+        roundtrip(Artifact::Linux(LinuxArtifacts::Packages));
         roundtrip(Artifact::Linux(LinuxArtifacts::Unknown));
         roundtrip(Artifact::Linux(LinuxArtifacts::Other("docker".to_string())));
     }

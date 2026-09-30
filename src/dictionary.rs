@@ -17,8 +17,16 @@ pub const EVENT_CODE: &str = "event.code";
 pub const USER_ID: &str = "user.id";
 pub const USER_NAME: &str = "user.name";
 pub const USER_DOMAIN: &str = "user.domain";
+/// ECS `user.effective.name`: the username of the user acting after a privilege change (`sudo`,
+/// setuid), as distinct from `user.name`'s originally-authenticated identity.
+pub const USER_EFFECTIVE_NAME: &str = "user.effective.name";
+/// ECS `group.name`: name of the group.
+pub const GROUP_NAME: &str = "group.name";
 pub const SOURCE_IP: &str = "source.ip";
 pub const SOURCE_PORT: &str = "source.port";
+/// ECS `source.address`: source network address, before DNS/IP resolution — may hold a
+/// hostname, IP, or socket path where `source.ip` doesn't apply.
+pub const SOURCE_ADDRESS: &str = "source.address";
 /// Amount of bytes sent by the local host
 pub const SOURCE_BYTES: &str = "source.bytes";
 pub const DESTINATION_IP: &str = "destination.ip";
@@ -81,6 +89,11 @@ pub const ARTIFACT_DEFINITION: &str = "artifact.definition";
 pub const PROCESS_EXECUTABLE: &str = "process.executable";
 /// ECS `process.name`: the process name, usually the executable's file name (`cmd.exe`).
 pub const PROCESS_NAME: &str = "process.name";
+/// ECS `process.pid`: process id.
+pub const PROCESS_PID: &str = "process.pid";
+/// ECS `process.args`: array of process arguments, starting with the absolute path to the
+/// executable. May be filtered out in favor of `process.command_line` when noisy.
+pub const PROCESS_ARGS: &str = "process.args";
 
 pub const FILE_INODE: &str = "file.inode";
 pub const FILE_NAME: &str = "file.name";
@@ -102,3 +115,17 @@ pub const FILE_ATTRIBUTES: &str = "file.attributes";
 pub const FILE_UID: &str = "file.uid";
 
 pub const PE_IMPORTS: &str = "pe.imports";
+
+/// ECS `host.hostname`: unmodified hostname as reported by the operating system, distinct from
+/// `host.name` which is the (possibly normalized) name used for correlation.
+pub const HOST_HOSTNAME: &str = "host.hostname";
+
+/// ECS `service.name`: name of the service data is collected from.
+pub const SERVICE_NAME: &str = "service.name";
+
+/// ECS `log.syslog.facility.code`: syslog numeric facility of the log event, if available.
+pub const LOG_SYSLOG_FACILITY_CODE: &str = "log.syslog.facility.code";
+/// ECS `log.syslog.severity.code`: numeric severity of the log event, if available.
+pub const LOG_SYSLOG_SEVERITY_CODE: &str = "log.syslog.severity.code";
+/// ECS `log.syslog.priority`: syslog priority of the event, if available (facility * 8 + severity).
+pub const LOG_SYSLOG_PRIORITY: &str = "log.syslog.priority";
