@@ -115,6 +115,11 @@ pub enum RegistryArtifacts {
     RecentDocs,
     /// Explorer FeatureUsage (taskbar interaction counters): `HKU\<sid>\Software\Microsoft\Windows\CurrentVersion\Explorer\FeatureUsage`
     FeatureUsage,
+    /// `HKLM\SYSTEM\MountedDevices`: drive letters and volume GUIDs to the disk, partition or
+    /// device they were mounted from
+    MountedDevices,
+    /// `HKU\<sid>\...\Explorer\WordWheelQuery`: terms searched for in Explorer
+    WordWheelQuery,
     /// Raw keys and values collected for artifact-catalog definitions, uninterpreted
     /// (`RegistryCollector`)
     CatalogValues,
@@ -288,6 +293,8 @@ impl std::fmt::Display for RegistryArtifacts {
             RegistryArtifacts::TypedPaths => write!(f, "TypedPaths"),
             RegistryArtifacts::RecentDocs => write!(f, "RecentDocs"),
             RegistryArtifacts::FeatureUsage => write!(f, "FeatureUsage"),
+            RegistryArtifacts::MountedDevices => write!(f, "MountedDevices"),
+            RegistryArtifacts::WordWheelQuery => write!(f, "WordWheelQuery"),
             RegistryArtifacts::CatalogValues => write!(f, "CatalogValues"),
             RegistryArtifacts::Other(v) => write!(f, "{}", v),
             RegistryArtifacts::Unknown => write!(f, "Unknown"),
@@ -768,6 +775,8 @@ pub fn registry_artifacts_from_str(txt: &str) -> RegistryArtifacts {
         "TypedPaths" => RegistryArtifacts::TypedPaths,
         "RecentDocs" => RegistryArtifacts::RecentDocs,
         "FeatureUsage" => RegistryArtifacts::FeatureUsage,
+        "MountedDevices" => RegistryArtifacts::MountedDevices,
+        "WordWheelQuery" => RegistryArtifacts::WordWheelQuery,
         "CatalogValues" => RegistryArtifacts::CatalogValues,
         _ => RegistryArtifacts::Other(txt.to_string()),
     }
@@ -946,6 +955,8 @@ mod tests {
         roundtrip(RegistryArtifacts::TypedPaths.into());
         roundtrip(RegistryArtifacts::RecentDocs.into());
         roundtrip(RegistryArtifacts::FeatureUsage.into());
+        roundtrip(RegistryArtifacts::MountedDevices.into());
+        roundtrip(RegistryArtifacts::WordWheelQuery.into());
         roundtrip(RegistryArtifacts::CatalogValues.into());
         roundtrip(RegistryArtifacts::Unknown.into());
         roundtrip(RegistryArtifacts::Other("Custom".to_string()).into());
