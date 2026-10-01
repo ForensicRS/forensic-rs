@@ -118,6 +118,9 @@ pub const PROCESS_PID: &str = "process.pid";
 /// ECS `process.args`: array of process arguments, starting with the absolute path to the
 /// executable. May be filtered out in favor of `process.command_line` when noisy.
 pub const PROCESS_ARGS: &str = "process.args";
+/// ECS `process.command_line`: the full command line, as recorded (unexpanded when the source
+/// stores it unexpanded).
+pub const PROCESS_COMMAND_LINE: &str = "process.command_line";
 
 pub const FILE_INODE: &str = "file.inode";
 pub const FILE_NAME: &str = "file.name";
