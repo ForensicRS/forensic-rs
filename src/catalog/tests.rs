@@ -352,3 +352,175 @@ fn the_filesystem_trait_object_works_too() {
         "Windows/Prefetch/CMD.EXE-1234.pf"
     );
 }
+
+fn located(sources: &TriageSources, names: &[&str]) -> LocatedFiles {
+    with_context(sources, |ctx| ctx.locate_artifact_files(names).unwrap())
+}
+
+fn summary(found: &LocatedFiles) -> Vec<(&str, &str, FoundBy)> {
+    found
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), &*f.definition, f.found_by))
+        .collect()
+}
+
+#[test]
+fn a_file_at_its_location_is_found_there_and_names_are_not_searched() {
+    let fs = vfs().with_file("Backup/OLD-5678.pf", b"p".to_vec());
+    let sources = TriageSources::builder()
+        .vfs(Arc::new(fs))
+        .catalog(catalog())
+        .build();
+    let found = located(&sources, &["WindowsPrefetchFiles"]);
+    assert_eq!(
+        summary(&found),
+        vec![(
+            "Windows/Prefetch/CMD.EXE-1234.pf",
+            "WindowsPrefetchFiles",
+            FoundBy::Location
+        )]
+    );
+    assert!(
+        !found
+            .notes
+            .iter()
+            .any(|n| n.contains("searched by file name"))
+    );
+    assert!(found.errors.is_empty(), "{:?}", found.errors);
+}
+
+#[test]
+fn a_collection_with_its_own_layout_is_searched_by_the_definitions_file_names() {
+    // Triage-IR keeps what it copies under its own folders, not where Windows has it.
+    let fs = InMemoryVirtualFileSystem::new()
+        .with_file(
+            "LiveResponseData/CopiedFiles/prefetch/CMD.EXE-1234.pf",
+            b"p".to_vec(),
+        )
+        .with_file(
+            "LiveResponseData/CopiedFiles/registry/NTUSER.DAT",
+            b"n".to_vec(),
+        )
+        .with_file("LiveResponseData/BasicInfo/system_info.txt", b"t".to_vec());
+    let sources = TriageSources::builder()
+        .vfs(Arc::new(fs))
+        .catalog(catalog())
+        .build();
+    let found = located(
+        &sources,
+        &["WindowsPrefetchFiles", "WindowsUserRegistryFiles"],
+    );
+    assert_eq!(
+        summary(&found),
+        vec![
+            (
+                "LiveResponseData/CopiedFiles/prefetch/CMD.EXE-1234.pf",
+                "WindowsPrefetchFiles",
+                FoundBy::FileName
+            ),
+            (
+                "LiveResponseData/CopiedFiles/registry/NTUSER.DAT",
+                "WindowsUserRegistryFiles",
+                FoundBy::FileName
+            ),
+        ]
+    );
+    assert!(found.files.iter().all(|f| f.sid.is_none()));
+    let note = found
+        .notes
+        .iter()
+        .find(|n| n.contains("searched by file name"))
+        .expect("the fallback is noted");
+    assert!(
+        note.contains("*.pf") && note.contains("NTUSER.DAT"),
+        "{note}"
+    );
+}
+
+#[test]
+fn one_definition_at_its_location_means_the_others_are_absent_not_searched_for() {
+    // The volume has the layout: a hive under a backup folder is not the user's hive.
+    let fs = InMemoryVirtualFileSystem::new()
+        .with_file("Windows/Prefetch/CMD.EXE-1234.pf", b"p".to_vec())
+        .with_file("Backup/NTUSER.DAT", b"n".to_vec());
+    let sources = TriageSources::builder()
+        .vfs(Arc::new(fs))
+        .catalog(catalog())
+        .build();
+    let found = located(
+        &sources,
+        &["WindowsPrefetchFiles", "WindowsUserRegistryFiles"],
+    );
+    assert_eq!(
+        summary(&found),
+        vec![(
+            "Windows/Prefetch/CMD.EXE-1234.pf",
+            "WindowsPrefetchFiles",
+            FoundBy::Location
+        )]
+    );
+}
+
+#[test]
+fn the_file_name_search_ignores_case() {
+    let fs = InMemoryVirtualFileSystem::new()
+        // Two levels down, so the unknown-system-root search (`\*\Prefetch\*.pf`) doesn't
+        // find it at a location first.
+        .with_file("export/copied/PREFETCH/cmd.exe-1234.PF", b"p".to_vec())
+        .with_file("export/registry/ntuser.dat", b"n".to_vec());
+    let sources = TriageSources::builder()
+        .vfs(Arc::new(fs))
+        .catalog(catalog())
+        .build();
+    let found = located(
+        &sources,
+        &["WindowsPrefetchFiles", "WindowsUserRegistryFiles"],
+    );
+    assert_eq!(found.files.len(), 2, "{:?}", summary(&found));
+    assert!(found.files.iter().all(|f| f.found_by == FoundBy::FileName));
+}
+
+#[test]
+fn an_unknown_definition_is_an_error_and_the_others_are_still_located() {
+    let sources = sources(Some(catalog()));
+    let found = located(&sources, &["NoSuchArtifact", "WindowsPrefetchFiles"]);
+    assert_eq!(found.files.len(), 1);
+    assert_eq!(found.errors.len(), 1);
+    assert!(found.errors[0].to_string().contains("NoSuchArtifact"));
+}
+
+#[test]
+fn locating_without_a_catalog_is_an_error() {
+    let sources = sources(None);
+    with_context(&sources, |ctx| {
+        assert!(
+            ctx.locate_artifact_files(&["WindowsPrefetchFiles"])
+                .is_err()
+        );
+    });
+}
+
+#[test]
+fn an_all_wildcard_file_name_or_a_directory_gives_no_name_to_search() {
+    let glob = |pattern: &str, directory: bool| ExpandedGlob {
+        pattern: pattern.to_string(),
+        sid: None,
+        artifact: Cow::Borrowed("Def"),
+        directory,
+    };
+    let expansion = Expansion {
+        globs: vec![
+            glob(r"\Windows\Temp\*", false),
+            glob(r"\Users\*\AppData\**", false),
+            glob(r"\Windows\Tasks", true),
+            glob(r"\Windows\Prefetch\*.pf", false),
+        ],
+        ..Expansion::default()
+    };
+    let names: Vec<String> = file_name_patterns(&expansion)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    assert_eq!(names, vec!["*.pf".to_string()]);
+}

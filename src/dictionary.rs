@@ -87,6 +87,10 @@ pub const ARTIFACT_TENANT: &str = "artifact.tenant";
 /// A forensic-rs extension, not an ECS field: there is no `artifact.definition` in ECS, and
 /// neither is the rest of this `artifact.*` family.
 pub const ARTIFACT_DEFINITION: &str = "artifact.definition";
+/// How the file a record came from was found: `location` when it was where its
+/// [`ARTIFACT_DEFINITION`] says, `file_name` when only its name matched, on a source not laid out
+/// like the definition expects (see `catalog::FoundBy`). A forensic-rs extension, not ECS.
+pub const ARTIFACT_LOCATED_BY: &str = "artifact.located_by";
 
 pub const PROCESS_EXECUTABLE: &str = "process.executable";
 /// ECS `process.name`: the process name, usually the executable's file name (`cmd.exe`).

@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use crate::{
     artifact::Artifact,
     bridge::CancellationToken,
-    catalog::{ArtifactResolution, Os, expand, resolve_expansion},
+    catalog::{ArtifactResolution, LocatedFiles, Os, expand, locate_files, resolve_expansion},
     context::{ForensicContext, initialize_context},
     core::locator::{EvidenceLocator, LocatorSegment},
     err::ForensicError,
@@ -517,15 +517,63 @@ impl<'a> ParseContext<'a> {
     /// An empty result with no `errors` means the artifact is not present.
     /// `Err` means there is no catalog, or it doesn't know `name`.
     pub fn resolve_artifact(&self, name: &str) -> crate::err::ForensicResult<ArtifactResolution> {
-        let os = {
-            let (_, def) = self.artifact_definition(name)?;
-            if def.supports(Os::Windows) {
-                Os::Windows
-            } else {
-                def.supported_os.first().copied().unwrap_or(Os::Windows)
-            }
-        };
+        let os = self.default_os(name)?;
         self.resolve_artifact_for(name, os)
+    }
+
+    /// The files of the artifact definitions `names`, wherever this source keeps them: at the
+    /// locations the definitions name (expanded as in
+    /// [`resolve_artifact`](Self::resolve_artifact)), or, when none of `names` has a file
+    /// there, by the file names the definitions end in. Each file says which way it was found
+    /// ([`crate::catalog::FoundBy`]). See [`crate::catalog::locate_files`].
+    ///
+    /// Use it for a parser whose input is files: it reads a mounted volume and a collection with
+    /// its own layout (Triage-IR, a folder of exported logs) alike, with no name list of its own.
+    ///
+    /// `Err` only when there is no catalog. An unknown name is one of the result's `errors`, and
+    /// the other names are still located.
+    pub fn locate_artifact_files(
+        &self,
+        names: &[&str],
+    ) -> crate::err::ForensicResult<LocatedFiles> {
+        if self.sources.catalog().is_none() {
+            return Err(ForensicError::other(
+                "catalog",
+                format!(
+                    "no artifact catalog configured to locate {}",
+                    names.join(", ")
+                ),
+            ));
+        }
+        let empty = HostProfile::default();
+        let host = self.host_profile().unwrap_or(&empty);
+        let mut expansions = Vec::new();
+        let mut errors = Vec::new();
+        for name in names {
+            let expanded = self.default_os(name).and_then(|os| {
+                let (catalog, def) = self.artifact_definition(name)?;
+                Ok(expand(def, catalog.as_ref(), host, os))
+            });
+            match expanded {
+                Ok(expansion) => expansions.push((Text::from(name.to_string()), expansion)),
+                Err(e) => errors.push(e),
+            }
+        }
+        let mut located = locate_files(expansions, self.sources.vfs().map(|fs| fs.as_ref()));
+        errors.append(&mut located.errors);
+        located.errors = errors;
+        Ok(located)
+    }
+
+    /// The OS [`resolve_artifact`](Self::resolve_artifact) expands `name` for: Windows when the
+    /// definition supports it, else its first supported OS.
+    fn default_os(&self, name: &str) -> crate::err::ForensicResult<Os> {
+        let (_, def) = self.artifact_definition(name)?;
+        Ok(if def.supports(Os::Windows) {
+            Os::Windows
+        } else {
+            def.supported_os.first().copied().unwrap_or(Os::Windows)
+        })
     }
 
     /// [`resolve_artifact`](Self::resolve_artifact) for a given OS.

@@ -25,6 +25,7 @@ use std::borrow::Cow;
 use crate::field::Text;
 
 mod expand;
+mod locate;
 mod resolve;
 mod slice;
 #[cfg(test)]
@@ -33,6 +34,9 @@ mod tests;
 pub use expand::{
     ExpandedGlob, ExpandedKey, ExpandedValue, Expansion, GLOBSTAR_DEFAULT_DEPTH, UnresolvedSource,
     expand,
+};
+pub use locate::{
+    FILE_NAME_SEARCH_DEPTH, FoundBy, LocatedFile, LocatedFiles, file_name_patterns, locate_files,
 };
 pub use resolve::{
     ArtifactResolution, ResolvedFile, ResolvedKey, ResolvedValue, resolve_expansion,

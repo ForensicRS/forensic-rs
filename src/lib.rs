@@ -32,8 +32,9 @@ pub mod prelude {
     // feature's `provenance::expand`. Call it as `catalog::expand`.
     pub use crate::catalog::{
         ArtifactCatalog, ArtifactDefinition, ArtifactResolution, ArtifactSource, CatalogIndexEntry,
-        ExpandedGlob, ExpandedKey, ExpandedValue, Expansion, Os, RegistryValueRef, ResolvedFile,
-        ResolvedKey, ResolvedValue, Separator, SliceCatalog, SourceEntry, UnresolvedSource,
+        ExpandedGlob, ExpandedKey, ExpandedValue, Expansion, FoundBy, LocatedFile, LocatedFiles,
+        Os, RegistryValueRef, ResolvedFile, ResolvedKey, ResolvedValue, Separator, SliceCatalog,
+        SourceEntry, UnresolvedSource,
     };
     pub use crate::context::initialize_context;
     pub use crate::core::fs::glob::GlobOutcome;

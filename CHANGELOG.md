@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Requirement::Artifact(ArtifactRef)` and `Requirement::artifact(name)`,
   `TriageSourcesBuilder::catalog`, and `ParseContext::{host_profile, resolve_artifact,
   resolve_artifact_for, resolve_files}`. `ParseContext::resolve` handles `Requirement::Artifact`.
+- `ParseContext::locate_artifact_files` and `catalog::locate_files`: an artifact's files on any
+  source layout. Locations first; when none of the requested definitions has a file there (a
+  collection with its own layout, such as Triage-IR), one bounded walk for the file names the
+  definitions end in. Each `LocatedFile` says how it was found (`FoundBy`), and
+  `dictionary::ARTIFACT_LOCATED_BY` carries that onto records.
 - Glob: bounded `**N`, `[..]` character classes, a pruned walk when the pattern has no
   unbounded `**`, and `FileSystemExt::glob_report` / `GlobOutcome` with the walk errors that
   `glob()` skips.
