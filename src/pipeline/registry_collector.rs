@@ -162,18 +162,21 @@ impl ArtifactParserFactory for RegistryCollector {
                 }
                 data
             };
+            // A read error names the key: the registry error types carry no path of their own
+            // for anything but a missing key or value, and those are no match, not errors.
+            let at = |e: ForensicError| ForensicError::other(PARSER_ID, format!("{key}: {e}"));
             let opened = match registry.key(&key) {
                 Ok(opened) => opened,
                 Err(e) if e.is_registry_not_found() => continue,
                 Err(e) => {
-                    out.push(Err(e));
+                    out.push(Err(at(e)));
                     continue;
                 }
             };
             let last_write = match opened.info() {
                 Ok(info) => info.last_write_time,
                 Err(e) => {
-                    out.push(Err(e));
+                    out.push(Err(at(e)));
                     None
                 }
             };
@@ -187,7 +190,7 @@ impl ArtifactParserFactory for RegistryCollector {
                 Read::Value(name) => match opened.value(&name) {
                     Ok(value) => out.push(stamp(record(Some((&name, &value))))),
                     Err(e) if e.is_registry_not_found() => {}
-                    Err(e) => out.push(Err(e)),
+                    Err(e) => out.push(Err(at(e))),
                 },
                 Read::Key | Read::ValuesOf => match opened.values() {
                     Ok(values) if values.is_empty() => {
@@ -202,7 +205,7 @@ impl ArtifactParserFactory for RegistryCollector {
                                 .map(|(name, value)| stamp(record(Some((name, value))))),
                         );
                     }
-                    Err(e) => out.push(Err(e)),
+                    Err(e) => out.push(Err(at(e))),
                 },
             }
         }
