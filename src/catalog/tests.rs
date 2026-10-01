@@ -524,3 +524,19 @@ fn an_all_wildcard_file_name_or_a_directory_gives_no_name_to_search() {
         .collect();
     assert_eq!(names, vec!["*.pf".to_string()]);
 }
+
+#[test]
+fn a_source_that_never_became_a_pattern_is_reported_not_dropped() {
+    let odd = file_def(
+        "OddLogs",
+        &[Cow::Borrowed("%%no_such_placeholder%%\\odd.log")],
+    );
+    let catalog: Arc<dyn ArtifactCatalog> = Arc::new(SliceCatalog::new(vec![odd]).unwrap());
+    let sources = TriageSources::builder()
+        .vfs(Arc::new(vfs()))
+        .catalog(catalog)
+        .build();
+    let found = located(&sources, &["OddLogs"]);
+    assert_eq!(found.unresolved.len(), 1, "{:?}", found.unresolved);
+    assert_eq!(&*found.unresolved[0].artifact, "OddLogs");
+}

@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Expansion, resolve_expansion};
+use super::{Expansion, UnresolvedSource, resolve_expansion};
 use crate::core::fs::glob::segment_matches;
 use crate::core::fs::walk::WalkOptions;
 use crate::core::locator::{EvidenceLocator, LocatorSegment};
@@ -65,6 +65,9 @@ pub struct LocatedFile {
 pub struct LocatedFiles {
     /// Sorted by path, each path once.
     pub files: Vec<LocatedFile>,
+    /// Sources of the definitions that never became a search pattern: that part of a
+    /// definition went unexamined, which is not the same as "not found".
+    pub unresolved: Vec<UnresolvedSource>,
     /// The expansions' notes, and whether and why names were searched instead of locations.
     pub notes: Vec<String>,
     /// Unknown definitions, unreadable directories and the like. A directory that couldn't be
@@ -130,6 +133,7 @@ pub fn locate_files(
             ..expansion
         };
         let resolution = resolve_expansion(files_only, Some(vfs), None);
+        out.unresolved.extend(resolution.unresolved);
         out.notes.extend(resolution.notes);
         out.errors.extend(resolution.errors);
         for file in resolution.files.into_iter().filter(|f| !f.directory) {
