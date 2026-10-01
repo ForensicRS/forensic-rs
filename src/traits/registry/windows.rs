@@ -264,8 +264,8 @@ pub fn build(reg: &dyn Registry) -> ForensicResult<WindowsVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::registry::raw::{KeyEntry, KeyInfo, PredefinedHive, RawKey};
     use crate::traits::registry::RegValue;
+    use crate::traits::registry::raw::{KeyEntry, KeyInfo, PredefinedHive, RawKey};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 

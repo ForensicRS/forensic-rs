@@ -554,7 +554,10 @@ impl<'a> ParseContext<'a> {
         &'a crate::catalog::ArtifactDefinition,
     )> {
         let catalog = self.sources.catalog().ok_or_else(|| {
-            ForensicError::other("catalog", format!("no artifact catalog configured to resolve {name}"))
+            ForensicError::other(
+                "catalog",
+                format!("no artifact catalog configured to resolve {name}"),
+            )
         })?;
         let def = catalog.get(name).ok_or_else(|| {
             ForensicError::other("catalog", format!("unknown artifact definition: {name}"))

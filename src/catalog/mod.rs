@@ -31,11 +31,11 @@ mod slice;
 mod tests;
 
 pub use expand::{
-    expand, ExpandedGlob, ExpandedKey, ExpandedValue, Expansion, UnresolvedSource,
-    GLOBSTAR_DEFAULT_DEPTH,
+    ExpandedGlob, ExpandedKey, ExpandedValue, Expansion, GLOBSTAR_DEFAULT_DEPTH, UnresolvedSource,
+    expand,
 };
 pub use resolve::{
-    resolve_expansion, ArtifactResolution, ResolvedFile, ResolvedKey, ResolvedValue,
+    ArtifactResolution, ResolvedFile, ResolvedKey, ResolvedValue, resolve_expansion,
 };
 pub use slice::{CatalogIndexEntry, SliceCatalog};
 

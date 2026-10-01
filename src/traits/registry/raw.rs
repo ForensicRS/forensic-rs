@@ -13,7 +13,7 @@
 //! `tests/compile_fail/` (RFC 0001 implementation plan, workstream F).
 
 use super::RegValue;
-use crate::core::fs::glob::{parse_component, segment_matches, Component};
+use crate::core::fs::glob::{Component, parse_component, segment_matches};
 use crate::err::{ForensicError, ForensicResult};
 use crate::recovery::Recovered;
 use crate::traits::vfs::CaseSensitivity;
@@ -1204,21 +1204,26 @@ mod key_pattern_tests {
         let five = reg
             .expand_key_pattern("HKLM\\Software\\Google\\Chrome\\Extensions\\**5")
             .unwrap();
-        assert!(five
-            .contains(&"HKLM\\Software\\Google\\Chrome\\Extensions\\abc\\1.0\\meta".to_string()));
+        assert!(
+            five.contains(
+                &"HKLM\\Software\\Google\\Chrome\\Extensions\\abc\\1.0\\meta".to_string()
+            )
+        );
     }
 
     #[test]
     fn a_missing_key_is_no_match_not_an_error() {
         let reg = registry();
-        assert!(reg
-            .expand_key_pattern("HKLM\\Software\\Nope\\*")
-            .unwrap()
-            .is_empty());
-        assert!(reg
-            .expand_key_pattern("HKLM\\Software\\Nope")
-            .unwrap()
-            .is_empty());
+        assert!(
+            reg.expand_key_pattern("HKLM\\Software\\Nope\\*")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            reg.expand_key_pattern("HKLM\\Software\\Nope")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

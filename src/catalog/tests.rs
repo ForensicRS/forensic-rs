@@ -162,23 +162,29 @@ fn without_a_registry_placeholders_fall_back_to_search_patterns() {
         "every profile folder is searched"
     );
     assert!(resolution.files.iter().all(|f| f.sid.is_none()));
-    assert!(resolution
-        .notes
-        .iter()
-        .any(|n| n.contains("users.userprofile")));
-    assert!(resolution
-        .notes
-        .iter()
-        .any(|n| n.contains("no registry configured")));
+    assert!(
+        resolution
+            .notes
+            .iter()
+            .any(|n| n.contains("users.userprofile"))
+    );
+    assert!(
+        resolution
+            .notes
+            .iter()
+            .any(|n| n.contains("no registry configured"))
+    );
 
     let prefetch = with_context(&sources, |ctx| {
         ctx.resolve_artifact("WindowsPrefetchFiles").unwrap()
     });
     assert_eq!(prefetch.files.len(), 1);
-    assert!(prefetch
-        .notes
-        .iter()
-        .any(|n| n.contains("system root unknown")));
+    assert!(
+        prefetch
+            .notes
+            .iter()
+            .any(|n| n.contains("system root unknown"))
+    );
 }
 
 #[test]
@@ -198,9 +204,10 @@ fn not_present_is_an_empty_result_and_an_unknown_name_is_an_error() {
             Resolution::Unavailable(UnavailableReason::NotPresent)
         ));
         assert!(ctx.resolve_artifact("NoSuchArtifact").is_err());
-        assert!(ctx
-            .resolve(&Requirement::artifact("NoSuchArtifact"))
-            .is_err());
+        assert!(
+            ctx.resolve(&Requirement::artifact("NoSuchArtifact"))
+                .is_err()
+        );
     });
 }
 

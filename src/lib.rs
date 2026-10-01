@@ -36,11 +36,11 @@ pub mod prelude {
         ResolvedKey, ResolvedValue, Separator, SliceCatalog, SourceEntry, UnresolvedSource,
     };
     pub use crate::context::initialize_context;
+    pub use crate::core::fs::glob::GlobOutcome;
     pub use crate::core::fs::{
         ChRootFileSystem, ConcatReadAt, ContainerFs, DescentPolicy, MountTable, OverlayFs,
         ReadAtFile, SplitRawFactory, StdVirtualFS, StdVirtualFile, WindowReadAt, into_read_at,
     };
-    pub use crate::core::fs::glob::GlobOutcome;
     pub use crate::core::limits::{LimitExceeded, Limits, MemorySpillStore, SpillStore};
     pub use crate::core::locator::{EvidenceLocator, LocatorSegment};
     pub use crate::core::path::{FPath, FPathBuf};
@@ -80,9 +80,10 @@ pub mod prelude {
     };
     pub use crate::traits::digest::{ContentAddress, Digest, DigestAlgorithm};
     pub use crate::traits::forensic::{
-        ArtifactParserFactory, ArtifactRef, ArtifactStream, ChannelSpec, IntoActivity, IntoTimeline, KeySpec,
-        OutputFlow, ParserDescriptor, ParserOutput, ParserRun, PushDriver, Requirement, Resolution,
-        SchemaFingerprint, TargetSpec, TimeContext, TimelineData, UnavailableReason,
+        ArtifactParserFactory, ArtifactRef, ArtifactStream, ChannelSpec, IntoActivity,
+        IntoTimeline, KeySpec, OutputFlow, ParserDescriptor, ParserOutput, ParserRun, PushDriver,
+        Requirement, Resolution, SchemaFingerprint, TargetSpec, TimeContext, TimelineData,
+        UnavailableReason,
     };
     pub use crate::traits::format::{
         FileSet, FileSetMember, FileSetRole, FormatFactory, HopCost, MountContext, MountKind,

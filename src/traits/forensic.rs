@@ -123,7 +123,10 @@ impl ParserDescriptor {
         self
     }
 
-    pub fn with_requirements(mut self, requirements: impl Into<Cow<'static, [Requirement]>>) -> Self {
+    pub fn with_requirements(
+        mut self,
+        requirements: impl Into<Cow<'static, [Requirement]>>,
+    ) -> Self {
         self.requirements = requirements.into();
         self
     }
@@ -187,9 +190,7 @@ impl ParserRun {
     pub fn pull(it: impl Iterator<Item = ForensicResult<ForensicData>> + 'static) -> Self {
         ParserRun::Pull(Box::new(it))
     }
-    pub fn push(
-        f: impl FnOnce(&mut dyn ParserOutput) -> ForensicResult<()> + 'static,
-    ) -> Self {
+    pub fn push(f: impl FnOnce(&mut dyn ParserOutput) -> ForensicResult<()> + 'static) -> Self {
         ParserRun::Push(Box::new(f))
     }
 }
@@ -493,8 +494,8 @@ pub enum UnavailableReason {
 #[cfg(test)]
 mod requirement_tests {
     use super::*;
-    use crate::utils::testing::{InMemoryForensicDb, InMemoryTable};
     use crate::traits::db::ForensicColumnType;
+    use crate::utils::testing::{InMemoryForensicDb, InMemoryTable};
 
     fn sample_db() -> InMemoryForensicDb {
         let table = InMemoryTable::new("logins")

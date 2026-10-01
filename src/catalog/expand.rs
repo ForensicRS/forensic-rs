@@ -750,10 +750,11 @@ mod tests {
             patterns(&e),
             vec![("\\Users\\alice\\NTUSER.DAT", Some(ALICE))]
         );
-        assert!(e
-            .notes
-            .iter()
-            .any(|n| n.contains(BOB) && n.contains("profile path")));
+        assert!(
+            e.notes
+                .iter()
+                .any(|n| n.contains(BOB) && n.contains("profile path"))
+        );
     }
 
     #[test]

@@ -146,7 +146,10 @@ impl<'a, T: FileSystem + ?Sized> Walk<'a, T> {
         if let Some(m) = entry.metadata.as_ref() {
             return m.attributes.contains(FileAttributes::CONTAINER);
         }
-        self.fs.metadata(entry.path.as_path()).map(|m| m.attributes.contains(FileAttributes::CONTAINER)).unwrap_or(false)
+        self.fs
+            .metadata(entry.path.as_path())
+            .map(|m| m.attributes.contains(FileAttributes::CONTAINER))
+            .unwrap_or(false)
     }
 }
 
@@ -163,7 +166,8 @@ impl<'a, T: FileSystem + ?Sized> Iterator for Walk<'a, T> {
             match iter.next() {
                 Some(Ok(entry)) => {
                     let is_dir = entry.file_type == VFileType::Directory;
-                    let is_container = self.opts.descend_into_containers && !is_dir && self.is_container(&entry);
+                    let is_container =
+                        self.opts.descend_into_containers && !is_dir && self.is_container(&entry);
                     if (is_dir || is_container)
                         && depth < WALK_HARD_DEPTH_CAP
                         && self.opts.max_depth.is_none_or(|m| depth < m)
@@ -247,7 +251,11 @@ mod tests {
                 allocated_size: None,
                 times: MacbTimes::default(),
                 id: None,
-                attributes: if container { FileAttributes::CONTAINER } else { FileAttributes::empty() },
+                attributes: if container {
+                    FileAttributes::CONTAINER
+                } else {
+                    FileAttributes::empty()
+                },
             }),
         }
     }
@@ -269,7 +277,10 @@ mod tests {
                 })
                 .ok_or_else(|| ForensicError::path_not_found(path.to_string()))
         }
-        fn read_dir(&self, path: &FPath) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+        fn read_dir(
+            &self,
+            path: &FPath,
+        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
             match self.0.get(path.as_str()) {
                 Some(entries) => Ok(Box::new(entries.clone().into_iter().map(Ok))),
                 None => Err(ForensicError::path_not_found(path.to_string())),
@@ -284,17 +295,24 @@ mod tests {
         let mut fs = BTreeMap::new();
         fs.insert(
             "".to_string(),
-            vec![dir_entry("report.doc", VFileType::File, true), dir_entry("plain.txt", VFileType::File, false)],
+            vec![
+                dir_entry("report.doc", VFileType::File, true),
+                dir_entry("plain.txt", VFileType::File, false),
+            ],
         );
-        fs.insert("report.doc".to_string(), vec![dir_entry("report.doc/WordDocument", VFileType::File, false)]);
+        fs.insert(
+            "report.doc".to_string(),
+            vec![dir_entry("report.doc/WordDocument", VFileType::File, false)],
+        );
         MapFs(fs)
     }
 
     #[test]
     fn default_options_do_not_descend_into_a_container_flagged_file() {
         let fs = container_fixture();
-        let mut entries: Vec<String> =
-            Walk::new(&fs, FPath::new(""), WalkOptions::default()).map(|e| e.unwrap().path.to_string()).collect();
+        let mut entries: Vec<String> = Walk::new(&fs, FPath::new(""), WalkOptions::default())
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
         entries.sort();
         assert_eq!(entries, vec!["plain.txt", "report.doc"]);
     }
@@ -303,9 +321,14 @@ mod tests {
     fn descend_into_containers_reaches_the_container_s_own_children() {
         let fs = container_fixture();
         let opts = WalkOptions::default().with_descend_into_containers(true);
-        let mut entries: Vec<String> = Walk::new(&fs, FPath::new(""), opts).map(|e| e.unwrap().path.to_string()).collect();
+        let mut entries: Vec<String> = Walk::new(&fs, FPath::new(""), opts)
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
         entries.sort();
-        assert_eq!(entries, vec!["plain.txt", "report.doc", "report.doc/WordDocument"]);
+        assert_eq!(
+            entries,
+            vec!["plain.txt", "report.doc", "report.doc/WordDocument"]
+        );
     }
 
     #[test]
@@ -314,7 +337,10 @@ mod tests {
         // gets the original bytes), even though the walk descends past it.
         let fs = container_fixture();
         let opts = WalkOptions::default().with_descend_into_containers(true);
-        let container = Walk::new(&fs, FPath::new(""), opts).map(|e| e.unwrap()).find(|e| e.path.as_str() == "report.doc").unwrap();
+        let container = Walk::new(&fs, FPath::new(""), opts)
+            .map(|e| e.unwrap())
+            .find(|e| e.path.as_str() == "report.doc")
+            .unwrap();
         assert_eq!(container.file_type, VFileType::File);
     }
 
