@@ -54,27 +54,18 @@ impl TestingRegistry {
         ret
     }
     pub fn add_value(&mut self, path: &str, value: &str, data: RegValue) {
-        let (hkey, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => {
-                return self
-                    .cell
-                    .entry(path.to_string())
-                    .or_insert(MountedCell::new(path))
-                    .add_value("", value, data);
-            }
-        };
+        let (hkey, rest) = split_path(path);
         self.cell
-            .entry(hkey.to_string())
-            .or_insert(MountedCell::new(hkey))
+            .entry(hkey.clone())
+            .or_insert(MountedCell::new(&hkey))
             .add_value(rest, value, data);
     }
     /// Creates the key at `path` (and any missing parents), with no values.
     pub fn add_key(&mut self, path: &str) {
-        let (hkey, rest) = path.split_once(['/', '\\']).unwrap_or((path, ""));
+        let (hkey, rest) = split_path(path);
         self.cell
-            .entry(hkey.to_string())
-            .or_insert(MountedCell::new(hkey))
+            .entry(hkey.clone())
+            .or_insert(MountedCell::new(&hkey))
             .add_key(rest);
     }
 
@@ -83,56 +74,56 @@ impl TestingRegistry {
     /// never makes a timestamp up.
     pub fn set_last_write(&mut self, path: &str, timestamp: ForensicTimestamp) {
         self.add_key(path);
-        let (hkey, rest) = path.split_once(['/', '\\']).unwrap_or((path, ""));
-        if let Some(cell) = self.cell.get_mut(hkey).and_then(|c| c.cell_at_mut(rest)) {
+        let (hkey, rest) = split_path(path);
+        if let Some(cell) = self.cell.get_mut(&hkey).and_then(|c| c.cell_at_mut(rest)) {
             cell.last_write = Some(timestamp);
         }
     }
 
     pub fn contains(&self, path: &str) -> bool {
-        let (hkey, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => return self.cell.contains_key(path),
-        };
-        let hive = match self.cell.get(hkey) {
-            Some(v) => v,
-            None => return false,
-        };
-        hive.contains_key(rest)
+        let (hkey, rest) = split_path(path);
+        match self.cell.get(&hkey) {
+            Some(hive) => rest.is_empty() || hive.contains_key(rest),
+            None => false,
+        }
     }
     pub fn get_value(&self, path: &str, value: &str) -> Option<RegValue> {
-        let (hkey, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => (path, ""),
-        };
-        let hive = self.cell.get(hkey)?;
-        hive.get_value(rest, value)
+        let (hkey, rest) = split_path(path);
+        self.cell.get(&hkey)?.get_value(rest, value)
     }
 
     pub fn get_value_ref<'a>(&'a self, path: &str, value: &str) -> Option<&'a RegValue> {
-        let (hkey, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => (path, ""),
-        };
-        let hive = self.cell.get(hkey)?;
-        hive.get_value_ref(rest, value)
+        let (hkey, rest) = split_path(path);
+        self.cell.get(&hkey)?.get_value_ref(rest, value)
     }
     pub fn get_values(&self, path: &str) -> Option<Vec<String>> {
-        let (hkey, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => (path, ""),
-        };
-        let hive = self.cell.get(hkey)?;
-        Some(hive.get_values(rest))
+        let (hkey, rest) = split_path(path);
+        Some(self.cell.get(&hkey)?.get_values(rest))
     }
     pub fn get_keys(&self, path: &str) -> Option<Vec<String>> {
-        let (hkey, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => (path, ""),
-        };
-        let hive = self.cell.get(hkey)?;
-        Some(hive.get_keys(rest))
+        let (hkey, rest) = split_path(path);
+        Some(self.cell.get(&hkey)?.get_keys(rest))
     }
+}
+
+/// The short name the double roots a hive at (`HKLM`, `HKU`, `HKCU`, `HKCR`, `HKCC`), whatever
+/// spelling or case a path uses: `HKEY_USERS\...` and `hku\...` are the same tree, as in
+/// Windows. An unknown name is kept as written.
+fn canonical_hive(name: &str) -> String {
+    match name.to_ascii_uppercase().as_str() {
+        "HKLM" | "HKEY_LOCAL_MACHINE" => "HKLM".into(),
+        "HKU" | "HKEY_USERS" => "HKU".into(),
+        "HKCU" | "HKEY_CURRENT_USER" => "HKCU".into(),
+        "HKCR" | "HKEY_CLASSES_ROOT" => "HKCR".into(),
+        "HKCC" | "HKEY_CURRENT_CONFIG" => "HKCC".into(),
+        _ => name.to_string(),
+    }
+}
+
+/// A full path's canonical hive name and the path below it.
+fn split_path(path: &str) -> (String, &str) {
+    let (hkey, rest) = path.split_once(['/', '\\']).unwrap_or((path, ""));
+    (canonical_hive(hkey), rest)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -152,122 +143,98 @@ impl MountedCell {
             last_write: None,
         }
     }
+
+    /// The subkey named `name`, compared case-insensitively as in Windows.
+    fn child(&self, name: &str) -> Option<&MountedCell> {
+        self.keys.get(name).or_else(|| {
+            self.keys
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v)
+        })
+    }
+
+    fn child_mut(&mut self, name: &str) -> Option<&mut MountedCell> {
+        let stored = self.stored_key_name(name)?;
+        self.keys.get_mut(&stored)
+    }
+
+    /// The subkey named `name`, created with that spelling if no key matches it in any case.
+    fn child_or_insert(&mut self, name: &str) -> &mut MountedCell {
+        let stored = self
+            .stored_key_name(name)
+            .unwrap_or_else(|| name.to_string());
+        self.keys
+            .entry(stored.clone())
+            .or_insert_with(|| MountedCell::new(&stored))
+    }
+
+    fn stored_key_name(&self, name: &str) -> Option<String> {
+        self.keys
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(name))
+            .cloned()
+    }
+
+    /// The value named `name`, compared case-insensitively as in Windows.
+    fn value_named(&self, name: &str) -> Option<&RegValue> {
+        self.values.get(name).or_else(|| {
+            self.values
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v)
+        })
+    }
+
     pub fn add_key(&mut self, path: &str) {
         if path.is_empty() {
             return;
         }
-        let (first, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => {
-                self.keys
-                    .entry(path.to_string())
-                    .or_insert(MountedCell::new(path));
-                return;
-            }
-        };
-        self.keys
-            .entry(first.to_string())
-            .or_insert(MountedCell::new(first))
-            .add_key(rest);
+        let (first, rest) = path.split_once(['/', '\\']).unwrap_or((path, ""));
+        self.child_or_insert(first).add_key(rest);
     }
     pub fn contains_key(&self, path: &str) -> bool {
-        let (first, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => return self.keys.contains_key(path),
-        };
-        let hive = match self.keys.get(first) {
-            Some(v) => v,
-            None => return false,
-        };
-        hive.contains_key(rest)
+        self.cell_at(path).is_some() && !path.is_empty()
     }
+    /// Sets `value` at `path`, replacing a value of the same name in any case.
     pub fn add_value(&mut self, path: &str, value: &str, data: RegValue) {
         if path.is_empty() {
-            self.values.insert(value.into(), data);
+            let stored = self
+                .values
+                .keys()
+                .find(|k| k.eq_ignore_ascii_case(value))
+                .cloned()
+                .unwrap_or_else(|| value.to_string());
+            self.values.insert(stored, data);
             return;
         }
-        let (first, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => {
-                self.keys
-                    .entry(path.to_string())
-                    .or_insert(MountedCell::new(path))
-                    .add_value("", value, data);
-                return;
-            }
-        };
-        self.keys
-            .entry(first.to_string())
-            .or_insert(MountedCell::new(first))
-            .add_value(rest, value, data);
+        let (first, rest) = path.split_once(['/', '\\']).unwrap_or((path, ""));
+        self.child_or_insert(first).add_value(rest, value, data);
     }
     pub fn get_value(&self, path: &str, value: &str) -> Option<RegValue> {
-        if path.is_empty() {
-            return self.values.get(value).cloned();
-        }
-        let (first, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => return self.keys.get(path)?.get_value("", value),
-        };
-        self.keys.get(first)?.get_value(rest, value)
+        self.get_value_ref(path, value).cloned()
     }
 
     pub fn get_value_ref<'a>(&'a self, path: &str, value: &str) -> Option<&'a RegValue> {
-        if path.is_empty() {
-            return self.values.get(value);
-        }
-        let (first, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => return self.keys.get(path)?.get_value_ref("", value),
-        };
-        self.keys.get(first)?.get_value_ref(rest, value)
+        self.cell_at(path)?.value_named(value)
     }
     pub fn get_values(&self, path: &str) -> Vec<String> {
-        if path.is_empty() {
-            return self.values.keys().map(|v| v.to_string()).collect();
-        }
-        let (first, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => {
-                return match self.keys.get(path) {
-                    Some(v) => v.get_values(""),
-                    None => Vec::new(),
-                };
-            }
-        };
-        match self.keys.get(first) {
-            Some(v) => v.get_values(rest),
-            None => Vec::new(),
-        }
+        self.cell_at(path)
+            .map(|cell| cell.values.keys().cloned().collect())
+            .unwrap_or_default()
     }
     pub fn get_keys(&self, path: &str) -> Vec<String> {
-        if path.is_empty() {
-            return self.keys.keys().map(|v| v.to_string()).collect();
-        }
-        let (first, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => {
-                return match self.keys.get(path) {
-                    Some(v) => v.get_keys(""),
-                    None => Vec::new(),
-                };
-            }
-        };
-        match self.keys.get(first) {
-            Some(v) => v.get_keys(rest),
-            None => Vec::new(),
-        }
+        self.cell_at(path)
+            .map(|cell| cell.keys.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
     fn cell_at(&self, path: &str) -> Option<&MountedCell> {
         if path.is_empty() {
             return Some(self);
         }
-        let (first, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => return self.keys.get(path),
-        };
-        self.keys.get(first)?.cell_at(rest)
+        let (first, rest) = path.split_once(['/', '\\']).unwrap_or((path, ""));
+        self.child(first)?.cell_at(rest)
     }
 
     fn cell_at_mut(&mut self, path: &str) -> Option<&mut MountedCell> {
@@ -275,7 +242,7 @@ impl MountedCell {
             return Some(self);
         }
         let (first, rest) = path.split_once(['/', '\\']).unwrap_or((path, ""));
-        self.keys.get_mut(first)?.cell_at_mut(rest)
+        self.child_mut(first)?.cell_at_mut(rest)
     }
 
     fn key_entries(&self) -> impl Iterator<Item = KeyEntry> + '_ {
@@ -289,11 +256,12 @@ impl MountedCell {
 
 /// The hive and in-hive path of a full `HKLM\...` style path, for typed not-found errors.
 fn split_hive(full_path: &str) -> (PredefinedHive, Option<CompactString>) {
-    let (hkey, rest) = full_path.split_once(['/', '\\']).unwrap_or((full_path, ""));
-    let hive = match hkey {
+    let (hkey, rest) = split_path(full_path);
+    let hive = match hkey.as_str() {
         "HKLM" => PredefinedHive::LocalMachine,
         "HKCU" => PredefinedHive::CurrentUser,
         "HKCR" => PredefinedHive::ClassesRoot,
+        "HKCC" => PredefinedHive::CurrentConfig,
         _ => PredefinedHive::Users,
     };
     (hive, (!rest.is_empty()).then(|| CompactString::from(rest)))
@@ -314,11 +282,8 @@ impl TestingRegistry {
     /// [`get_values`](TestingRegistry::get_values)/[`get_keys`](TestingRegistry::get_keys),
     /// used by the `_into` buffer-reuse overrides below.
     fn cell_at(&self, path: &str) -> Option<&MountedCell> {
-        let (hkey, rest) = match path.split_once(['/', '\\']) {
-            Some(v) => v,
-            None => (path, ""),
-        };
-        self.cell.get(hkey)?.cell_at(rest)
+        let (hkey, rest) = split_path(path);
+        self.cell.get(&hkey)?.cell_at(rest)
     }
 }
 
@@ -624,5 +589,66 @@ mod new_registry_trait_tests {
             vec!["SOFTWARE".to_string(), "SYSTEM".to_string()]
         );
         assert!(cell.contains_key(r"SYSTEM\Select"));
+    }
+
+    #[test]
+    fn long_and_short_hive_names_are_one_tree() {
+        use crate::traits::registry::RegistryExt;
+        let mut reg = TestingRegistry::empty();
+        reg.add_value(
+            r"HKEY_USERS\S-1-5-21-1\Software\App",
+            "Path",
+            RegValue::new_sz("a"),
+        );
+        reg.add_value(
+            r"HKU\S-1-5-21-1\Software\App",
+            "Other",
+            RegValue::new_sz("b"),
+        );
+        reg.add_value(r"hklm\SOFTWARE\Vendor", "X", RegValue::DWord(1));
+        let users = reg.key(r"HKU\S-1-5-21-1\Software\App").unwrap();
+        assert_eq!(users.values().unwrap().len(), 2, "one key, not two trees");
+        assert!(reg.key(r"HKEY_USERS\S-1-5-21-1\Software\App").is_ok());
+        assert!(reg.key(r"HKEY_LOCAL_MACHINE\SOFTWARE\Vendor").is_ok());
+        // `root()` reaches what the long names created.
+        assert!(reg.root(PredefinedHive::Users).is_ok());
+        assert!(reg.root(PredefinedHive::LocalMachine).is_ok());
+    }
+
+    #[test]
+    fn key_and_value_names_match_in_any_case_and_keep_their_spelling() {
+        use crate::traits::registry::RegistryExt;
+        let mut reg = TestingRegistry::empty();
+        reg.add_value(
+            r"HKLM\SOFTWARE\Microsoft\Windows",
+            "ProgramFilesDir",
+            RegValue::new_sz("C:"),
+        );
+        // Re-adding in another case reuses the key and replaces the value, as Windows would.
+        reg.add_value(
+            r"HKLM\software\MICROSOFT\windows",
+            "programfilesdir",
+            RegValue::new_sz("D:"),
+        );
+        let key = reg.key(r"hklm\Software\microsoft\WINDOWS").unwrap();
+        assert_eq!(
+            key.value("PROGRAMFILESDIR").unwrap(),
+            RegValue::new_sz("D:")
+        );
+        let values = key.values().unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].0, "ProgramFilesDir", "the first spelling is kept");
+        let names: Vec<String> = reg
+            .key(r"HKLM\SOFTWARE")
+            .unwrap()
+            .keys()
+            .unwrap()
+            .into_iter()
+            .map(|k| k.name)
+            .collect();
+        assert_eq!(names, ["Microsoft"]);
+        // A missing key is still a typed not-found error, whatever the spelling.
+        let missing = reg.key(r"HKEY_LOCAL_MACHINE\SOFTWARE\Nope").unwrap_err();
+        assert!(missing.is_registry_not_found());
     }
 }

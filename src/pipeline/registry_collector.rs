@@ -459,7 +459,6 @@ mod tests {
             "OneDrive",
             RegValue::ExpandSZ(r"%LOCALAPPDATA%\OneDrive.exe".into()),
         );
-        // The double keys hives by the short name it roots them at (`HKLM`, `HKU`).
         reg.add_value(
             r"HKLM\System\CurrentControlSet\Control\Session Manager\AppCompatCache",
             "AppCompatCache",

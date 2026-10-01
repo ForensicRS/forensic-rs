@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ending in `\*` also matches the key's values (the ForensicArtifacts reading of `...\Run\*`).
 - `dictionary::REGISTRY_{HIVE, KEY, PATH, VALUE, DATA_TYPE, DATA_STRINGS, DATA_BYTES, KEY_LAST_WRITE}`
   and `RegValueType::name()` (`REG_SZ`, ...).
+
+### Changed
+
+- `TestingRegistry` matches key and value names case-insensitively, as Windows does, and treats a
+  hive's long and short names as one tree (`HKEY_USERS\...` and `HKU\...`). Re-adding a key or
+  value in another case reuses it; listings keep the first spelling. The registry conformance
+  battery now asserts both.
 - Glob: bounded `**N`, `[..]` character classes, a pruned walk when the pattern has no
   unbounded `**`, and `FileSystemExt::glob_report` / `GlobOutcome` with the walk errors that
   `glob()` skips.

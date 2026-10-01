@@ -3,17 +3,25 @@
 //! written as free functions (not a macro) so a future backend can opt in
 //! by adding one more call at the bottom.
 //!
-//! One RFC-listed assertion is intentionally **not** included, because
-//! `TestingRegistry` (a `BTreeMap`-backed mock) doesn't implement the
-//! behavior it would assert: case-insensitive key/value name lookups —
-//! `MountedCell` does exact `BTreeMap` string matching. Real Windows registry
-//! semantics are case-insensitive; this is a known gap in the mock.
+//! Key and value names are case-insensitive, as in Windows, and a hive answers to its long and
+//! short names alike (`HKEY_USERS` and `HKU`): a backend that differs would make a parser's test
+//! pass on spellings a real registry rejects, or fail on ones it accepts.
 
 use forensic_rs::err::{ForensicError, RegistryError};
 use forensic_rs::traits::registry::{PredefinedHive, RegValue, Registry, RegistryExt, windows};
 use forensic_rs::utils::testing::TestingRegistry;
 
 const SID: &str = "S-1-5-21-1366093794-4292800403-1155380978-513";
+
+fn names_are_case_insensitive_and_hives_answer_to_both_names(reg: &TestingRegistry) {
+    let path = format!(
+        r"hkey_users\{}\VOLATILE environment",
+        SID.to_ascii_lowercase()
+    );
+    let key = reg.key(&path).unwrap();
+    assert_eq!(key.value("username").unwrap(), RegValue::new_sz("Tester"));
+    assert!(reg.key(&format!(r"HKU\{SID}\Volatile Environment")).is_ok());
+}
 
 fn key_open_succeeds_for_existing_path(reg: &TestingRegistry) {
     assert!(reg.key("HKLM").is_ok());
@@ -247,6 +255,10 @@ macro_rules! registry_conformance_battery {
             #[test]
             fn windows_helpers_read_seeded_environment_test() {
                 windows_helpers_read_seeded_environment(&$make);
+            }
+            #[test]
+            fn names_are_case_insensitive_and_hives_answer_to_both_names_test() {
+                names_are_case_insensitive_and_hives_answer_to_both_names(&$make);
             }
             #[test]
             fn send_sync_bound_holds() {
