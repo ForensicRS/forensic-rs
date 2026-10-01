@@ -512,9 +512,20 @@ fn expand_key_components<R: Registry + ?Sized>(
             format!("{sub}\\{name}")
         }
     };
-    // `Ok(None)` when the key at `sub` doesn't exist.
+    // `Ok(None)` when the key at `sub` doesn't exist, the hive's root included: a source with
+    // no user hives has no `HKEY_USERS` to expand, which is no match, not an error.
+    let hive_root = || -> ForensicResult<Option<RawKey>> {
+        match reg.root(hive) {
+            Ok(root) => Ok(Some(root)),
+            Err(e) if e.is_registry_not_found() => Ok(None),
+            Err(e) => Err(e),
+        }
+    };
     let children = || -> ForensicResult<Option<Vec<String>>> {
-        let root_key = RegKey::from_raw(reg, reg.root(hive)?);
+        let Some(root_raw) = hive_root()? else {
+            return Ok(None);
+        };
+        let root_key = RegKey::from_raw(reg, root_raw);
         let key = if sub.is_empty() {
             Ok(root_key)
         } else {
@@ -528,7 +539,10 @@ fn expand_key_components<R: Registry + ?Sized>(
     };
     match comps.first() {
         None => {
-            let root_key = RegKey::from_raw(reg, reg.root(hive)?);
+            let Some(root_raw) = hive_root()? else {
+                return Ok(());
+            };
+            let root_key = RegKey::from_raw(reg, root_raw);
             let exists = if sub.is_empty() {
                 Ok(root_key)
             } else {
