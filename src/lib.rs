@@ -67,6 +67,7 @@ pub mod prelude {
             StandardParallelTaskBuilder, TaskStats,
         },
         registry::ParserRegistry,
+        registry_collector::RegistryCollector,
         sinks::{FindingCollector, TimelineSink},
         sources::TriageSources,
         sources::TriageSourcesBuilder,

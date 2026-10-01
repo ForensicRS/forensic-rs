@@ -92,6 +92,24 @@ pub const ARTIFACT_DEFINITION: &str = "artifact.definition";
 /// like the definition expects (see `catalog::FoundBy`). A forensic-rs extension, not ECS.
 pub const ARTIFACT_LOCATED_BY: &str = "artifact.located_by";
 
+/// ECS `registry.hive`: the abbreviated hive a key is in (`HKLM`, `HKU`).
+pub const REGISTRY_HIVE: &str = "registry.hive";
+/// ECS `registry.key`: the key's path below its hive, without the value name.
+pub const REGISTRY_KEY: &str = "registry.key";
+/// ECS `registry.path`: the full path, hive, key and value name.
+pub const REGISTRY_PATH: &str = "registry.path";
+/// ECS `registry.value`: the value's name, as stored (empty for the default value).
+pub const REGISTRY_VALUE: &str = "registry.value";
+/// ECS `registry.data.type`: the value's type, as Windows names it (`REG_SZ`).
+pub const REGISTRY_DATA_TYPE: &str = "registry.data.type";
+/// ECS `registry.data.strings`: string data, or a number as decimal text.
+pub const REGISTRY_DATA_STRINGS: &str = "registry.data.strings";
+/// ECS `registry.data.bytes`: binary data, base64-encoded.
+pub const REGISTRY_DATA_BYTES: &str = "registry.data.bytes";
+/// The key's last-write time. A forensic-rs extension, not ECS, and never `@timestamp`: it says
+/// when *something* in the key last changed, not when any one value was written.
+pub const REGISTRY_KEY_LAST_WRITE: &str = "registry.key.last_write";
+
 pub const PROCESS_EXECUTABLE: &str = "process.executable";
 /// ECS `process.name`: the process name, usually the executable's file name (`cmd.exe`).
 pub const PROCESS_NAME: &str = "process.name";

@@ -459,7 +459,9 @@ impl<'a> RegValueRef<'a> {
             RegValueRef::Link(v) => RegValue::Link((*v).to_string()),
             RegValueRef::ResourceList(v) => RegValue::ResourceList(v.to_vec()),
             RegValueRef::FullResourceDescriptor(v) => RegValue::FullResourceDescriptor(v.to_vec()),
-            RegValueRef::ResourceRequirementsList(v) => RegValue::ResourceRequirementsList(v.to_vec()),
+            RegValueRef::ResourceRequirementsList(v) => {
+                RegValue::ResourceRequirementsList(v.to_vec())
+            }
             RegValueRef::Unknown { ty, data } => RegValue::Unknown {
                 ty: *ty,
                 data: data.to_vec(),
@@ -753,6 +755,28 @@ impl RegValue {
 }
 
 impl RegValueType {
+    /// The type's name as Windows writes it (`REG_SZ`); `REG_UNKNOWN(0x<id>)` for a type id
+    /// it doesn't define.
+    pub fn name(&self) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(match self {
+            RegValueType::None => "REG_NONE",
+            RegValueType::Binary => "REG_BINARY",
+            RegValueType::MultiSZ => "REG_MULTI_SZ",
+            RegValueType::ExpandSZ => "REG_EXPAND_SZ",
+            RegValueType::SZ => "REG_SZ",
+            RegValueType::DWordBigEndian => "REG_DWORD_BIG_ENDIAN",
+            RegValueType::Link => "REG_LINK",
+            RegValueType::ResourceList => "REG_RESOURCE_LIST",
+            RegValueType::FullResourceDescriptor => "REG_FULL_RESOURCE_DESCRIPTOR",
+            RegValueType::ResourceRequirementsList => "REG_RESOURCE_REQUIREMENTS_LIST",
+            RegValueType::DWord => "REG_DWORD",
+            RegValueType::QWord => "REG_QWORD",
+            RegValueType::Unknown(id) => {
+                return std::borrow::Cow::Owned(format!("REG_UNKNOWN(0x{id:x})"));
+            }
+        })
+    }
+
     pub fn parse_bytes<'a>(&self, raw: &'a [u8]) -> ForensicResult<RegValueRef<'a>> {
         match self {
             RegValueType::SZ => {
@@ -779,7 +803,9 @@ impl RegValueType {
             RegValueType::Binary => Ok(RegValueRef::Binary(raw)),
             RegValueType::ResourceList => Ok(RegValueRef::ResourceList(raw)),
             RegValueType::FullResourceDescriptor => Ok(RegValueRef::FullResourceDescriptor(raw)),
-            RegValueType::ResourceRequirementsList => Ok(RegValueRef::ResourceRequirementsList(raw)),
+            RegValueType::ResourceRequirementsList => {
+                Ok(RegValueRef::ResourceRequirementsList(raw))
+            }
             RegValueType::Unknown(ty) => Ok(RegValueRef::Unknown { ty: *ty, data: raw }),
             RegValueType::Link => {
                 let s = std::str::from_utf8(raw).map_err(|e| {
@@ -1308,17 +1334,29 @@ mod reg_value_expansion {
         assert_eq!(v.as_binary(), Some(&[0xAA, 0xBB][..]));
         let mut buf = [0u8; 2];
         let reff = v.write_into_ref(&mut buf).unwrap();
-        assert_eq!(reff, RegValueRef::Unknown { ty: 0xDEAD_BEEF, data: &[0xAA, 0xBB] });
+        assert_eq!(
+            reff,
+            RegValueRef::Unknown {
+                ty: 0xDEAD_BEEF,
+                data: &[0xAA, 0xBB]
+            }
+        );
     }
 
     #[test]
     fn raw_bytes_round_trips_for_dword_and_qword() {
-        assert_eq!(RegValue::DWord(0x11223344).raw_bytes().as_ref(), &0x11223344u32.to_le_bytes());
+        assert_eq!(
+            RegValue::DWord(0x11223344).raw_bytes().as_ref(),
+            &0x11223344u32.to_le_bytes()
+        );
         assert_eq!(
             RegValue::DWordBigEndian(0x11223344).raw_bytes().as_ref(),
             &0x11223344u32.to_be_bytes()
         );
-        assert_eq!(RegValue::QWord(0x1122334455667788).raw_bytes().as_ref(), &0x1122334455667788u64.to_le_bytes());
+        assert_eq!(
+            RegValue::QWord(0x1122334455667788).raw_bytes().as_ref(),
+            &0x1122334455667788u64.to_le_bytes()
+        );
     }
 
     #[test]
@@ -1333,8 +1371,15 @@ mod reg_value_expansion {
     fn regvalueref_to_owned_covers_new_variants() {
         assert_eq!(RegValueRef::None.to_owned(), RegValue::None);
         assert_eq!(
-            RegValueRef::Unknown { ty: 7, data: &[1, 2] }.to_owned(),
-            RegValue::Unknown { ty: 7, data: vec![1, 2] }
+            RegValueRef::Unknown {
+                ty: 7,
+                data: &[1, 2]
+            }
+            .to_owned(),
+            RegValue::Unknown {
+                ty: 7,
+                data: vec![1, 2]
+            }
         );
     }
 }

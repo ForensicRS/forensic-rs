@@ -4,6 +4,7 @@ pub mod inventory;
 pub mod parallel;
 pub(crate) mod processor;
 pub mod registry;
+pub mod registry_collector;
 pub mod sinks;
 pub mod sources;
 pub mod timeline;

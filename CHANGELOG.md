@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collection with its own layout, such as Triage-IR), one bounded walk for the file names the
   definitions end in. Each `LocatedFile` says how it was found (`FoundBy`), and
   `dictionary::ARTIFACT_LOCATED_BY` carries that onto records.
+- `pipeline::registry_collector::RegistryCollector` (`core.registry_collector`): the raw registry keys
+  and values every `REGISTRY_KEY`/`REGISTRY_VALUE` definition of the run's catalog names, uninterpreted,
+  as `RegistryArtifacts::CatalogValues` records with the ECS `registry.*` fields. A key pattern
+  ending in `\*` also matches the key's values (the ForensicArtifacts reading of `...\Run\*`).
+- `dictionary::REGISTRY_{HIVE, KEY, PATH, VALUE, DATA_TYPE, DATA_STRINGS, DATA_BYTES, KEY_LAST_WRITE}`
+  and `RegValueType::name()` (`REG_SZ`, ...).
 - Glob: bounded `**N`, `[..]` character classes, a pruned walk when the pattern has no
   unbounded `**`, and `FileSystemExt::glob_report` / `GlobOutcome` with the walk errors that
   `glob()` skips.

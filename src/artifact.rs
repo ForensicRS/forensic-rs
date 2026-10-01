@@ -115,6 +115,9 @@ pub enum RegistryArtifacts {
     RecentDocs,
     /// Explorer FeatureUsage (taskbar interaction counters): `HKU\<sid>\Software\Microsoft\Windows\CurrentVersion\Explorer\FeatureUsage`
     FeatureUsage,
+    /// Raw keys and values collected for artifact-catalog definitions, uninterpreted
+    /// (`RegistryCollector`)
+    CatalogValues,
     Other(String),
     #[default]
     Unknown,
@@ -285,6 +288,7 @@ impl std::fmt::Display for RegistryArtifacts {
             RegistryArtifacts::TypedPaths => write!(f, "TypedPaths"),
             RegistryArtifacts::RecentDocs => write!(f, "RecentDocs"),
             RegistryArtifacts::FeatureUsage => write!(f, "FeatureUsage"),
+            RegistryArtifacts::CatalogValues => write!(f, "CatalogValues"),
             RegistryArtifacts::Other(v) => write!(f, "{}", v),
             RegistryArtifacts::Unknown => write!(f, "Unknown"),
         }
@@ -764,6 +768,7 @@ pub fn registry_artifacts_from_str(txt: &str) -> RegistryArtifacts {
         "TypedPaths" => RegistryArtifacts::TypedPaths,
         "RecentDocs" => RegistryArtifacts::RecentDocs,
         "FeatureUsage" => RegistryArtifacts::FeatureUsage,
+        "CatalogValues" => RegistryArtifacts::CatalogValues,
         _ => RegistryArtifacts::Other(txt.to_string()),
     }
 }
@@ -941,6 +946,7 @@ mod tests {
         roundtrip(RegistryArtifacts::TypedPaths.into());
         roundtrip(RegistryArtifacts::RecentDocs.into());
         roundtrip(RegistryArtifacts::FeatureUsage.into());
+        roundtrip(RegistryArtifacts::CatalogValues.into());
         roundtrip(RegistryArtifacts::Unknown.into());
         roundtrip(RegistryArtifacts::Other("Custom".to_string()).into());
     }
