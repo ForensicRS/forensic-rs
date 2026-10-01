@@ -233,13 +233,19 @@ fn plan(
             continue;
         }
         let expansion = expand(def, catalog, host, Os::Windows);
+        let at = |pattern: &str, e: ForensicError| {
+            Err(ForensicError::other(
+                PARSER_ID,
+                format!("{}: expanding {pattern}: {e}", def.name),
+            ))
+        };
         let mut found: Vec<((String, Read), Option<String>)> = Vec::new();
         for key in &expansion.keys {
             match registry.expand_key_pattern(&key.pattern) {
                 Ok(paths) => {
                     found.extend(paths.into_iter().map(|p| ((p, Read::Key), key.sid.clone())))
                 }
-                Err(e) => errors.push(Err(e)),
+                Err(e) => errors.push(at(&key.pattern, e)),
             }
             if let Some(parent) = key.pattern.strip_suffix("\\*") {
                 match registry.expand_key_pattern(parent) {
@@ -248,7 +254,7 @@ fn plan(
                             .into_iter()
                             .map(|p| ((p, Read::ValuesOf), key.sid.clone())),
                     ),
-                    Err(e) => errors.push(Err(e)),
+                    Err(e) => errors.push(at(parent, e)),
                 }
             }
         }
@@ -259,7 +265,7 @@ fn plan(
                         .into_iter()
                         .map(|p| ((p, Read::Value(value.value.clone())), value.sid.clone())),
                 ),
-                Err(e) => errors.push(Err(e)),
+                Err(e) => errors.push(at(&value.key, e)),
             }
         }
         if found.len() > MAX_KEYS_PER_DEFINITION {
