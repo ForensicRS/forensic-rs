@@ -11,7 +11,9 @@ use crate::traits::db::{
 };
 use crate::traits::events::{EventLogIterator, EventLogQuery, EventLogReader, EventRecord};
 use crate::traits::registry::{KeyEntry, KeyInfo, PredefinedHive, RawKey, RegValue, Registry};
-use crate::traits::vfs::{CaseSensitivity, DirEntry, FileSystem, SourceKind, VMetadata, VirtualFile};
+use crate::traits::vfs::{
+    CaseSensitivity, DirEntry, FileSystem, SourceKind, VMetadata, VirtualFile,
+};
 
 use super::{AccessContext, AccessKind, AccessPolicy, AccessRequest};
 
@@ -116,12 +118,17 @@ impl FileSystem for AuthorizedVirtualFileSystem {
         // has it, so a caller can tell "unsupported" apart from "every path denied" -- unlike
         // as_streams/as_unallocated above, the gate this needs is exactly the same ensure_path
         // check every other method already does, so it's threaded through rather than deferred.
-        self.inner.as_attributes().map(|_| self as &dyn crate::traits::vfs::PathAttributes)
+        self.inner
+            .as_attributes()
+            .map(|_| self as &dyn crate::traits::vfs::PathAttributes)
     }
 }
 
 impl crate::traits::vfs::PathAttributes for AuthorizedVirtualFileSystem {
-    fn attributes(&self, path: &FPath) -> ForensicResult<std::collections::BTreeMap<crate::field::Text, crate::field::Field>> {
+    fn attributes(
+        &self,
+        path: &FPath,
+    ) -> ForensicResult<std::collections::BTreeMap<crate::field::Text, crate::field::Field>> {
         // Gate FIRST, before the wrapped backend is touched at all -- a denied path and a
         // genuinely missing one must be indistinguishable, including in timing/error shape, and
         // `ensure_path` already returns the same generic error either way.
@@ -328,7 +335,10 @@ impl Registry for AuthorizedRegistryReader {
         })))
     }
 
-    fn keys_iter_raw<'a>(&'a self, key: &RawKey) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
+    fn keys_iter_raw<'a>(
+        &'a self,
+        key: &RawKey,
+    ) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
         let (path, inner_iter) = {
             let paths = self
                 .paths
@@ -659,7 +669,7 @@ mod tests {
     use crate::traits::events::{EventLogQuery, EventLogReader};
     use crate::traits::registry::RegistryExt;
     use crate::traits::vfs::{FileSystemExt, PathAttributes};
-    use crate::utils::testing::{basic_event_log, TestingRegistry};
+    use crate::utils::testing::{TestingRegistry, basic_event_log};
 
     struct PathPolicy;
 
@@ -729,7 +739,10 @@ mod tests {
         fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
             self.0.metadata(path)
         }
-        fn read_dir(&self, path: &FPath) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+        fn read_dir(
+            &self,
+            path: &FPath,
+        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
             self.0.read_dir(path)
         }
         fn source(&self) -> SourceKind {
@@ -741,10 +754,17 @@ mod tests {
     }
 
     impl crate::traits::vfs::PathAttributes for AttrFs {
-        fn attributes(&self, path: &FPath) -> ForensicResult<std::collections::BTreeMap<crate::field::Text, crate::field::Field>> {
+        fn attributes(
+            &self,
+            path: &FPath,
+        ) -> ForensicResult<std::collections::BTreeMap<crate::field::Text, crate::field::Field>>
+        {
             self.0.metadata(path)?; // an unknown path is still an Err, exactly like `metadata`
             let mut map = std::collections::BTreeMap::new();
-            map.insert(crate::field::Text::Borrowed("test.marker"), crate::field::Field::U64(1));
+            map.insert(
+                crate::field::Text::Borrowed("test.marker"),
+                crate::field::Field::U64(1),
+            );
             Ok(map)
         }
     }
@@ -766,15 +786,27 @@ mod tests {
 
         // ...and an allowed path's facts pass through untouched.
         let allowed = filesystem.attributes(FPath::new("allowed.txt")).unwrap();
-        assert_eq!(allowed.get(&crate::field::Text::Borrowed("test.marker")), Some(&crate::field::Field::U64(1)));
+        assert_eq!(
+            allowed.get(&crate::field::Text::Borrowed("test.marker")),
+            Some(&crate::field::Field::U64(1))
+        );
 
         // A denied *existing* path and a denied *nonexistent* path must be indistinguishable --
         // both the identical error `AuthorizedVirtualFileSystem::ensure_path` already produces
         // for every other method, and neither ever reaches `AttrFs::attributes` at all (denial
         // gates before the inner backend is touched).
-        let denied_existing = filesystem.attributes(FPath::new("hidden.txt")).unwrap_err().to_string();
-        let denied_missing = filesystem.attributes(FPath::new("does-not-exist.txt")).unwrap_err().to_string();
-        assert_eq!(denied_existing, "AuthorizedVirtualFileSystem error: source path is unavailable");
+        let denied_existing = filesystem
+            .attributes(FPath::new("hidden.txt"))
+            .unwrap_err()
+            .to_string();
+        let denied_missing = filesystem
+            .attributes(FPath::new("does-not-exist.txt"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            denied_existing,
+            "AuthorizedVirtualFileSystem error: source path is unavailable"
+        );
         assert_eq!(denied_existing, denied_missing);
     }
 
@@ -816,8 +848,7 @@ mod tests {
             AccessContext::new("analyst", "tenant"),
             "evidence-registry",
         );
-        let key_path =
-            r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment";
+        let key_path = r"HKU\S-1-5-21-1366093794-4292800403-1155380978-513\Volatile Environment";
         let key = registry.key(key_path).unwrap();
         assert!(key.value("USERPROFILE").is_ok());
         assert_eq!(

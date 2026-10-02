@@ -15,7 +15,7 @@ use crate::traits::events::{EventLogQuery, EventLogReader};
 use crate::traits::registry::{Registry, RegistryExt};
 use crate::traits::vfs::{FileSystem, FileSystemExt, VFileType};
 
-use super::hooks::{collect_hook_actions, inject_hook_children, split_virtual_path, ProviderHook};
+use super::hooks::{ProviderHook, collect_hook_actions, inject_hook_children, split_virtual_path};
 use super::{BridgeValue, CancellationToken, ForensicProvider, NodeEntry, NodeType};
 
 // ============================================================================
@@ -580,7 +580,9 @@ impl ResourceProvider for VfsProvider {
         if let Some(attrs) = self.inner.as_attributes() {
             if let Ok(facts) = attrs.attributes(FPath::new(path)) {
                 for (key, field) in facts {
-                    values.entry(key).or_insert_with(|| CapabilityValue::from(field));
+                    values
+                        .entry(key)
+                        .or_insert_with(|| CapabilityValue::from(field));
                 }
             }
         }
@@ -1318,7 +1320,7 @@ mod registry_tests {
     use crate::traits::db::{
         ForensicColumnDef, ForensicColumnType, ForensicRows, ForensicTable, ForensicValueRef,
     };
-    use crate::utils::testing::{basic_event_log, TestingProviderHook, TestingRegistry};
+    use crate::utils::testing::{TestingProviderHook, TestingRegistry, basic_event_log};
     use std::io::Write;
     use std::sync::Arc;
 
@@ -1436,9 +1438,11 @@ mod registry_tests {
         let entries = ResourceProvider::children(&provider, ENVIRONMENT_PATH, &cancellation)
             .expect("Registry key children must be available as resources");
         assert!(!entries.is_empty());
-        assert!(entries
-            .iter()
-            .all(|entry| entry.id.provider == "case-registry"));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.id.provider == "case-registry")
+        );
 
         let content = ResourceProvider::read(
             &provider,
@@ -1476,9 +1480,11 @@ mod registry_tests {
 
         let records = ResourceProvider::children(&provider, "Security", &cancellation)
             .expect("Security records must be available as resources");
-        assert!(records
-            .iter()
-            .any(|entry| entry.id.path == "Security/1001:4624"));
+        assert!(
+            records
+                .iter()
+                .any(|entry| entry.id.path == "Security/1001:4624")
+        );
 
         let content = ResourceProvider::read(&provider, "Security/1001:4624", &cancellation)
             .expect("Event record must be available as structured resource content");
@@ -1667,7 +1673,9 @@ mod registry_tests {
         fn read_dir(
             &self,
             path: &FPath,
-        ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<crate::traits::vfs::DirEntry>> + '_>> {
+        ) -> ForensicResult<
+            Box<dyn Iterator<Item = ForensicResult<crate::traits::vfs::DirEntry>> + '_>,
+        > {
             self.0.read_dir(path)
         }
         fn source(&self) -> crate::traits::vfs::SourceKind {
@@ -1682,24 +1690,35 @@ mod registry_tests {
         fn attributes(&self, path: &FPath) -> ForensicResult<BTreeMap<Text, crate::field::Field>> {
             self.0.metadata(path)?;
             let mut map = BTreeMap::new();
-            map.insert(Text::Borrowed("ole.author"), crate::field::Field::Text(Text::Borrowed("Jane Analyst")));
+            map.insert(
+                Text::Borrowed("ole.author"),
+                crate::field::Field::Text(Text::Borrowed("Jane Analyst")),
+            );
             // "created" is one of the bare keys core itself already placed in this map (even
             // though its value is Null here -- `InMemoryVirtualFileSystem` reports no
             // timestamps). Attempted here to prove `entry().or_insert_with()`'s guard actually
             // holds -- a present-but-null key still counts as present -- not just document it.
-            map.insert(Text::Borrowed("created"), crate::field::Field::Text(Text::Borrowed("fabricated")));
+            map.insert(
+                Text::Borrowed("created"),
+                crate::field::Field::Text(Text::Borrowed("fabricated")),
+            );
             Ok(map)
         }
     }
 
     #[test]
     fn vfs_provider_surfaces_path_attributes_in_resource_metadata() {
-        let inner = crate::utils::testing::InMemoryVirtualFileSystem::new().with_file("doc.ole", b"bytes".to_vec());
+        let inner = crate::utils::testing::InMemoryVirtualFileSystem::new()
+            .with_file("doc.ole", b"bytes".to_vec());
         let provider = VfsProvider::new(Arc::new(AttrFs(inner))).with_resource_id("evidence-files");
         let cancellation = CancellationToken::new();
 
         let metadata = ResourceProvider::metadata(&provider, "doc.ole", &cancellation).unwrap();
-        assert_eq!(metadata.size, Some(5), "core's own size field is untouched by attribute facts");
+        assert_eq!(
+            metadata.size,
+            Some(5),
+            "core's own size field is untouched by attribute facts"
+        );
         assert_eq!(
             metadata.values.get(&Text::Borrowed("ole.author")),
             Some(&CapabilityValue::Text(Text::Borrowed("Jane Analyst"))),
@@ -1707,12 +1726,16 @@ mod registry_tests {
         );
         // AttrFs also tried to plant a fabricated "created" -- core's own Null (this backend
         // reports no timestamps) must win, proving the entry().or_insert_with() guard holds.
-        assert_eq!(metadata.values.get(&Text::Borrowed("created")), Some(&CapabilityValue::Null));
+        assert_eq!(
+            metadata.values.get(&Text::Borrowed("created")),
+            Some(&CapabilityValue::Null)
+        );
     }
 
     #[test]
     fn vfs_provider_surfaces_path_attributes_in_bridge_metadata() {
-        let inner = crate::utils::testing::InMemoryVirtualFileSystem::new().with_file("doc.ole", b"bytes".to_vec());
+        let inner = crate::utils::testing::InMemoryVirtualFileSystem::new()
+            .with_file("doc.ole", b"bytes".to_vec());
         let provider = VfsProvider::new(Arc::new(AttrFs(inner)));
         let cancellation = CancellationToken::new();
 
@@ -1728,7 +1751,9 @@ mod registry_tests {
         // Same shadow-guard proof as the ResourceProvider test above.
         match map.get(&Text::Borrowed("created")) {
             Some(BridgeValue::Null) => {}
-            other => panic!("expected core's own Null to win over the fabricated value, got {other:?}"),
+            other => {
+                panic!("expected core's own Null to win over the fabricated value, got {other:?}")
+            }
         }
     }
 
@@ -1772,14 +1797,9 @@ mod registry_tests {
         let cancel = CancellationToken::new();
 
         // A non-matching file lists as a normal Leaf with no virtual children.
-        let (entries, total) = ForensicProvider::children(
-            &provider,
-            &directory.to_string_lossy(),
-            0,
-            100,
-            &cancel,
-        )
-        .unwrap();
+        let (entries, total) =
+            ForensicProvider::children(&provider, &directory.to_string_lossy(), 0, 100, &cancel)
+                .unwrap();
         assert_eq!(total, 2);
         let plain_entry = entries
             .iter()

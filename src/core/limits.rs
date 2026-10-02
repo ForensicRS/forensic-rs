@@ -60,7 +60,7 @@ impl Default for Limits {
             max_entries_per_container: 100_000,
             max_expansion_ratio: 200,
             materialize_in_memory_limit: 32 << 20, // 32 MiB
-            max_resident_bytes: 256 << 20,          // 256 MiB
+            max_resident_bytes: 256 << 20,         // 256 MiB
         }
     }
 }
@@ -92,10 +92,9 @@ impl std::fmt::Display for LimitExceeded {
             LimitExceeded::EntriesPerContainer { at, max } => {
                 write!(f, "container entry count {at} exceeds limit {max}")
             }
-            LimitExceeded::ExpansionRatio { observed, max } => write!(
-                f,
-                "expansion ratio {observed}:1 exceeds limit {max}:1"
-            ),
+            LimitExceeded::ExpansionRatio { observed, max } => {
+                write!(f, "expansion ratio {observed}:1 exceeds limit {max}:1")
+            }
         }
     }
 }

@@ -77,18 +77,31 @@ impl FormatFactory for ToyZipFactory {
     fn yields(&self) -> MountKind {
         MountKind::FileSystem
     }
-    fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        file: &mut dyn VirtualFile,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         let start = file.stream_position()?;
         let mut magic = vec![0u8; TOY_ZIP_MAGIC.len()];
         let matched = file.read_exact(&mut magic).is_ok() && magic == TOY_ZIP_MAGIC;
         file.seek(SeekFrom::Start(start))?;
-        Ok(if matched { ProbeScore::Strong } else { ProbeScore::No })
+        Ok(if matched {
+            ProbeScore::Strong
+        } else {
+            ProbeScore::No
+        })
     }
-    fn mount(&self, mut file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    fn mount(
+        &self,
+        mut file: Box<dyn VirtualFile>,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<Mounted> {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        let fs = parse_toy_zip(&bytes)
-            .ok_or_else(|| ForensicError::other("ToyZipFactory", "malformed toy zip".to_string()))?;
+        let fs = parse_toy_zip(&bytes).ok_or_else(|| {
+            ForensicError::other("ToyZipFactory", "malformed toy zip".to_string())
+        })?;
         Ok(Mounted::FileSystem(Arc::new(fs)))
     }
 }
@@ -122,7 +135,10 @@ impl StructuredObject for ToyPe {
     }
     fn attributes(&self) -> BTreeMap<Text, Field> {
         let mut map = BTreeMap::new();
-        map.insert(Text::Borrowed("compile_timestamp"), Field::U64(1_700_000_000));
+        map.insert(
+            Text::Borrowed("compile_timestamp"),
+            Field::U64(1_700_000_000),
+        );
         map
     }
 }
@@ -135,14 +151,26 @@ impl FormatFactory for ToyPeFactory {
     fn yields(&self) -> MountKind {
         MountKind::Object
     }
-    fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        file: &mut dyn VirtualFile,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         let start = file.stream_position()?;
         let mut magic = vec![0u8; TOY_PE_MAGIC.len()];
         let matched = file.read_exact(&mut magic).is_ok() && magic == TOY_PE_MAGIC;
         file.seek(SeekFrom::Start(start))?;
-        Ok(if matched { ProbeScore::Strong } else { ProbeScore::No })
+        Ok(if matched {
+            ProbeScore::Strong
+        } else {
+            ProbeScore::No
+        })
     }
-    fn mount(&self, mut file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    fn mount(
+        &self,
+        mut file: Box<dyn VirtualFile>,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<Mounted> {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         let resource = bytes[TOY_PE_MAGIC.len()..].to_vec();
@@ -159,10 +187,7 @@ fn resolver() -> MountResolver {
 
 fn evidence_root() -> Arc<dyn FileSystem> {
     let inner_zip = build_toy_zip(&[("evil.exe", "MZsecret-app-code")]);
-    let outer_zip = build_toy_zip(&[(
-        "inner.tzip",
-        std::str::from_utf8(&inner_zip).unwrap(),
-    )]);
+    let outer_zip = build_toy_zip(&[("inner.tzip", std::str::from_utf8(&inner_zip).unwrap())]);
     let mut root = InMemoryVirtualFileSystem::new();
     root.add_file("outer.tzip", outer_zip);
     Arc::new(root)
@@ -175,7 +200,8 @@ fn resolves_containment_containment_embedding_as_one_locator_chain() {
     let cancel = CancellationToken::new();
 
     // Hop 1: containment. outer.tzip -> a FileSystem holding inner.tzip.
-    let mut locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("outer.tzip")));
+    let mut locator =
+        EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("outer.tzip")));
     let file = root.open(FPath::new("outer.tzip")).unwrap();
     let outer_mounted = resolver
         .resolve(&root, &locator, file, Some(MountKind::FileSystem), &cancel)
@@ -186,7 +212,13 @@ fn resolves_containment_containment_embedding_as_one_locator_chain() {
     locator = locator.push(LocatorSegment::Path(FPathBuf::from("inner.tzip")));
     let file = outer_fs.open(FPath::new("inner.tzip")).unwrap();
     let inner_mounted = resolver
-        .resolve(&outer_fs, &locator, file, Some(MountKind::FileSystem), &cancel)
+        .resolve(
+            &outer_fs,
+            &locator,
+            file,
+            Some(MountKind::FileSystem),
+            &cancel,
+        )
         .expect("inner.tzip should mount as a FileSystem");
     let inner_fs = inner_mounted.as_file_system().unwrap().clone();
 
@@ -238,12 +270,27 @@ fn identical_content_at_two_locations_is_caught_not_silently_duplicated() {
 
     let loc_a = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("a.exe")));
     resolver
-        .resolve(&root, &loc_a, bytes_file(b"MZsame-bytes"), Some(MountKind::Object), &cancel)
+        .resolve(
+            &root,
+            &loc_a,
+            bytes_file(b"MZsame-bytes"),
+            Some(MountKind::Object),
+            &cancel,
+        )
         .expect("first sighting of these bytes should mount cleanly");
 
     let loc_b = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("b.exe")));
-    let result = resolver.resolve(&root, &loc_b, bytes_file(b"MZsame-bytes"), Some(MountKind::Object), &cancel);
-    assert!(result.is_err(), "duplicate content at a distinct locator must be reported");
+    let result = resolver.resolve(
+        &root,
+        &loc_b,
+        bytes_file(b"MZsame-bytes"),
+        Some(MountKind::Object),
+        &cancel,
+    );
+    assert!(
+        result.is_err(),
+        "duplicate content at a distinct locator must be reported"
+    );
 }
 
 #[test]
@@ -260,7 +307,8 @@ fn nesting_at_the_limit_succeeds_one_hop_deeper_is_refused() {
     let cancel = CancellationToken::new();
 
     // Depth 1: within the limit.
-    let mut locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("outer.tzip")));
+    let mut locator =
+        EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("outer.tzip")));
     let file = root.open(FPath::new("outer.tzip")).unwrap();
     let outer_mounted = resolver
         .resolve(&root, &locator, file, Some(MountKind::FileSystem), &cancel)
@@ -271,7 +319,13 @@ fn nesting_at_the_limit_succeeds_one_hop_deeper_is_refused() {
     locator = locator.push(LocatorSegment::Path(FPathBuf::from("inner.tzip")));
     let file = outer_fs.open(FPath::new("inner.tzip")).unwrap();
     let inner_mounted = resolver
-        .resolve(&outer_fs, &locator, file, Some(MountKind::FileSystem), &cancel)
+        .resolve(
+            &outer_fs,
+            &locator,
+            file,
+            Some(MountKind::FileSystem),
+            &cancel,
+        )
         .expect("depth == max_nesting_depth must still succeed");
     let inner_fs = inner_mounted.as_file_system().unwrap().clone();
 
@@ -279,7 +333,10 @@ fn nesting_at_the_limit_succeeds_one_hop_deeper_is_refused() {
     locator = locator.push(LocatorSegment::Path(FPathBuf::from("evil.exe")));
     let file = inner_fs.open(FPath::new("evil.exe")).unwrap();
     let result = resolver.resolve(&inner_fs, &locator, file, Some(MountKind::Object), &cancel);
-    assert!(result.is_err(), "depth exceeding max_nesting_depth must be refused");
+    assert!(
+        result.is_err(),
+        "depth exceeding max_nesting_depth must be refused"
+    );
 }
 
 #[test]
@@ -295,7 +352,8 @@ fn transparent_path_reaches_the_same_bytes_as_the_hand_unrolled_chain() {
     let cancel = CancellationToken::new();
 
     // The manual chain, exactly as the first test drives it.
-    let mut locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("outer.tzip")));
+    let mut locator =
+        EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("outer.tzip")));
     let file = root.open(FPath::new("outer.tzip")).unwrap();
     let outer_fs = resolver
         .resolve(&root, &locator, file, Some(MountKind::FileSystem), &cancel)
@@ -306,7 +364,13 @@ fn transparent_path_reaches_the_same_bytes_as_the_hand_unrolled_chain() {
     locator = locator.push(LocatorSegment::Path(FPathBuf::from("inner.tzip")));
     let file = outer_fs.open(FPath::new("inner.tzip")).unwrap();
     let inner_fs = resolver
-        .resolve(&outer_fs, &locator, file, Some(MountKind::FileSystem), &cancel)
+        .resolve(
+            &outer_fs,
+            &locator,
+            file,
+            Some(MountKind::FileSystem),
+            &cancel,
+        )
         .unwrap()
         .as_file_system()
         .unwrap()
@@ -318,7 +382,9 @@ fn transparent_path_reaches_the_same_bytes_as_the_hand_unrolled_chain() {
         extensions: None, // this fixture's containers don't use a real extension
         ..DescentPolicy::default()
     });
-    let via_transparent_path = container_fs.read_all(FPath::new("outer.tzip/inner.tzip/evil.exe")).unwrap();
+    let via_transparent_path = container_fs
+        .read_all(FPath::new("outer.tzip/inner.tzip/evil.exe"))
+        .unwrap();
 
     assert_eq!(via_manual_chain, via_transparent_path);
     assert_eq!(via_transparent_path, b"MZsecret-app-code");
@@ -344,7 +410,10 @@ fn max_nesting_depth_is_refused_identically_through_container_fs() {
     );
 
     let innermost_zip = build_toy_zip(&[("secret.txt", "buried-treasure")]);
-    let inner_zip = build_toy_zip(&[("innermost.tzip", std::str::from_utf8(&innermost_zip).unwrap())]);
+    let inner_zip = build_toy_zip(&[(
+        "innermost.tzip",
+        std::str::from_utf8(&innermost_zip).unwrap(),
+    )]);
     let outer_zip = build_toy_zip(&[("inner.tzip", std::str::from_utf8(&inner_zip).unwrap())]);
     let mut root_fs = InMemoryVirtualFileSystem::new();
     root_fs.add_file("outer.tzip", outer_zip);
@@ -360,7 +429,9 @@ fn max_nesting_depth_is_refused_identically_through_container_fs() {
 
     // Depth 3 (outer.tzip -> inner.tzip -> innermost.tzip): one FileSystem-yielding mount past
     // the limit, refused by the resolver exactly as the manual chain is above.
-    let result = container_fs.read_all(FPath::new("outer.tzip/inner.tzip/innermost.tzip/secret.txt"));
+    let result = container_fs.read_all(FPath::new(
+        "outer.tzip/inner.tzip/innermost.tzip/secret.txt",
+    ));
     assert!(
         result.is_err(),
         "max_nesting_depth must refuse the third FileSystem-yielding mount through ContainerFs too"

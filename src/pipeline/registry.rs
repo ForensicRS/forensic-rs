@@ -186,8 +186,15 @@ mod tests {
     fn register_all_stops_at_the_first_duplicate_id() {
         let mut registry = ParserRegistry::new();
         registry.register(stub("a", vec![])).unwrap();
-        let err = registry.register_all(vec![stub("b", vec![]), stub("a", vec![]), stub("c", vec![])]);
-        assert!(err.is_err(), "a duplicate id partway through the batch must surface as an error");
+        let err = registry.register_all(vec![
+            stub("b", vec![]),
+            stub("a", vec![]),
+            stub("c", vec![]),
+        ]);
+        assert!(
+            err.is_err(),
+            "a duplicate id partway through the batch must surface as an error"
+        );
         // The batch stops at the conflict: "b" (registered before the conflict) is kept,
         // "c" (registered after) never is -- a caller sees a partial registry plus the error,
         // never a silently reordered or fully-rolled-back one.
