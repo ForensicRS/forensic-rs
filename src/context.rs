@@ -24,8 +24,6 @@ pub fn initialize_context(context: ForensicContext) {
         *brw = context;
         Ok::<(), ()>(())
     });
-    // Wait for local_key_cell_methods
-    //COMPONENT_LOGGER.replace(msngr);
 }
 
 /// Gets the context of the analysis

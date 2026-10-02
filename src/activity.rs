@@ -1,15 +1,22 @@
 use std::collections::BTreeMap;
 
+use crate::artifact::Artifact;
 use crate::field::Text;
 use crate::utils::time::ForensicTimestamp;
 
 /// Activity of a user in a device
 #[derive(Clone, Debug, Default)]
 pub struct ForensicActivity {
+    /// When the activity took place
     pub timestamp: ForensicTimestamp,
+    /// Which user did it
     pub user: String,
+    /// In which session
     pub session_id: SessionId,
+    /// Activity being done
     pub activity: ActivityType,
+    /// In which artifact the activity was detected
+    pub origin: Artifact,
     /// Extensible key-value metadata for additional context.
     pub extras: BTreeMap<Text, Text>,
 }

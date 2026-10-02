@@ -230,6 +230,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ProgramExecution` enriched with `arguments`, `working_directory`, `run_count` fields.
 - `FileSystemActivity::Rename`, `FileSystemActivity::Read`, `FileSystemActivity::Write` variants.
 - `ForensicActivity::extras`: Extensible `BTreeMap<Text, Text>` for additional context.
+- **Breaking**: `ForensicActivity::origin`: the `Artifact` the activity was detected in (from the 0.13 `artifacts` branch). Struct literals must set it.
 - `ForensicData::anomalies()`/`confidence(&ProvenanceStore)`: a record now carries the `Anomalies` folded in by `set_parsed`, instead of the caller having to thread them through separately.
 - `Anomalies::merge()`: folds another instance's flags/details into this one.
 - `CapabilityValue` conversions for `Confidence`, `Anomalies`, and `Finding` (`src/capabilities/value.rs`): pipeline findings and evidentiary confidence/anomaly data can now flow into MCP tool/resource output without every server author hand-rolling the mapping.
