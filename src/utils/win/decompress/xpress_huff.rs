@@ -8,7 +8,15 @@ pub fn decompress(in_buf: &[u8], out_buf: &mut Vec<u8>) -> ForensicResult<()> {
     let output_size = out_buf.capacity();
     loop {
         let chunk_size = (output_size - out_index).min(65536);
-        (in_index, out_index) = decompress_chunk(in_index, in_buf, out_index, out_buf, chunk_size)?;
+        let (new_in_index, new_out_index) =
+            decompress_chunk(in_index, in_buf, out_index, out_buf, chunk_size)?;
+        if new_in_index <= in_index && new_out_index <= out_index {
+            return Err(ForensicError::compression_error(
+                "xpress_huff",
+                "no progress when decompressing a chunk",
+            ));
+        }
+        (in_index, out_index) = (new_in_index, new_out_index);
         if in_index >= in_buf.len() || out_index >= output_size {
             break;
         }
@@ -27,7 +35,10 @@ fn decompress_chunk(
     chunk_size: usize,
 ) -> ForensicResult<(usize, usize)> {
     if in_index + 256 > in_buf.len() {
-        return Ok((0, 0));
+        return Err(ForensicError::compression_error(
+            "xpress_huff",
+            "not enough compressed data for Huffman table",
+        ));
     }
     let root = prefix_code_tree_rebuild(&in_buf[in_index..])?;
     let mut bstr = BitStream::new(in_buf, in_index + 256);
@@ -58,9 +69,15 @@ fn decompress_chunk(
             offset = -offset;
 
             if length == 15 {
+                if bstr.index >= bstr.source.len() {
+                    return Ok((bstr.index, i));
+                }
                 length = (bstr.source[bstr.index] as u32) + 15;
                 bstr.index += 1;
                 if length == 270 {
+                    if bstr.index + 2 > bstr.source.len() {
+                        return Ok((bstr.index, i));
+                    }
                     length = u16::from_le_bytes(
                         bstr.source[bstr.index..bstr.index + 2].try_into().unwrap(),
                     ) as u32;
@@ -327,6 +344,10 @@ fn basic_huffman_decoding() {
     let mut decoded_value = Vec::with_capacity(uncompressed.len());
     decompress(&encoded, &mut decoded_value).unwrap();
     assert_eq!(uncompressed, &decoded_value[..]);
+
+    // Truncated Huffman table must error instead of looping forever
+    let mut truncated_value = Vec::with_capacity(uncompressed.len());
+    assert!(decompress(&encoded[..200], &mut truncated_value).is_err());
 }
 
 #[test]
