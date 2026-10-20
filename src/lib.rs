@@ -18,6 +18,7 @@ pub mod field;
 pub mod host_profile;
 pub mod investigation;
 pub mod logging;
+pub mod memory;
 pub mod parsing;
 pub mod pipeline;
 pub mod provenance;
@@ -143,6 +144,13 @@ pub mod prelude {
     };
     pub use crate::host_profile::HostProfile;
     pub use crate::investigation::{Investigation, InvestigationId, TenantId};
+    pub use crate::memory::{
+        AddressSpace, AddressSpaceExt, Backing, InvalidReason, MemHandle, MemIter, MemLocation,
+        MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind, MemRecordMeta, MemRegion,
+        MemThread, MemValue, MemoryImage, MemoryImageExt, MemoryInputInfo, MemorySpec, Pa,
+        PageSize, PhysRange, PhysicalMemory, ReadReport, RecordSource, RegionKind, SpaceId,
+        Translation, Va, Validity,
+    };
     pub use crate::provenance::{
         Acquisition, Anomalies, AnomalyDetail, AnomalyFlags, Confidence, DerivedFrom, Locus,
         MergeReason, Parsed, Provenance, ProvenanceId, ProvenanceSnapshot, ProvenanceStore,

@@ -109,7 +109,7 @@ src/
     time/
       timestamp128.rs — ForensicTimestamp (alias Timestamp128): 16-byte nanosecond-precision timestamp with TimestampPrecision, TimestampSource, TimestampFlags (see ForensicTimestamp section below)
     unpack.rs         — Binary unpacking helpers (u16/u32/u64_at_pos, safe variants)
-    testing/          — Test doubles implementing the crate's traits: TestingRegistry (Registry), InMemoryVirtualFileSystem (FileSystem), TestingEventLogReader, InMemoryForensicDb, TestParserFactoryBuilder (ArtifactParserFactory), TestingFormatFactory (FormatFactory), TestingProviderHook, basic_event_log(), testing_logger_dummy()
+    testing/          — Test doubles implementing the crate's traits: TestingRegistry (Registry), InMemoryVirtualFileSystem (FileSystem), TestingEventLogReader, InMemoryForensicDb, TestParserFactoryBuilder (ArtifactParserFactory), TestingFormatFactory (FormatFactory, incl. `memory()`), TestingProviderHook, InMemoryPhysicalMemory (PhysicalMemory), TestingAddressSpace (AddressSpace), TestingMemoryImage (MemoryImage), basic_event_log(), testing_logger_dummy()
     win/
       sid.rs          — to_string_sid(), SID constants (LOCAL_SYSTEM, BUILTIN_ADMINS, etc.)
       csidl.rs        — FOLDERID_* constants for 60+ Windows shell folders
@@ -128,6 +128,13 @@ src/
   host_profile.rs     — HostProfile: a host's identity facts (computer name, system root, OS version, users, install locations), every field Option<Tracked<T>> so an unresolved fact never defaults
   entity.rs           — EntityId, EntityKind: content-derived, stable-across-runs identity for correlation subjects (Host, User, Executable, File, Process, ...)
   fact_store.rs       — FactStore, InMemoryFactStore, ObservationOutcome, FactRecord: cross-artifact corroboration — append-only observations, agreement merges provenance, disagreement is retained not overwritten
+  memory/             — The memory-forensics contract that memory backends implement and analyzers/parsers consume (see "Memory" below)
+    addr.rs           — Va, Pa (checked arithmetic only, serde as "0x…"), PageSize
+    validity.rs       — Validity, Backing, ReadReport (which bytes of a read are real, run by run)
+    physical.rs       — PhysicalMemory, PhysRange, MemoryInputInfo
+    space.rs          — AddressSpace, AddressSpaceExt, Translation, SpaceId, InvalidReason
+    model.rs          — MemValue, MemLocation, MemRecordMeta, RecordSource, MemRecordKey, MemRecordKind, MemOsInfo, MemProcess, MemThread, MemModule, MemRegion, RegionKind, MemHandle
+    image.rs          — MemoryImage, MemoryImageExt, MemorySpec, MemIter
   logging/            — Logger, Level, channel-based log macros (error!, warn!, info!, debug!, trace!) — engineer-facing diagnostics only, not forensic alerts (see Findings vs. logs vs. errors below)
   channel.rs          — Underlying channel for logging
   dictionary.rs       — Elastic Common Schema (ECS) field name constants (~80+)
@@ -185,6 +192,7 @@ Key prelude exports:
 - `Recovered<T>`, `slack_regions()`, `looks_like_padding()` — recovery scaffolding (`src/recovery/`); read that module's checklist before writing any deleted/slack/carved-record parser
 - `ForensicTool`, `CapabilityRegistry`, `ResourceProvider`, `AccessPolicy`, `ValueSchema`, `CapabilityValue`, `AuthorizedVirtualFileSystem`, `AuthorizedRegistryReader` — MCP capability layer (`src/capabilities/`): authorization, and exposing sources as discoverable tools/resources
 - `FromBytes`, `ByteReader`, `read_to_reader()` — zero-copy byte-cursor parsing helpers for binary artifact formats (`src/parsing/`)
+- `PhysicalMemory`, `AddressSpace`, `AddressSpaceExt`, `MemoryImage`, `MemoryImageExt`, `MemorySpec`, `MemValue`, `MemProcess`/`MemThread`/`MemModule`/`MemRegion`/`MemHandle`/`MemOsInfo`, `Va`, `Pa`, `Validity`, `ReadReport` — the memory-forensics contract (`src/memory/`; see "Memory" below)
 
 **Findings vs. logs vs. errors**: if an analyst would want it in the case report, it's a `Finding` (or an `Anomaly` on the value it describes, folded in via `ForensicData::set_parsed`). If only an engineer debugging the tool wants it, it's a log. If the tool can't proceed, it's a `ForensicError`. There is no fourth option — do not add a new notification/alert side-channel; extend `Finding`/`Anomalies` instead.
 
@@ -456,6 +464,42 @@ mod tests {
 Integration tests (those requiring multiple modules) belong in `tests/`.
 
 ---
+
+## Memory
+
+`src/memory/` is the contract between memory backends and everything that consumes memory
+evidence. forensic-rs owns the contract and ships no backend: a backend (a dump-file engine, a
+live connector) implements it, and analyzers, parser factories and tools are written against it
+so they work on any backend.
+
+- **Layers.** `PhysicalMemory` (the capture) → `AddressSpace` (kernel and per-process views,
+  `Translation` per page) → `MemoryImage` (typed records: `MemOsInfo`, `MemProcess`, `MemThread`,
+  `MemModule`, `MemRegion`, `MemHandle`). Consumers take `&dyn MemoryImage`.
+- **Reads report validity.** Every read returns a `ReadReport`; bytes without data are
+  zero-filled and reported, never silently zeros. `AddressSpaceExt` reads give a `MemValue` that
+  is `Known` only when every byte is real data.
+- **Never fabricate.** A field that could not be read is `MemValue::Unavailable(validity)`; a
+  field the backend does not extract is `MemValue::Unsupported`; an optional fact that is absent
+  is `Known(None)`. On export to `ForensicData` an unavailable field is omitted and listed in
+  `memory.unavailable` with its validity. Likewise, a record kind a backend does not provide is
+  left out of `MemoryImage::kinds()` and its method returns an error, never an empty iterator.
+- **Provenance.** Records carry a `MemRecordMeta`: a `ProvenanceId` minted with
+  `Acquisition::Memory` and the `Recovery` matching how the record was found (`Allocated` for an
+  OS list walk, `Carved` for a scan), `Anomalies` for broken invariants (back-links, loops,
+  `SOURCE_DIVERGENCE` between list and scan, `INFERRED_LAYOUT` for non-symbol layouts), and the
+  `RecordSource`s. Parsers re-mint against the pipeline's store from `ParseContext` as usual.
+- **Determinism.** `MemoryImage` iterators yield records sorted by `MemRecordKey`.
+- **Plumbing.** A backend's `FormatFactory` yields `Mounted::Memory` (`MountKind::Memory`);
+  parsers declare `Requirement::Memory(MemorySpec)` and get it from `ParseContext::resolve` when
+  the run has `TriageSourcesBuilder::memory`. Exported records use
+  `CommonArtifact::Memory(MemoryArtifact::…)`, `Locus::Memory`/`Locus::Physical`,
+  `LocatorSegment::AddressSpace`, the `process.*`/`dll.*`/`memory.*` dictionary fields, and
+  `EntityId::{process, thread, module, driver, handle}` for correlation.
+- **Hostile input.** Memory images are attacker-controlled. Backends bounds-check, bound counts
+  and iterations, detect cycles, and never panic; `Va`/`Pa` have no wrapping arithmetic.
+- **Testing.** `InMemoryPhysicalMemory`, `TestingAddressSpace` and `TestingMemoryImage`
+  (`prelude::testing`) build images by hand; `tests/memory_contract.rs` shows a
+  backend-independent analyzer and parser factory end to end.
 
 ## Recovery, File Sets, and Provenance-Preserving Export
 

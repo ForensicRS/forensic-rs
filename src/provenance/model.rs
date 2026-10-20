@@ -139,6 +139,16 @@ pub enum Locus {
     RawOffset {
         offset: u64,
     },
+    /// A virtual address in a memory image's address space (`crate::memory::SpaceId`'s value):
+    /// the structure a memory record was read from.
+    Memory {
+        space: u32,
+        va: u64,
+    },
+    /// A physical address in a memory capture.
+    Physical {
+        pa: u64,
+    },
     /// No byte locus exists — the value came from an API call, not a
     /// structure at a specific offset.
     Api,

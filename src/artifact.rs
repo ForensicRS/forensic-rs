@@ -192,6 +192,33 @@ pub enum CommonArtifact {
     /// The list of files and container entries found in the evidence, whatever their format
     /// (`ContainerInventoryParser`)
     ContainerInventory,
+    /// Memory evidence: a capture, or records recovered from one (`crate::memory`)
+    Memory(MemoryArtifact),
+    Other(String),
+    #[default]
+    Unknown,
+}
+
+/// Memory evidence and the record kinds recovered from it (`crate::memory`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum MemoryArtifact {
+    /// A raw or padded physical memory capture (also LiME, ELF core)
+    PhysicalImage,
+    /// A crash dump
+    CrashDump,
+    /// A hibernation file
+    Hibernation,
+    /// A paging or swap file
+    PageFile,
+    /// Facts about the captured operating system
+    OsInfo,
+    Process,
+    Thread,
+    Module,
+    /// A virtual memory region (a VAD on Windows)
+    Region,
+    Handle,
     Other(String),
     #[default]
     Unknown,
@@ -374,11 +401,31 @@ impl std::fmt::Display for CommonArtifact {
         match self {
             CommonArtifact::WebBrowsing(v) => write!(f, "WebBrowsing::{}", v),
             CommonArtifact::ContainerInventory => write!(f, "ContainerInventory"),
+            CommonArtifact::Memory(v) => write!(f, "Memory::{}", v),
             CommonArtifact::Other(v) => write!(f, "{}", v),
             CommonArtifact::Unknown => write!(f, "Unknown"),
         }
     }
 }
+impl std::fmt::Display for MemoryArtifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryArtifact::PhysicalImage => write!(f, "PhysicalImage"),
+            MemoryArtifact::CrashDump => write!(f, "CrashDump"),
+            MemoryArtifact::Hibernation => write!(f, "Hibernation"),
+            MemoryArtifact::PageFile => write!(f, "PageFile"),
+            MemoryArtifact::OsInfo => write!(f, "OsInfo"),
+            MemoryArtifact::Process => write!(f, "Process"),
+            MemoryArtifact::Thread => write!(f, "Thread"),
+            MemoryArtifact::Module => write!(f, "Module"),
+            MemoryArtifact::Region => write!(f, "Region"),
+            MemoryArtifact::Handle => write!(f, "Handle"),
+            MemoryArtifact::Other(v) => write!(f, "{}", v),
+            MemoryArtifact::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
 impl std::fmt::Display for WebBrowsingArtifact {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -852,7 +899,24 @@ pub fn common_artifact_from_str(txt: &str) -> CommonArtifact {
     match artifact {
         "Unknown" => CommonArtifact::Unknown,
         "WebBrowsing" => CommonArtifact::WebBrowsing(webbrowsing_artifact_from_str(subartifact)),
+        "Memory" => CommonArtifact::Memory(memory_artifact_from_str(subartifact)),
         _ => CommonArtifact::Other(txt.to_string()),
+    }
+}
+pub fn memory_artifact_from_str(txt: &str) -> MemoryArtifact {
+    match txt {
+        "PhysicalImage" => MemoryArtifact::PhysicalImage,
+        "CrashDump" => MemoryArtifact::CrashDump,
+        "Hibernation" => MemoryArtifact::Hibernation,
+        "PageFile" => MemoryArtifact::PageFile,
+        "OsInfo" => MemoryArtifact::OsInfo,
+        "Process" => MemoryArtifact::Process,
+        "Thread" => MemoryArtifact::Thread,
+        "Module" => MemoryArtifact::Module,
+        "Region" => MemoryArtifact::Region,
+        "Handle" => MemoryArtifact::Handle,
+        "Unknown" => MemoryArtifact::Unknown,
+        _ => MemoryArtifact::Other(txt.to_string()),
     }
 }
 pub fn webbrowsing_artifact_from_str(txt: &str) -> WebBrowsingArtifact {
@@ -1025,6 +1089,15 @@ mod tests {
             WebBrowsingArtifact::Cookie,
         )));
         roundtrip(Artifact::Common(CommonArtifact::ContainerInventory));
+        roundtrip(Artifact::Common(CommonArtifact::Memory(
+            MemoryArtifact::Process,
+        )));
+        roundtrip(Artifact::Common(CommonArtifact::Memory(
+            MemoryArtifact::CrashDump,
+        )));
+        roundtrip(Artifact::Common(CommonArtifact::Memory(
+            MemoryArtifact::Other("Socket".to_string()),
+        )));
         roundtrip(Artifact::Common(CommonArtifact::Unknown));
         roundtrip(Artifact::Common(CommonArtifact::Other(
             "CloudSync".to_string(),

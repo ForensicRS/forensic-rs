@@ -92,6 +92,10 @@ impl AnomalyFlags {
     pub const TRUNCATED: Self = Self(1 << 5);
     /// Mirrored/duplicated copies of the source disagree with each other.
     pub const SOURCE_DIVERGENCE: Self = Self(1 << 6);
+    /// The value was read through a structure layout that was inferred (heuristics, a
+    /// near-match), not taken from authoritative type information (symbols). Caps confidence at
+    /// `Low`, like every other flag.
+    pub const INFERRED_LAYOUT: Self = Self(1 << 7);
 
     pub const fn bits(self) -> u32 {
         self.0
@@ -114,7 +118,7 @@ impl AnomalyFlags {
     /// without the caller pattern-matching every constant. Names are part of
     /// the wire contract -- they may be added to, never renamed.
     pub fn names(self) -> impl Iterator<Item = &'static str> {
-        const NAMED: [(AnomalyFlags, &str); 7] = [
+        const NAMED: [(AnomalyFlags, &str); 8] = [
             (AnomalyFlags::CHECKSUM_MISMATCH, "checksum_mismatch"),
             (AnomalyFlags::STALE_REFERENCE, "stale_reference"),
             (AnomalyFlags::REFERENCE_CYCLE, "reference_cycle"),
@@ -122,6 +126,7 @@ impl AnomalyFlags {
             (AnomalyFlags::TIMESTAMP_DIVERGENCE, "timestamp_divergence"),
             (AnomalyFlags::TRUNCATED, "truncated"),
             (AnomalyFlags::SOURCE_DIVERGENCE, "source_divergence"),
+            (AnomalyFlags::INFERRED_LAYOUT, "inferred_layout"),
         ];
         NAMED
             .into_iter()

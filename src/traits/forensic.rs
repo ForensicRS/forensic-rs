@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::Artifact;
 use crate::field::Text;
+use crate::memory::MemorySpec;
 use crate::pipeline::context::ParseContext;
 use crate::secrets::SecretKind;
 use crate::traits::db::ForensicDb;
@@ -435,6 +436,10 @@ pub enum Requirement {
     /// Every location of a named artifact definition, from the run's
     /// artifact catalog.
     Artifact(ArtifactRef),
+    /// A memory image providing the record kinds (and OS family) in the
+    /// spec. Resolves to [`Mounted::Memory`] from the run's memory source
+    /// ([`crate::pipeline::sources::TriageSourcesBuilder::memory`]).
+    Memory(MemorySpec),
 }
 
 impl Requirement {

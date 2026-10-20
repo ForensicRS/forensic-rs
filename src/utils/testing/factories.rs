@@ -43,6 +43,15 @@ impl TestingFormatFactory {
             mounted: Mounted::Database(Arc::new(db)),
         }
     }
+
+    /// A factory that mounts every probed file as `image`
+    /// ([`Mounted::Memory`]), e.g. a [`super::TestingMemoryImage`].
+    pub fn memory(name: &'static str, image: Arc<dyn crate::memory::MemoryImage>) -> Self {
+        Self {
+            name,
+            mounted: Mounted::Memory(image),
+        }
+    }
 }
 
 impl FormatFactory for TestingFormatFactory {
@@ -121,6 +130,30 @@ mod tests {
             .unwrap();
         let registry = mounted.as_registry().unwrap();
         assert!(registry.key("HKLM").is_ok());
+    }
+
+    #[test]
+    fn memory_factory_mounts_a_memory_image() {
+        use crate::memory::{MemProcess, MemRecordKey, MemRecordMeta, Va};
+        let image = super::super::TestingMemoryImage::empty().with_process(MemProcess::new(
+            MemRecordKey::Object(Va::new(0x1000)),
+            MemRecordMeta::new(super::super::test_provenance_id()),
+        ));
+        let factory = TestingFormatFactory::memory("test-memory", StdArc::new(image));
+        assert_eq!(factory.yields(), MountKind::Memory);
+        let fs: StdArc<dyn crate::traits::vfs::FileSystem> =
+            StdArc::new(super::super::InMemoryVirtualFileSystem::new());
+        let locator = EvidenceLocator::root();
+        let limits = crate::core::limits::Limits::default();
+        let spill = MemorySpillStore::new(1024);
+        let cancel = crate::bridge::CancellationToken::new();
+        let mount_ctx = ctx(&fs, &locator, &limits, &spill, &cancel);
+        let mounted = factory
+            .mount(Box::new(EmptyFile(Cursor::new(Vec::new()))), &mount_ctx)
+            .unwrap();
+        assert_eq!(mounted.kind(), MountKind::Memory);
+        let image = mounted.as_memory().unwrap();
+        assert_eq!(image.processes().unwrap().count(), 1);
     }
 
     #[test]

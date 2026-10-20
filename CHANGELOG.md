@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The memory-forensics contract (`src/memory/`, in the prelude), so any memory backend can
+  plug in and analyzers, parsers and tools written against it work on every backend:
+  - `Va`, `Pa` (checked arithmetic only, serialized as `"0x…"`), `PageSize`;
+  - `Validity`, `Backing`, `ReadReport`: which bytes of a read are real, run by run;
+  - `PhysicalMemory`, `PhysRange`, `MemoryInputInfo`: the captured physical memory;
+  - `AddressSpace`, `Translation`, `SpaceId`, `InvalidReason`, and `AddressSpaceExt` (typed and
+    bounded string reads returning `MemValue`);
+  - `MemValue` (`Known` / `Unavailable(Validity)` / `Unsupported`), `MemLocation`,
+    `MemRecordMeta`, `RecordSource`, `MemRecordKey`, `MemRecordKind`, and the typed records
+    `MemOsInfo`, `MemProcess`, `MemThread`, `MemModule`, `MemRegion` (+ `RegionKind`),
+    `MemHandle`;
+  - `MemoryImage` (with `as_registry`/`as_files` probes), `MemoryImageExt`, `MemorySpec`.
+- Memory integration points: `MountKind::Memory` / `Mounted::Memory` (+ `Mounted::as_memory`),
+  `Requirement::Memory(MemorySpec)` resolved by `ParseContext::resolve`,
+  `TriageSourcesBuilder::memory` / `TriageSources::memory` (the run's acquisition is then
+  `Acquisition::Memory`, or `LiveApi` for a live source), `CommonArtifact::Memory(MemoryArtifact)`,
+  `Locus::Memory` / `Locus::Physical`, `LocatorSegment::AddressSpace`,
+  `AnomalyFlags::INFERRED_LAYOUT` (`inferred_layout`), `EntityKind::{Thread, Module, Driver,
+  Handle}` with `EntityId::{thread, module, driver, handle}`, and the dictionary fields
+  `PROCESS_PARENT_PID`, `PROCESS_START`, `PROCESS_END`, `PROCESS_THREAD_ID`, `DLL_NAME`,
+  `DLL_PATH`, `MEMORY_VA`, `MEMORY_PA`, `MEMORY_VALIDITY`, `MEMORY_UNAVAILABLE`.
+- Memory test doubles: `InMemoryPhysicalMemory`, `TestingAddressSpace`, `TestingMemoryImage`,
+  and `TestingFormatFactory::memory`.
 - Artifact locations (`src/catalog/`), in the ForensicArtifacts definition vocabulary:
   `ArtifactSource`, `ArtifactDefinition`, `SourceEntry`, `Os`, `Separator`,
   `RegistryValueRef`, the `ArtifactCatalog` trait and `SliceCatalog` (buildable as a `static`).
