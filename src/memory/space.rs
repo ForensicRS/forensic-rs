@@ -53,6 +53,12 @@ pub enum Translation {
         file: u8,
         offset: u64,
     },
+    /// Not in RAM; the bytes are those of a mapped file at `offset`. `file` identifies the
+    /// file within the backend and is opaque to consumers (equal keys, same file).
+    FileBacked {
+        file: u64,
+        offset: u64,
+    },
     /// In the OS's compressed store; `key` is opaque to consumers.
     Compressed {
         key: u64,
@@ -84,6 +90,10 @@ impl Translation {
             },
             Translation::PageFile { .. } => Validity::Paged {
                 backing: Backing::PageFile,
+                data: false,
+            },
+            Translation::FileBacked { .. } => Validity::Paged {
+                backing: Backing::MappedFile,
                 data: false,
             },
             Translation::Compressed { .. } => Validity::Compressed {
@@ -291,6 +301,22 @@ mod tests {
             .unwrap();
         TestingAddressSpace::new(SpaceId(1), 8, Arc::new(phys))
             .map_page(Va::new(0x1000), Pa::new(0x5000))
+    }
+
+    #[test]
+    fn file_backed_pages_have_no_data_until_resolved() {
+        let t = Translation::FileBacked {
+            file: 0xffff_c000_0000_1000,
+            offset: 0x2000,
+        };
+        assert_eq!(t.pa(), None);
+        assert_eq!(
+            t.unresolved_validity(),
+            Validity::Paged {
+                backing: Backing::MappedFile,
+                data: false
+            }
+        );
     }
 
     #[test]

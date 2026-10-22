@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Va`, `Pa` (checked arithmetic only, serialized as `"0x…"`), `PageSize`;
   - `Validity`, `Backing`, `ReadReport`: which bytes of a read are real, run by run;
   - `PhysicalMemory`, `PhysRange`, `MemoryInputInfo`: the captured physical memory;
-  - `AddressSpace`, `Translation`, `SpaceId`, `InvalidReason`, and `AddressSpaceExt` (typed and
+  - `AddressSpace`, `Translation` (including `FileBacked` for pages of a mapped file),
+    `SpaceId`, `InvalidReason`, and `AddressSpaceExt` (typed and
     bounded string reads returning `MemValue`). `read_bytes` refuses lengths above `MAX_READ`
     (16 MiB) instead of allocating them; the string readers return `Bounded<T>`, which says
     when the bound cut the string;
