@@ -1,6 +1,6 @@
 //! Virtual address spaces: the kernel's, and one per process.
 
-use crate::err::ForensicResult;
+use crate::err::{ForensicError, ForensicResult};
 
 use super::addr::{Pa, PageSize, Va};
 use super::model::MemValue;
@@ -116,11 +116,31 @@ pub trait AddressSpace: Send + Sync {
 /// The longest string the bounded string readers will scan for a terminator.
 pub const MAX_STRING_SCAN: usize = 0x1_0000;
 
+/// The most bytes [`AddressSpaceExt::read_bytes`] allocates for one read. Lengths in memory
+/// images are attacker-controlled, so a larger request is an error, not an allocation. Read
+/// larger spans with [`AddressSpace::read`] into a buffer the caller owns and sized.
+pub const MAX_READ: usize = 16 << 20;
+
+/// A string read up to a bound. `truncated` is true when the bound cut it: no terminator within
+/// the bound, or a counted length larger than [`MAX_STRING_SCAN`]. The value is then a prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bounded<T> {
+    pub value: T,
+    pub truncated: bool,
+}
+
 /// Typed reads over any [`AddressSpace`]. A value is `Known` only when every byte of it is real
 /// data; otherwise it is `Unavailable` with the worst validity of its bytes.
 pub trait AddressSpaceExt: AddressSpace {
-    /// Reads `len` bytes and the report for them.
+    /// Reads `len` bytes and the report for them. `len` above [`MAX_READ`] is an error.
     fn read_bytes(&self, va: Va, len: usize) -> ForensicResult<(Vec<u8>, ReadReport)> {
+        if len > MAX_READ {
+            return Err(ForensicError::too_big(
+                "memory read_bytes",
+                len as u64,
+                MAX_READ as u64,
+            ));
+        }
         let mut buf = vec![0u8; len];
         let report = self.read(va, &mut buf)?;
         Ok((buf, report))
@@ -153,37 +173,53 @@ pub trait AddressSpaceExt: AddressSpace {
 
     /// Reads a NUL-terminated byte string of at most `max` bytes (capped at
     /// [`MAX_STRING_SCAN`]), without the terminator. A string with no terminator within the bound
-    /// is returned truncated at the bound.
-    fn read_cstr(&self, va: Va, max: usize) -> ForensicResult<MemValue<Vec<u8>>> {
+    /// is the prefix up to the bound, marked [`Bounded::truncated`].
+    fn read_cstr(&self, va: Va, max: usize) -> ForensicResult<MemValue<Bounded<Vec<u8>>>> {
         let max = max.min(MAX_STRING_SCAN);
         let (bytes, report) = self.read_bytes(va, max)?;
-        let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        Ok(prefix_value(bytes, &report, end, 1))
+        let found = bytes.iter().position(|&b| b == 0);
+        let end = found.unwrap_or(bytes.len());
+        Ok(prefix_value(bytes, &report, end, 1).map(|value| Bounded {
+            value,
+            truncated: found.is_none(),
+        }))
     }
 
     /// Reads a NUL-terminated UTF-16LE string of at most `max_units` code units (capped at
-    /// [`MAX_STRING_SCAN`] bytes). Invalid surrogates are replaced (U+FFFD).
-    fn read_utf16(&self, va: Va, max_units: usize) -> ForensicResult<MemValue<String>> {
+    /// [`MAX_STRING_SCAN`] bytes). Invalid surrogates are replaced (U+FFFD). A string with no
+    /// terminator within the bound is marked [`Bounded::truncated`].
+    fn read_utf16(&self, va: Va, max_units: usize) -> ForensicResult<MemValue<Bounded<String>>> {
         let max_bytes = max_units.saturating_mul(2).min(MAX_STRING_SCAN);
         let (bytes, report) = self.read_bytes(va, max_bytes)?;
         let units: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
-        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
-        Ok(prefix_value(units, &report, end * 2, 2).map(|u| String::from_utf16_lossy(&u)))
+        let found = units.iter().position(|&u| u == 0);
+        let end = found.unwrap_or(units.len());
+        Ok(prefix_value(units, &report, end * 2, 2).map(|u| Bounded {
+            value: String::from_utf16_lossy(&u),
+            truncated: found.is_none(),
+        }))
     }
 
     /// Reads a counted UTF-16LE string (`len_bytes` bytes, e.g. a `UNICODE_STRING` buffer),
-    /// capped at [`MAX_STRING_SCAN`] bytes.
-    fn read_utf16_counted(&self, va: Va, len_bytes: usize) -> ForensicResult<MemValue<String>> {
+    /// capped at [`MAX_STRING_SCAN`] bytes; a longer count is marked [`Bounded::truncated`].
+    fn read_utf16_counted(
+        &self,
+        va: Va,
+        len_bytes: usize,
+    ) -> ForensicResult<MemValue<Bounded<String>>> {
         let len = (len_bytes & !1).min(MAX_STRING_SCAN);
         let (bytes, report) = self.read_bytes(va, len)?;
         let units: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
-        Ok(value_if_data(&report, units).map(|u| String::from_utf16_lossy(&u)))
+        Ok(value_if_data(&report, units).map(|u| Bounded {
+            value: String::from_utf16_lossy(&u),
+            truncated: len_bytes > MAX_STRING_SCAN,
+        }))
     }
 }
 
@@ -284,7 +320,18 @@ mod tests {
         let s = space();
         assert_eq!(
             s.read_cstr(Va::new(0x1010), 64).unwrap(),
-            MemValue::Known(b"abc".to_vec())
+            MemValue::Known(Bounded {
+                value: b"abc".to_vec(),
+                truncated: false
+            })
+        );
+        // No terminator within the bound: a prefix, and it says so.
+        assert_eq!(
+            s.read_cstr(Va::new(0x1010), 2).unwrap(),
+            MemValue::Known(Bounded {
+                value: b"ab".to_vec(),
+                truncated: true
+            })
         );
         // The terminator would be in the unmapped page: the string is not known.
         assert_eq!(
@@ -293,8 +340,26 @@ mod tests {
         );
         assert_eq!(
             s.read_utf16_counted(Va::new(0x1ffc), 4).unwrap(),
-            MemValue::Known("hi".to_string())
+            MemValue::Known(Bounded {
+                value: "hi".to_string(),
+                truncated: false
+            })
         );
+        assert_eq!(
+            s.read_utf16(Va::new(0x1ffc), 1).unwrap(),
+            MemValue::Known(Bounded {
+                value: "h".to_string(),
+                truncated: true
+            })
+        );
+    }
+
+    #[test]
+    fn oversized_reads_are_errors_not_allocations() {
+        let s = space();
+        assert!(s.read_bytes(Va::new(0x1000), MAX_READ).is_ok());
+        assert!(s.read_bytes(Va::new(0x1000), MAX_READ + 1).is_err());
+        assert!(s.read_bytes(Va::new(0x1000), usize::MAX).is_err());
     }
 
     #[test]

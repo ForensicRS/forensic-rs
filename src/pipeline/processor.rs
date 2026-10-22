@@ -15,11 +15,11 @@ use crate::{
     data::ForensicData,
     err::{ForensicError, ForensicResult},
     pipeline::{
+        ErrorAction,
         context::TriageContext,
         finding::{AnomalyTally, Finding},
         parallel::PipelineEvent,
         traits::{Analyzer, Enricher, TriageSink},
-        ErrorAction,
     },
     traits::forensic::{ArtifactStream, OutputFlow, ParserOutput},
 };
@@ -235,14 +235,24 @@ where
             Err(e) => {
                 crate::warn!("Parser '{}' produced error: {}", self.parser_id, e);
                 let finding = Finding::from_error(format!("parser '{}'", self.parser_id), &e);
-                route_finding(self.dest, &mut self.findings, &mut self.errors, &mut self.stopped, finding);
+                route_finding(
+                    self.dest,
+                    &mut self.findings,
+                    &mut self.errors,
+                    &mut self.stopped,
+                    finding,
+                );
                 self.errors.push(e.clone());
                 if self.error_action == ErrorAction::Halt {
                     self.halt_error = Some(e);
                     self.stopped = true;
                     return OutputFlow::Stop;
                 }
-                return if self.stopped { OutputFlow::Stop } else { OutputFlow::Continue };
+                return if self.stopped {
+                    OutputFlow::Stop
+                } else {
+                    OutputFlow::Continue
+                };
             }
         };
         let artifact = data.artifact().clone();
@@ -256,7 +266,13 @@ where
                 crate::warn!("Enricher '{}' failed: {}", enricher.name(), e);
                 let finding = Finding::from_error(format!("enricher '{}'", enricher.name()), &e)
                     .with_artifact(artifact.clone());
-                route_finding(self.dest, &mut self.findings, &mut self.errors, &mut self.stopped, finding);
+                route_finding(
+                    self.dest,
+                    &mut self.findings,
+                    &mut self.errors,
+                    &mut self.stopped,
+                    finding,
+                );
                 self.errors.push(e.clone());
                 if self.strict_halt && self.error_action == ErrorAction::Halt {
                     self.halt_error = Some(e);
@@ -271,7 +287,11 @@ where
 
         self.tally.record(data.anomalies());
 
-        for (analyzer, supported) in self.analyzers.iter_mut().zip(self.analyzer_artifacts.iter()) {
+        for (analyzer, supported) in self
+            .analyzers
+            .iter_mut()
+            .zip(self.analyzer_artifacts.iter())
+        {
             if self.cancellation.is_cancelled() {
                 self.stopped = true;
                 return OutputFlow::Stop;
@@ -282,7 +302,13 @@ where
             let mut new_findings = Vec::new();
             let outcome = analyzer.analyze(&data, &*self.context, &mut new_findings);
             for f in new_findings {
-                route_finding(self.dest, &mut self.findings, &mut self.errors, &mut self.stopped, f);
+                route_finding(
+                    self.dest,
+                    &mut self.findings,
+                    &mut self.errors,
+                    &mut self.stopped,
+                    f,
+                );
                 if self.stopped {
                     return OutputFlow::Stop;
                 }
@@ -291,7 +317,13 @@ where
                 crate::warn!("Analyzer '{}' failed: {}", analyzer.name(), e);
                 let finding = Finding::from_error(format!("analyzer '{}'", analyzer.name()), &e)
                     .with_artifact(artifact.clone());
-                route_finding(self.dest, &mut self.findings, &mut self.errors, &mut self.stopped, finding);
+                route_finding(
+                    self.dest,
+                    &mut self.findings,
+                    &mut self.errors,
+                    &mut self.stopped,
+                    finding,
+                );
                 self.errors.push(e.clone());
                 if self.strict_halt && self.error_action == ErrorAction::Halt {
                     self.halt_error = Some(e);
@@ -304,7 +336,13 @@ where
             }
         }
 
-        route_data(self.dest, &mut self.items, &mut self.errors, &mut self.stopped, data);
+        route_data(
+            self.dest,
+            &mut self.items,
+            &mut self.errors,
+            &mut self.stopped,
+            data,
+        );
         if self.stopped {
             OutputFlow::Stop
         } else {
@@ -328,7 +366,13 @@ where
     pub(crate) fn parser_error(&mut self, e: ForensicError) {
         crate::warn!("Parser '{}' failed: {}", self.parser_id, e);
         let finding = Finding::from_error(format!("parser '{}'", self.parser_id), &e);
-        route_finding(self.dest, &mut self.findings, &mut self.errors, &mut self.stopped, finding);
+        route_finding(
+            self.dest,
+            &mut self.findings,
+            &mut self.errors,
+            &mut self.stopped,
+            finding,
+        );
         self.errors.push(e.clone());
         if self.error_action == ErrorAction::Halt {
             self.halt_error = Some(e);
@@ -357,13 +401,25 @@ where
             let mut new_findings = Vec::new();
             let outcome = analyzer.finalize(&*self.context, &mut new_findings);
             for f in new_findings {
-                route_finding(self.dest, &mut self.findings, &mut self.errors, &mut self.stopped, f);
+                route_finding(
+                    self.dest,
+                    &mut self.findings,
+                    &mut self.errors,
+                    &mut self.stopped,
+                    f,
+                );
             }
             if let Err(e) = outcome {
                 crate::warn!("Analyzer '{}' finalize failed: {}", analyzer.name(), e);
                 let finding =
                     Finding::from_error(format!("analyzer '{}' finalize", analyzer.name()), &e);
-                route_finding(self.dest, &mut self.findings, &mut self.errors, &mut self.stopped, finding);
+                route_finding(
+                    self.dest,
+                    &mut self.findings,
+                    &mut self.errors,
+                    &mut self.stopped,
+                    finding,
+                );
                 self.errors.push(e);
             }
         }
@@ -374,7 +430,13 @@ where
     pub(crate) fn flush_tally(&mut self) {
         let tally = std::mem::take(self.tally);
         for finding in tally.into_findings() {
-            route_finding(self.dest, &mut self.findings, &mut self.errors, &mut self.stopped, finding);
+            route_finding(
+                self.dest,
+                &mut self.findings,
+                &mut self.errors,
+                &mut self.stopped,
+                finding,
+            );
         }
     }
 

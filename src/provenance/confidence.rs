@@ -116,14 +116,29 @@ mod tests {
     fn weakest_link_dominates_the_chain() {
         // High <- Medium <- High : overall must be Medium, not High.
         let mut records = HashMap::new();
-        records.insert(id(0), (Acquisition::ImageRead, Recovery::Allocated, DerivedFrom::None));
+        records.insert(
+            id(0),
+            (
+                Acquisition::ImageRead,
+                Recovery::Allocated,
+                DerivedFrom::None,
+            ),
+        );
         records.insert(
             id(1),
-            (Acquisition::LiveApi, Recovery::Allocated, DerivedFrom::Single(id(0))),
+            (
+                Acquisition::LiveApi,
+                Recovery::Allocated,
+                DerivedFrom::Single(id(0)),
+            ),
         );
         records.insert(
             id(2),
-            (Acquisition::ImageRead, Recovery::Allocated, DerivedFrom::Single(id(1))),
+            (
+                Acquisition::ImageRead,
+                Recovery::Allocated,
+                DerivedFrom::Single(id(1)),
+            ),
         );
         let confidence = fold_chain_confidence(id(2), |i| records.get(&i).cloned());
         assert_eq!(confidence, Confidence::Medium);
@@ -134,11 +149,19 @@ mod tests {
         let mut records = HashMap::new();
         records.insert(
             id(0),
-            (Acquisition::ImageRead, Recovery::Allocated, DerivedFrom::Single(id(1))),
+            (
+                Acquisition::ImageRead,
+                Recovery::Allocated,
+                DerivedFrom::Single(id(1)),
+            ),
         );
         records.insert(
             id(1),
-            (Acquisition::ImageRead, Recovery::Allocated, DerivedFrom::Single(id(0))),
+            (
+                Acquisition::ImageRead,
+                Recovery::Allocated,
+                DerivedFrom::Single(id(0)),
+            ),
         );
         let confidence = fold_chain_confidence(id(0), |i| records.get(&i).cloned());
         assert_eq!(confidence, Confidence::Unknown);
@@ -154,14 +177,27 @@ mod tests {
     #[test]
     fn merge_folds_across_every_retained_parent() {
         let mut records = HashMap::new();
-        records.insert(id(0), (Acquisition::ImageRead, Recovery::Allocated, DerivedFrom::None));
-        records.insert(id(1), (Acquisition::ImageRead, Recovery::Carved, DerivedFrom::None));
+        records.insert(
+            id(0),
+            (
+                Acquisition::ImageRead,
+                Recovery::Allocated,
+                DerivedFrom::None,
+            ),
+        );
+        records.insert(
+            id(1),
+            (Acquisition::ImageRead, Recovery::Carved, DerivedFrom::None),
+        );
         records.insert(
             id(2),
             (
                 Acquisition::ImageRead,
                 Recovery::Allocated,
-                DerivedFrom::Merged(Box::new([id(0), id(1)]), super::super::model::MergeReason::Reconciliation),
+                DerivedFrom::Merged(
+                    Box::new([id(0), id(1)]),
+                    super::super::model::MergeReason::Reconciliation,
+                ),
             ),
         );
         let confidence = fold_chain_confidence(id(2), |i| records.get(&i).cloned());

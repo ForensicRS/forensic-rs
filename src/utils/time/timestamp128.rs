@@ -285,7 +285,10 @@ impl ForensicTimestamp {
         }
         let unix_nanos = ((days - OLE_UNIX_EPOCH_DAYS) * 86_400_000_000_000.0).round();
         if !(i128::MIN as f64..=i128::MAX as f64).contains(&unix_nanos) {
-            return Err(invalid_timestamp(0, "OLE Automation date exceeds Timestamp128 range"));
+            return Err(invalid_timestamp(
+                0,
+                "OLE Automation date exceeds Timestamp128 range",
+            ));
         }
         let mut timestamp = Self::try_from_unix_nanos(unix_nanos as i128)?;
         timestamp.flags = TimestampFlags::new(
@@ -309,10 +312,16 @@ impl ForensicTimestamp {
         utc_offset_minutes: Option<i16>,
     ) -> ForensicResult<Self> {
         if !(1..=12).contains(&month) {
-            return Err(invalid_timestamp(month as u64, "month must be between 1 and 12"));
+            return Err(invalid_timestamp(
+                month as u64,
+                "month must be between 1 and 12",
+            ));
         }
         if day == 0 || day > days_in_month(year, month) {
-            return Err(invalid_timestamp(day as u64, "day is invalid for the supplied month"));
+            return Err(invalid_timestamp(
+                day as u64,
+                "day is invalid for the supplied month",
+            ));
         }
         if hour > 23 || minute > 59 || second > 59 {
             return Err(invalid_timestamp(
@@ -323,8 +332,12 @@ impl ForensicTimestamp {
         let offset = utc_offset_minutes.unwrap_or(0) as i64;
         let local_seconds = days_from_civil(year, month, day)
             .checked_mul(SECONDS_PER_DAY)
-            .and_then(|days| days.checked_add(hour as i64 * 3_600 + minute as i64 * 60 + second as i64))
-            .ok_or_else(|| invalid_timestamp(u64::MAX, "calendar time exceeds Timestamp128 range"))?;
+            .and_then(|days| {
+                days.checked_add(hour as i64 * 3_600 + minute as i64 * 60 + second as i64)
+            })
+            .ok_or_else(|| {
+                invalid_timestamp(u64::MAX, "calendar time exceeds Timestamp128 range")
+            })?;
         let utc_seconds = local_seconds
             .checked_sub(offset * 60)
             .ok_or_else(|| invalid_timestamp(u64::MAX, "UTC offset exceeds Timestamp128 range"))?;
@@ -397,7 +410,10 @@ impl ForensicTimestamp {
             minute,
             second,
             microseconds.checked_mul(1_000).ok_or_else(|| {
-                invalid_timestamp(microseconds as u64, "microseconds exceed nanosecond precision")
+                invalid_timestamp(
+                    microseconds as u64,
+                    "microseconds exceed nanosecond precision",
+                )
             })?,
             None,
         )
@@ -439,13 +455,16 @@ impl ForensicTimestamp {
 
     pub fn try_from_system_time(time: SystemTime) -> ForensicResult<Self> {
         let nanos = match time.duration_since(UNIX_EPOCH) {
-            Ok(duration) => i128::try_from(duration.as_nanos())
-                .map_err(|_| invalid_timestamp(u64::MAX, "SystemTime exceeds Timestamp128 range"))?,
-            Err(error) => -i128::try_from(error.duration().as_nanos())
-                .map_err(|_| invalid_timestamp(u64::MAX, "SystemTime exceeds Timestamp128 range"))?,
+            Ok(duration) => i128::try_from(duration.as_nanos()).map_err(|_| {
+                invalid_timestamp(u64::MAX, "SystemTime exceeds Timestamp128 range")
+            })?,
+            Err(error) => -i128::try_from(error.duration().as_nanos()).map_err(|_| {
+                invalid_timestamp(u64::MAX, "SystemTime exceeds Timestamp128 range")
+            })?,
         };
         let mut timestamp = Self::try_from_unix_nanos(nanos)?;
-        timestamp.flags = TimestampFlags::new(TimestampPrecision::Nanoseconds, TimestampSource::SystemTime);
+        timestamp.flags =
+            TimestampFlags::new(TimestampPrecision::Nanoseconds, TimestampSource::SystemTime);
         Ok(timestamp)
     }
 
@@ -473,13 +492,25 @@ impl ForensicTimestamp {
     }
 
     pub fn checked_add(self, duration: Duration) -> Option<Self> {
-        let nanos = self.to_unix_nanos().checked_add(duration.as_nanos() as i128)?;
-        Self::from_total_nanos(nanos, self.utc_offset_minutes(), self.flags | TimestampFlags::NORMALIZED)
+        let nanos = self
+            .to_unix_nanos()
+            .checked_add(duration.as_nanos() as i128)?;
+        Self::from_total_nanos(
+            nanos,
+            self.utc_offset_minutes(),
+            self.flags | TimestampFlags::NORMALIZED,
+        )
     }
 
     pub fn checked_sub(self, duration: Duration) -> Option<Self> {
-        let nanos = self.to_unix_nanos().checked_sub(duration.as_nanos() as i128)?;
-        Self::from_total_nanos(nanos, self.utc_offset_minutes(), self.flags | TimestampFlags::NORMALIZED)
+        let nanos = self
+            .to_unix_nanos()
+            .checked_sub(duration.as_nanos() as i128)?;
+        Self::from_total_nanos(
+            nanos,
+            self.utc_offset_minutes(),
+            self.flags | TimestampFlags::NORMALIZED,
+        )
     }
 
     pub fn saturating_add(self, duration: Duration) -> Self {
@@ -505,12 +536,18 @@ impl ForensicTimestamp {
 
     pub fn from_le_bytes(bytes: [u8; 16]) -> ForensicResult<Self> {
         let seconds = i64::from_le_bytes(bytes[..8].try_into().expect("fixed timestamp length"));
-        let nanoseconds = u32::from_le_bytes(bytes[8..12].try_into().expect("fixed timestamp length"));
+        let nanoseconds =
+            u32::from_le_bytes(bytes[8..12].try_into().expect("fixed timestamp length"));
         let offset = i16::from_le_bytes(bytes[12..14].try_into().expect("fixed timestamp length"));
         let flags = TimestampFlags::from_bits_retain(u16::from_le_bytes(
             bytes[14..].try_into().expect("fixed timestamp length"),
         ));
-        Self::try_from_parts(seconds, nanoseconds, (offset != OFFSET_UNKNOWN).then_some(offset), flags)
+        Self::try_from_parts(
+            seconds,
+            nanoseconds,
+            (offset != OFFSET_UNKNOWN).then_some(offset),
+            flags,
+        )
     }
 
     pub fn to_be_bytes(self) -> [u8; 16] {
@@ -524,12 +561,18 @@ impl ForensicTimestamp {
 
     pub fn from_be_bytes(bytes: [u8; 16]) -> ForensicResult<Self> {
         let seconds = i64::from_be_bytes(bytes[..8].try_into().expect("fixed timestamp length"));
-        let nanoseconds = u32::from_be_bytes(bytes[8..12].try_into().expect("fixed timestamp length"));
+        let nanoseconds =
+            u32::from_be_bytes(bytes[8..12].try_into().expect("fixed timestamp length"));
         let offset = i16::from_be_bytes(bytes[12..14].try_into().expect("fixed timestamp length"));
         let flags = TimestampFlags::from_bits_retain(u16::from_be_bytes(
             bytes[14..].try_into().expect("fixed timestamp length"),
         ));
-        Self::try_from_parts(seconds, nanoseconds, (offset != OFFSET_UNKNOWN).then_some(offset), flags)
+        Self::try_from_parts(
+            seconds,
+            nanoseconds,
+            (offset != OFFSET_UNKNOWN).then_some(offset),
+            flags,
+        )
     }
 
     fn utc_components(self) -> (i64, u8, u8, u8, u8, u8) {
@@ -556,7 +599,10 @@ impl ForensicTimestamp {
         }
         let unix_nanos = (seconds + epoch_offset_seconds as f64) * NANOS_PER_SECOND as f64;
         if !(i128::MIN as f64..=i128::MAX as f64).contains(&unix_nanos) {
-            return Err(invalid_timestamp(0, "timestamp value exceeds Timestamp128 range"));
+            return Err(invalid_timestamp(
+                0,
+                "timestamp value exceeds Timestamp128 range",
+            ));
         }
         let mut timestamp = Self::try_from_unix_nanos(unix_nanos.round() as i128)?;
         timestamp.flags = TimestampFlags::new(TimestampPrecision::Nanoseconds, source)
@@ -565,7 +611,8 @@ impl ForensicTimestamp {
     }
 
     fn from_unix_nanos_unchecked(nanoseconds: i128, flags: TimestampFlags) -> Self {
-        Self::from_total_nanos(nanoseconds, None, flags).expect("i64 input always fits Timestamp128")
+        Self::from_total_nanos(nanoseconds, None, flags)
+            .expect("i64 input always fits Timestamp128")
     }
 
     fn from_total_nanos(
@@ -598,8 +645,17 @@ impl ForensicTimestamp {
 
 impl PartialEq for ForensicTimestamp {
     fn eq(&self, other: &Self) -> bool {
-        (self.utc_seconds, self.nanoseconds, self.utc_offset_minutes, self.flags)
-            == (other.utc_seconds, other.nanoseconds, other.utc_offset_minutes, other.flags)
+        (
+            self.utc_seconds,
+            self.nanoseconds,
+            self.utc_offset_minutes,
+            self.flags,
+        ) == (
+            other.utc_seconds,
+            other.nanoseconds,
+            other.utc_offset_minutes,
+            other.flags,
+        )
     }
 }
 
@@ -607,7 +663,13 @@ impl Eq for ForensicTimestamp {}
 
 impl Hash for ForensicTimestamp {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (self.utc_seconds, self.nanoseconds, self.utc_offset_minutes, self.flags).hash(state);
+        (
+            self.utc_seconds,
+            self.nanoseconds,
+            self.utc_offset_minutes,
+            self.flags,
+        )
+            .hash(state);
     }
 }
 
@@ -619,12 +681,18 @@ impl PartialOrd for ForensicTimestamp {
 
 impl Ord for ForensicTimestamp {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.utc_seconds, self.nanoseconds, self.utc_offset_minutes, self.flags).cmp(&(
-            other.utc_seconds,
-            other.nanoseconds,
-            other.utc_offset_minutes,
-            other.flags,
-        ))
+        (
+            self.utc_seconds,
+            self.nanoseconds,
+            self.utc_offset_minutes,
+            self.flags,
+        )
+            .cmp(&(
+                other.utc_seconds,
+                other.nanoseconds,
+                other.utc_offset_minutes,
+                other.flags,
+            ))
     }
 }
 
@@ -642,7 +710,11 @@ impl fmt::Debug for ForensicTimestamp {
 
 impl fmt::Display for ForensicTimestamp {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{:09} UTC", self.utc_seconds, self.nanoseconds)
+        write!(
+            formatter,
+            "{}.{:09} UTC",
+            self.utc_seconds, self.nanoseconds
+        )
     }
 }
 
@@ -701,9 +773,8 @@ fn civil_from_days(days: i64) -> (i64, u8, u8) {
     let days = days + 719_468;
     let era = days.div_euclid(146_097);
     let day_of_era = days - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524
-        - day_of_era / 146_096)
-        / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
@@ -724,10 +795,7 @@ impl Serialize for ForensicTimestamp {
         let mut state = serializer.serialize_struct("ForensicTimestamp", 4)?;
         state.serialize_field("utc_seconds", &self.utc_seconds)?;
         state.serialize_field("nanoseconds", &self.nanoseconds)?;
-        state.serialize_field(
-            "utc_offset_minutes",
-            &self.utc_offset_minutes(),
-        )?;
+        state.serialize_field("utc_offset_minutes", &self.utc_offset_minutes())?;
         state.serialize_field("flags", &self.flags.bits())?;
         state.end()
     }
@@ -783,28 +851,29 @@ mod tests {
 
     #[test]
     fn validates_parts_and_preserves_unknown_flag_bits() {
-        assert!(ForensicTimestamp::try_from_parts(0, NANOS_PER_SECOND, None, TimestampFlags::default()).is_err());
-        assert!(ForensicTimestamp::try_from_parts(0, 0, Some(1_441), TimestampFlags::default()).is_err());
+        assert!(
+            ForensicTimestamp::try_from_parts(0, NANOS_PER_SECOND, None, TimestampFlags::default())
+                .is_err()
+        );
+        assert!(
+            ForensicTimestamp::try_from_parts(0, 0, Some(1_441), TimestampFlags::default())
+                .is_err()
+        );
 
         let flags = TimestampFlags::from_bits_retain(0xf8a6);
         let timestamp = ForensicTimestamp::try_from_parts(0, 1, Some(60), flags).unwrap();
         assert_eq!(timestamp.flags().bits(), flags.bits());
-        assert_eq!(timestamp.flags().precision(), TimestampPrecision::Nanoseconds);
+        assert_eq!(
+            timestamp.flags().precision(),
+            TimestampPrecision::Nanoseconds
+        );
     }
 
     #[test]
     fn calendar_constructor_handles_leap_year_and_offsets() {
-        let timestamp = ForensicTimestamp::try_with_ymd_and_hms_nanos(
-            2024,
-            2,
-            29,
-            1,
-            0,
-            0,
-            42,
-            Some(60),
-        )
-        .unwrap();
+        let timestamp =
+            ForensicTimestamp::try_with_ymd_and_hms_nanos(2024, 2, 29, 1, 0, 0, 42, Some(60))
+                .unwrap();
         assert_eq!(timestamp.utc_seconds(), 1_709_164_800);
         assert_eq!(timestamp.nanoseconds(), 42);
         assert_eq!(timestamp.utc_offset_minutes(), Some(60));
@@ -820,14 +889,22 @@ mod tests {
                 | TimestampFlags::INFERRED,
         )
         .unwrap();
-        assert_eq!(Timestamp128::from_le_bytes(timestamp.to_le_bytes()).unwrap(), timestamp);
-        assert_eq!(Timestamp128::from_be_bytes(timestamp.to_be_bytes()).unwrap(), timestamp);
+        assert_eq!(
+            Timestamp128::from_le_bytes(timestamp.to_le_bytes()).unwrap(),
+            timestamp
+        );
+        assert_eq!(
+            Timestamp128::from_be_bytes(timestamp.to_be_bytes()).unwrap(),
+            timestamp
+        );
     }
 
     #[test]
     fn ordering_preserves_metadata_after_instant_tie() {
-        let left = ForensicTimestamp::try_from_parts(1, 0, None, TimestampFlags::default()).unwrap();
-        let right = ForensicTimestamp::try_from_parts(1, 0, Some(60), TimestampFlags::default()).unwrap();
+        let left =
+            ForensicTimestamp::try_from_parts(1, 0, None, TimestampFlags::default()).unwrap();
+        let right =
+            ForensicTimestamp::try_from_parts(1, 0, Some(60), TimestampFlags::default()).unwrap();
         assert!(left.same_instant(right));
         assert_ne!(left, right);
         assert!(left < right);
@@ -855,6 +932,9 @@ mod tests {
         .unwrap();
         let json = serde_json::to_string(&timestamp).unwrap();
         assert!(json.contains("utc_offset_minutes"));
-        assert_eq!(serde_json::from_str::<ForensicTimestamp>(&json).unwrap(), timestamp);
+        assert_eq!(
+            serde_json::from_str::<ForensicTimestamp>(&json).unwrap(),
+            timestamp
+        );
     }
 }

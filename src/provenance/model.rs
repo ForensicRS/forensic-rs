@@ -165,10 +165,16 @@ pub enum Locus {
 pub enum SourceKey {
     Path(String),
     ContentHash(String),
-    VolumeOffset { volume: String, offset: u64 },
+    VolumeOffset {
+        volume: String,
+        offset: u64,
+    },
     /// A chain of nested containers, outermost first.
     Chain(Vec<SourceKey>),
-    Live { host: String, api: String },
+    Live {
+        host: String,
+        api: String,
+    },
     /// For tests and placeholders — never meant to identify a real source.
     Synthetic(String),
 }

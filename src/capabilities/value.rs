@@ -6,7 +6,7 @@ use crate::{
     data::ForensicData,
     field::{Field, Text},
     pipeline::finding::Finding,
-    provenance::{AnomalyFlags, Anomalies, Confidence},
+    provenance::{Anomalies, AnomalyFlags, Confidence},
     utils::time::ForensicTimestamp,
 };
 
@@ -212,10 +212,7 @@ impl From<&Finding> for CapabilityValue {
         );
         values.insert(
             Text::Borrowed("timestamp"),
-            finding
-                .timestamp
-                .map(Self::Timestamp)
-                .unwrap_or(Self::Null),
+            finding.timestamp.map(Self::Timestamp).unwrap_or(Self::Null),
         );
         values.insert(
             Text::Borrowed("related_data"),
@@ -283,13 +280,13 @@ impl From<&'static str> for CapabilityValue {
 
 #[cfg(test)]
 mod tests {
-    use compact_str::CompactString;
     use crate::{
         artifact::Artifact,
         field::Field,
         pipeline::finding::{FindingCategory, FindingSeverity},
         provenance::AnomalyDetail,
     };
+    use compact_str::CompactString;
 
     use super::*;
 
@@ -313,7 +310,11 @@ mod tests {
 
     #[test]
     fn forensic_data_conversion_keeps_artifact_and_fields() {
-        let mut data = ForensicData::new("host", Artifact::Unknown, crate::utils::testing::test_provenance_id());
+        let mut data = ForensicData::new(
+            "host",
+            Artifact::Unknown,
+            crate::utils::testing::test_provenance_id(),
+        );
         data.insert(Text::Borrowed("event.code"), Field::U64(4624));
 
         let CapabilityValue::Object(values) = CapabilityValue::from(&data) else {

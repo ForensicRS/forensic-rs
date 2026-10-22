@@ -101,7 +101,10 @@ impl EntityId {
 
     /// A file identified by content hash.
     pub fn file_by_hash(hash: &ContentAddress) -> Self {
-        Self::from_parts(EntityKind::File, &[&format!("{:?}", hash.algorithm), &hash.to_hex()])
+        Self::from_parts(
+            EntityKind::File,
+            &[&format!("{:?}", hash.algorithm), &hash.to_hex()],
+        )
     }
 
     /// A file identified by host + path, when no content hash is available.
@@ -112,7 +115,10 @@ impl EntityId {
     /// A process instance: PID alone is reused constantly, so identity
     /// requires the host and the process's start time too.
     pub fn process(host: &str, pid: u32, start_time: ForensicTimestamp) -> Self {
-        Self::from_parts(EntityKind::Process, &[host, &pid.to_string(), &format!("{start_time:?}")])
+        Self::from_parts(
+            EntityKind::Process,
+            &[host, &pid.to_string(), &format!("{start_time:?}")],
+        )
     }
 
     /// A network endpoint: an address, optionally scoped by port.
@@ -177,7 +183,10 @@ mod tests {
 
     #[test]
     fn same_inputs_produce_the_same_id() {
-        assert_eq!(EntityId::host("WORKSTATION01"), EntityId::host("WORKSTATION01"));
+        assert_eq!(
+            EntityId::host("WORKSTATION01"),
+            EntityId::host("WORKSTATION01")
+        );
         assert_eq!(
             EntityId::user("WORKSTATION01", "S-1-5-21-1"),
             EntityId::user("WORKSTATION01", "S-1-5-21-1")
@@ -214,7 +223,10 @@ mod tests {
     fn process_identity_includes_start_time_not_just_pid() {
         let t1 = ForensicTimestamp::from_unix_secs(1_700_000_000);
         let t2 = ForensicTimestamp::from_unix_secs(1_700_000_100);
-        assert_ne!(EntityId::process("h", 1234, t1), EntityId::process("h", 1234, t2));
+        assert_ne!(
+            EntityId::process("h", 1234, t1),
+            EntityId::process("h", 1234, t2)
+        );
     }
 
     #[test]

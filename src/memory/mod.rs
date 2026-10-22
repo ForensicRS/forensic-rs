@@ -58,6 +58,7 @@ pub use model::{
 };
 pub use physical::{MemoryInputInfo, PhysRange, PhysicalMemory};
 pub use space::{
-    AddressSpace, AddressSpaceExt, InvalidReason, MAX_STRING_SCAN, SpaceId, Translation,
+    AddressSpace, AddressSpaceExt, Bounded, InvalidReason, MAX_READ, MAX_STRING_SCAN, SpaceId,
+    Translation,
 };
 pub use validity::{Backing, ReadReport, Validity};

@@ -699,8 +699,12 @@ mod tests {
             match (request.kind, request.capability_id, request.target) {
                 (AccessKind::DiscoverResourceProvider, "actionable", None) => AccessDecision::Allow,
                 (AccessKind::ListResource, "actionable", Some("matching")) => AccessDecision::Allow,
-                (AccessKind::ListResource, "actionable", Some("unmatched")) => AccessDecision::Allow,
-                (AccessKind::ListResource, "actionable", Some("denied-path")) => AccessDecision::Deny,
+                (AccessKind::ListResource, "actionable", Some("unmatched")) => {
+                    AccessDecision::Allow
+                }
+                (AccessKind::ListResource, "actionable", Some("denied-path")) => {
+                    AccessDecision::Deny
+                }
                 (AccessKind::DiscoverTool, "visible.tool", None) => AccessDecision::Allow,
                 (AccessKind::DiscoverTool, "hidden.tool", None) => AccessDecision::Deny,
                 _ => AccessDecision::Deny,

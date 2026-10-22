@@ -260,7 +260,9 @@ mod tests {
             use crate::provenance::ids::SourceId;
             use crate::provenance::model::Provenance;
             let mut inner = store.lock();
-            inner.sources.push(SourceKey::Synthetic("cycle".to_string()));
+            inner
+                .sources
+                .push(SourceKey::Synthetic("cycle".to_string()));
             inner.records.push(Provenance {
                 source: SourceId::from_raw(0),
                 acquisition: Acquisition::ImageRead,
@@ -275,9 +277,15 @@ mod tests {
             });
         }
         let expanded = expand(&store, ProvenanceId::from_raw(0)).unwrap();
-        assert!(matches!(expanded.derived_from, ExpandedDerivedFrom::Single(_)));
+        assert!(matches!(
+            expanded.derived_from,
+            ExpandedDerivedFrom::Single(_)
+        ));
         if let ExpandedDerivedFrom::Single(parent) = expanded.derived_from {
-            assert!(matches!(parent.derived_from, ExpandedDerivedFrom::Truncated));
+            assert!(matches!(
+                parent.derived_from,
+                ExpandedDerivedFrom::Truncated
+            ));
         }
     }
 }

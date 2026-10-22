@@ -40,7 +40,7 @@ pub fn decompress(
             return Err(ForensicError::Other {
                 category: "compression",
                 message: "Default compression algorithm not supported".into(),
-            })
+            });
         }
         CompressionAlgorithm::CompressionFormatLznt1 => lznt1::decompress(in_buf, out_buf)?,
         CompressionAlgorithm::CompressionFormatXpress => lz77::decompress(in_buf, out_buf)?,

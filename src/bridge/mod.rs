@@ -5,8 +5,8 @@ pub mod providers;
 pub mod server;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::err::ForensicResult;
 use crate::field::Text;

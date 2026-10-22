@@ -465,7 +465,8 @@ fn component_eq(a: Component<'_>, b: Component<'_>, case_sensitive: bool) -> boo
         (Component::RootDir, Component::RootDir) => true,
         (Component::CurDir, Component::CurDir) => true,
         (Component::ParentDir, Component::ParentDir) => true,
-        (Component::Drive(x), Component::Drive(y)) | (Component::Normal(x), Component::Normal(y)) => {
+        (Component::Drive(x), Component::Drive(y))
+        | (Component::Normal(x), Component::Normal(y)) => {
             if case_sensitive {
                 x == y
             } else {
@@ -513,18 +514,36 @@ mod tests {
 
     #[test]
     fn path_eq_can_fold_case() {
-        assert!(path_eq(FPath::new("Report.TXT"), FPath::new("report.txt"), false));
-        assert!(!path_eq(FPath::new("Report.TXT"), FPath::new("report.txt"), true));
+        assert!(path_eq(
+            FPath::new("Report.TXT"),
+            FPath::new("report.txt"),
+            false
+        ));
+        assert!(!path_eq(
+            FPath::new("Report.TXT"),
+            FPath::new("report.txt"),
+            true
+        ));
     }
 
     #[test]
     fn unix_root_is_root_dir_component() {
-        assert_eq!(comps("/etc/passwd"), vec![Component::RootDir, Component::Normal("etc"), Component::Normal("passwd")]);
+        assert_eq!(
+            comps("/etc/passwd"),
+            vec![
+                Component::RootDir,
+                Component::Normal("etc"),
+                Component::Normal("passwd")
+            ]
+        );
     }
 
     #[test]
     fn repeated_separators_collapse() {
-        assert_eq!(comps("C:\\\\Windows"), vec![Component::Drive("C:"), Component::Normal("Windows")]);
+        assert_eq!(
+            comps("C:\\\\Windows"),
+            vec![Component::Drive("C:"), Component::Normal("Windows")]
+        );
     }
 
     #[test]
@@ -558,7 +577,10 @@ mod tests {
 
     #[test]
     fn file_name_basic() {
-        assert_eq!(FPath::new("C:\\Windows\\System32\\ntdll.dll").file_name(), Some("ntdll.dll"));
+        assert_eq!(
+            FPath::new("C:\\Windows\\System32\\ntdll.dll").file_name(),
+            Some("ntdll.dll")
+        );
         assert_eq!(FPath::new("/etc/passwd").file_name(), Some("passwd"));
         assert_eq!(FPath::new("report.txt").file_name(), Some("report.txt"));
     }
@@ -580,7 +602,10 @@ mod tests {
 
     #[test]
     fn file_name_ignores_trailing_separator() {
-        assert_eq!(FPath::new("C:\\Windows\\System32\\").file_name(), Some("System32"));
+        assert_eq!(
+            FPath::new("C:\\Windows\\System32\\").file_name(),
+            Some("System32")
+        );
     }
 
     #[test]
@@ -597,7 +622,10 @@ mod tests {
 
     #[test]
     fn parent_basic() {
-        assert_eq!(FPath::new("C:\\Windows\\System32").parent(), Some(FPath::new("C:\\Windows")));
+        assert_eq!(
+            FPath::new("C:\\Windows\\System32").parent(),
+            Some(FPath::new("C:\\Windows"))
+        );
         assert_eq!(FPath::new("/etc/passwd").parent(), Some(FPath::new("/etc")));
     }
 
@@ -625,7 +653,10 @@ mod tests {
 
     #[test]
     fn join_relative_onto_absolute() {
-        assert_eq!(FPath::new("C:\\Users").join("Bob").as_path(), FPath::new("C:/Users/Bob"));
+        assert_eq!(
+            FPath::new("C:\\Users").join("Bob").as_path(),
+            FPath::new("C:/Users/Bob")
+        );
     }
 
     #[test]
@@ -654,13 +685,19 @@ mod tests {
 
     #[test]
     fn display_round_trips_to_canonical_form() {
-        assert_eq!(FPath::new("C:\\Windows\\System32").to_string(), "C:/Windows/System32");
+        assert_eq!(
+            FPath::new("C:\\Windows\\System32").to_string(),
+            "C:/Windows/System32"
+        );
         assert_eq!(FPath::new("/etc//passwd").to_string(), "/etc/passwd");
     }
 
     #[test]
     fn fpathbuf_from_str_normalizes() {
-        assert_eq!(FPathBuf::from("C:\\Windows\\\\System32").as_str(), "C:/Windows/System32");
+        assert_eq!(
+            FPathBuf::from("C:\\Windows\\\\System32").as_str(),
+            "C:/Windows/System32"
+        );
     }
 
     #[test]
@@ -721,7 +758,10 @@ mod tests {
 
     #[test]
     fn unc_path_round_trips_through_display() {
-        assert_eq!(FPath::new("\\\\host\\share\\file.txt").to_string(), "/host/share/file.txt");
+        assert_eq!(
+            FPath::new("\\\\host\\share\\file.txt").to_string(),
+            "/host/share/file.txt"
+        );
     }
 
     #[test]

@@ -63,11 +63,19 @@ impl FormatFactory for TestingFormatFactory {
         self.mounted.kind()
     }
 
-    fn probe(&self, _file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        _file: &mut dyn VirtualFile,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         Ok(ProbeScore::Strong)
     }
 
-    fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    fn mount(
+        &self,
+        _file: Box<dyn VirtualFile>,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<Mounted> {
         Ok(self.mounted.clone())
     }
 }
@@ -158,7 +166,8 @@ mod tests {
 
     #[test]
     fn event_log_factory_mounts_a_working_reader() {
-        let factory = TestingFormatFactory::event_log("test-events", super::super::basic_event_log());
+        let factory =
+            TestingFormatFactory::event_log("test-events", super::super::basic_event_log());
         let fs: StdArc<dyn crate::traits::vfs::FileSystem> =
             StdArc::new(super::super::InMemoryVirtualFileSystem::new());
         let locator = EvidenceLocator::root();
@@ -206,6 +215,9 @@ mod tests {
         let cancel = crate::bridge::CancellationToken::new();
         let mount_ctx = ctx(&fs, &locator, &limits, &spill, &cancel);
         let mut file = EmptyFile(Cursor::new(b"anything at all".to_vec()));
-        assert_eq!(factory.probe(&mut file, &mount_ctx).unwrap(), ProbeScore::Strong);
+        assert_eq!(
+            factory.probe(&mut file, &mount_ctx).unwrap(),
+            ProbeScore::Strong
+        );
     }
 }

@@ -48,7 +48,7 @@ fn decompress_chunk(
             Ok(v) => v,
             Err(e) => match e {
                 ForensicError::DataAccess(DataAccessError::NoMoreData) => {
-                    return Ok((bstr.index, i))
+                    return Ok((bstr.index, i));
                 }
                 _ => return Err(e),
             },
@@ -207,7 +207,7 @@ fn prefix_code_tree_add_leaf(
                 "express_huff",
                 compact_str::CompactString::const_new("No valid PrefixCodeNode"),
             )
-            .into()
+            .into();
         }
     };
     let mut i = leaf_index + 1;
@@ -303,7 +303,7 @@ fn prefix_code_tree_decode_symbol(
             Some(v) => v.clone(),
             None => {
                 return ForensicError::too_small("get_prefix_code_symbol", bit as _, bstr.bits as _)
-                    .into()
+                    .into();
             }
         };
         drop(nt);

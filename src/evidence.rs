@@ -78,7 +78,10 @@ impl LazyMount {
     }
 
     fn is_resolved(&self) -> bool {
-        self.cached.lock().expect("LazyMount cache poisoned").is_some()
+        self.cached
+            .lock()
+            .expect("LazyMount cache poisoned")
+            .is_some()
     }
 }
 
@@ -215,14 +218,19 @@ mod tests {
     use super::*;
     use crate::traits::vfs::FileSystem;
     use crate::utils::testing::InMemoryVirtualFileSystem;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn working_item(id: &'static str) -> EvidenceItem {
-        EvidenceItem::new(id, MountKind::FileSystem, SourceKey::Synthetic(id.to_string()), || {
-            let fs: Arc<dyn FileSystem> = Arc::new(InMemoryVirtualFileSystem::new());
-            Ok(TriageSources::builder().vfs(fs).build())
-        })
+        EvidenceItem::new(
+            id,
+            MountKind::FileSystem,
+            SourceKey::Synthetic(id.to_string()),
+            || {
+                let fs: Arc<dyn FileSystem> = Arc::new(InMemoryVirtualFileSystem::new());
+                Ok(TriageSources::builder().vfs(fs).build())
+            },
+        )
     }
 
     #[test]
@@ -271,7 +279,10 @@ mod tests {
         );
 
         assert!(item.sources().is_err());
-        assert!(!item.is_resolved(), "a failed resolution must not be cached");
+        assert!(
+            !item.is_resolved(),
+            "a failed resolution must not be cached"
+        );
         assert!(item.sources().is_ok());
         assert!(item.is_resolved());
     }
@@ -286,14 +297,25 @@ mod tests {
                 "host2-mem",
                 MountKind::File,
                 SourceKey::Synthetic("host2-mem".to_string()),
-                || Err(crate::err::ForensicError::other("test", "not needed for this test".to_string())),
+                || {
+                    Err(crate::err::ForensicError::other(
+                        "test",
+                        "not needed for this test".to_string(),
+                    ))
+                },
             ));
 
         assert_eq!(set.len(), 3);
         assert!(!set.is_empty());
         assert_eq!(set.investigation().id().as_str(), "case-42");
-        assert_eq!(set.item(&EvidenceItemId::new("host1")).unwrap().kind(), MountKind::FileSystem);
-        assert_eq!(set.item(&EvidenceItemId::new("host2-mem")).unwrap().kind(), MountKind::File);
+        assert_eq!(
+            set.item(&EvidenceItemId::new("host1")).unwrap().kind(),
+            MountKind::FileSystem
+        );
+        assert_eq!(
+            set.item(&EvidenceItemId::new("host2-mem")).unwrap().kind(),
+            MountKind::File
+        );
         assert!(set.item(&EvidenceItemId::new("no-such-host")).is_none());
     }
 }

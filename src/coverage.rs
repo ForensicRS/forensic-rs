@@ -99,8 +99,10 @@ mod tests {
 
     #[test]
     fn present_targets_are_reported_present() {
-        let manifest = StaticCollectionManifest::new(ToolIdentity::new("KAPE", "1.2.0"))
-            .with_target(TargetSpec::new("Windows/System32/config/SYSTEM", "SYSTEM hive"));
+        let manifest =
+            StaticCollectionManifest::new(ToolIdentity::new("KAPE", "1.2.0")).with_target(
+                TargetSpec::new("Windows/System32/config/SYSTEM", "SYSTEM hive"),
+            );
         let report = CoverageReport::compute(&manifest, &evidence_fs()).unwrap();
         assert_eq!(report.present.len(), 1);
         assert!(report.gaps.is_empty());
@@ -111,12 +113,17 @@ mod tests {
     fn missing_target_with_a_logged_error_is_attributed_to_it() {
         let manifest = StaticCollectionManifest::new(ToolIdentity::new("KAPE", "1.2.0"))
             .with_target(TargetSpec::new("C:/$MFT", "Master File Table"))
-            .with_error(CollectionError::new("C:/$MFT", "access denied (file locked)"));
+            .with_error(CollectionError::new(
+                "C:/$MFT",
+                "access denied (file locked)",
+            ));
         let report = CoverageReport::compute(&manifest, &evidence_fs()).unwrap();
         assert!(report.present.is_empty());
         assert_eq!(report.gaps.len(), 1);
         match &report.gaps[0].reason {
-            CoverageGapReason::CollectionError(msg) => assert_eq!(msg, "access denied (file locked)"),
+            CoverageGapReason::CollectionError(msg) => {
+                assert_eq!(msg, "access denied (file locked)")
+            }
             other => panic!("expected CollectionError, got {other:?}"),
         }
         assert!(!report.is_complete());
@@ -124,8 +131,10 @@ mod tests {
 
     #[test]
     fn missing_target_with_no_logged_error_is_undetermined() {
-        let manifest = StaticCollectionManifest::new(ToolIdentity::new("KAPE", "1.2.0"))
-            .with_target(TargetSpec::new("Windows/AppCompat/Programs/Amcache.hve", "Amcache"));
+        let manifest =
+            StaticCollectionManifest::new(ToolIdentity::new("KAPE", "1.2.0")).with_target(
+                TargetSpec::new("Windows/AppCompat/Programs/Amcache.hve", "Amcache"),
+            );
         let report = CoverageReport::compute(&manifest, &evidence_fs()).unwrap();
         assert_eq!(report.gaps.len(), 1);
         assert_eq!(report.gaps[0].reason, CoverageGapReason::NotFound);
@@ -134,9 +143,15 @@ mod tests {
     #[test]
     fn mixed_manifest_reports_both_present_and_missing() {
         let manifest = StaticCollectionManifest::new(ToolIdentity::new("KAPE", "1.2.0"))
-            .with_target(TargetSpec::new("Windows/System32/config/SYSTEM", "SYSTEM hive"))
+            .with_target(TargetSpec::new(
+                "Windows/System32/config/SYSTEM",
+                "SYSTEM hive",
+            ))
             .with_target(TargetSpec::new("Windows/System32/config/SAM", "SAM hive"))
-            .with_error(CollectionError::new("Windows/System32/config/SAM", "locked"));
+            .with_error(CollectionError::new(
+                "Windows/System32/config/SAM",
+                "locked",
+            ));
         let report = CoverageReport::compute(&manifest, &evidence_fs()).unwrap();
         assert_eq!(report.present.len(), 1);
         assert_eq!(report.gaps.len(), 1);

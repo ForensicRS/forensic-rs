@@ -145,10 +145,10 @@ pub mod prelude {
     pub use crate::host_profile::HostProfile;
     pub use crate::investigation::{Investigation, InvestigationId, TenantId};
     pub use crate::memory::{
-        AddressSpace, AddressSpaceExt, Backing, InvalidReason, MemHandle, MemIter, MemLocation,
-        MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind, MemRecordMeta, MemRegion,
-        MemThread, MemValue, MemoryImage, MemoryImageExt, MemoryInputInfo, MemorySpec, Pa,
-        PageSize, PhysRange, PhysicalMemory, ReadReport, RecordSource, RegionKind, SpaceId,
+        AddressSpace, AddressSpaceExt, Backing, Bounded, InvalidReason, MemHandle, MemIter,
+        MemLocation, MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind, MemRecordMeta,
+        MemRegion, MemThread, MemValue, MemoryImage, MemoryImageExt, MemoryInputInfo, MemorySpec,
+        Pa, PageSize, PhysRange, PhysicalMemory, ReadReport, RecordSource, RegionKind, SpaceId,
         Translation, Va, Validity,
     };
     pub use crate::provenance::{

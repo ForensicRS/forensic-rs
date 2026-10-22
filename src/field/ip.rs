@@ -1,12 +1,12 @@
 use std::fmt::Display;
 
 #[cfg(feature = "serde")]
-use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Visitor};
 
+use super::Field;
 use super::utils::{
     ipv4_from_str, ipv4_to_str, ipv6_from_str, ipv6_to_str, is_local_ipv4, is_local_ipv6,
 };
-use super::Field;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Ip {

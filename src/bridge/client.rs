@@ -1,4 +1,4 @@
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::Duration;
 
 use crate::err::{ForensicError, ForensicResult};
