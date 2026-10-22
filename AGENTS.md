@@ -486,8 +486,13 @@ so they work on any backend.
 - **Provenance.** Records carry a `MemRecordMeta`: a `ProvenanceId` minted with
   `Acquisition::Memory` and the `Recovery` matching how the record was found (`Allocated` for an
   OS list walk, `Carved` for a scan), `Anomalies` for broken invariants (back-links, loops,
-  `SOURCE_DIVERGENCE` between list and scan, `INFERRED_LAYOUT` for non-symbol layouts), and the
-  `RecordSource`s. Parsers re-mint against the pipeline's store from `ParseContext` as usual.
+  `SOURCE_DIVERGENCE` between list and scan, `INFERRED_LAYOUT` for non-symbol layouts), the
+  `RecordSource`s, and the record's validity (a required argument: no default can be honest).
+  `MemoryImage::provenance()` is the store those ids resolve in. Parsers re-mint against the
+  pipeline's store from `ParseContext` as usual. Liveness is `PhysicalMemory::is_live` only.
+- **Bounded reads.** `AddressSpaceExt::read_bytes` refuses more than `MAX_READ`; string readers
+  return `Bounded<T>` and say when the bound cut them. A kind a backend does not provide is a
+  `ForensicError::is_unsupported` error.
 - **Determinism.** `MemoryImage` iterators yield records sorted by `MemRecordKey`.
 - **Plumbing.** A backend's `FormatFactory` yields `Mounted::Memory` (`MountKind::Memory`);
   parsers declare `Requirement::Memory(MemorySpec)` and get it from `ParseContext::resolve` when

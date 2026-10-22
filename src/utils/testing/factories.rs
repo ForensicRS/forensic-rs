@@ -145,7 +145,10 @@ mod tests {
         use crate::memory::{MemProcess, MemRecordKey, MemRecordMeta, Va};
         let image = super::super::TestingMemoryImage::empty().with_process(MemProcess::new(
             MemRecordKey::Object(Va::new(0x1000)),
-            MemRecordMeta::new(super::super::test_provenance_id()),
+            MemRecordMeta::new(
+                super::super::test_provenance_id(),
+                crate::memory::Validity::Resident,
+            ),
         ));
         let factory = TestingFormatFactory::memory("test-memory", StdArc::new(image));
         assert_eq!(factory.yields(), MountKind::Memory);

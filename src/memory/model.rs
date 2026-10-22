@@ -115,12 +115,14 @@ pub struct MemRecordMeta {
 }
 
 impl MemRecordMeta {
-    pub fn new(provenance: ProvenanceId) -> Self {
+    /// `validity` is the worst validity among the record's fields. It has no default: a default
+    /// would let a backend that forgot to compute it claim the record was fully read.
+    pub fn new(provenance: ProvenanceId, validity: Validity) -> Self {
         Self {
             provenance,
             anomalies: Anomalies::empty(),
             location: MemLocation::default(),
-            validity: Validity::Resident,
+            validity,
             sources: Vec::new(),
         }
     }
@@ -178,8 +180,6 @@ pub struct MemOsInfo {
     /// The capture time as the OS recorded it, never host time.
     pub capture_time: MemValue<ForensicTimestamp>,
     pub processor_count: MemValue<u32>,
-    /// Whether the source is live (reads not repeatable).
-    pub live: bool,
 }
 
 impl MemOsInfo {
@@ -194,7 +194,6 @@ impl MemOsInfo {
             dtb: MemValue::Unsupported,
             capture_time: MemValue::Unsupported,
             processor_count: MemValue::Unsupported,
-            live: false,
         }
     }
 }

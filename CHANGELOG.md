@@ -22,7 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `MemRecordMeta`, `RecordSource`, `MemRecordKey`, `MemRecordKind`, and the typed records
     `MemOsInfo`, `MemProcess`, `MemThread`, `MemModule`, `MemRegion` (+ `RegionKind`),
     `MemHandle`;
-  - `MemoryImage` (with `as_registry`/`as_files` probes), `MemoryImageExt`, `MemorySpec`.
+  - `MemoryImage` (with `as_registry`/`as_files` probes), `MemoryImageExt`, `MemorySpec`. Its
+    `provenance()` returns the store the records' provenance ids were minted in, so consumers
+    can resolve them. `MemRecordMeta::new` takes the record's validity (no default that could
+    claim a full read), and liveness is stated only by `PhysicalMemory::is_live`.
 - Memory integration points: `MountKind::Memory` / `Mounted::Memory` (+ `Mounted::as_memory`),
   `Requirement::Memory(MemorySpec)` resolved by `ParseContext::resolve`,
   `TriageSourcesBuilder::memory` / `TriageSources::memory` (the run's acquisition is then

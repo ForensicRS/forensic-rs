@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::err::{ForensicError, ForensicResult};
 use crate::field::Text;
+use crate::provenance::ProvenanceStore;
 use crate::traits::registry::Registry;
 use crate::traits::vfs::FileSystem;
 
@@ -32,10 +33,18 @@ pub type MemIter<'a, T> = Box<dyn Iterator<Item = ForensicResult<T>> + 'a>;
 ///   method returns an error (the default), never an empty iterator: "no handles" and "handles
 ///   not supported" must not look alike;
 /// - provenance ids in [`MemRecordMeta`](super::MemRecordMeta) are minted with
-///   `Acquisition::Memory` and the `Recovery` matching how each record was found.
+///   `Acquisition::Memory` and the `Recovery` matching how each record was found, in the store
+///   [`MemoryImage::provenance`] returns;
+/// - whether the source is live (reads not repeatable) is [`PhysicalMemory::is_live`], the only
+///   place it is stated.
 pub trait MemoryImage: Send + Sync {
     /// The record kinds this backend provides.
     fn kinds(&self) -> &[MemRecordKind];
+
+    /// The store the records' provenance ids were minted in, so a consumer can resolve them
+    /// (`get`, `derive`). Parsers still mint their own ids against the pipeline's store for what
+    /// they export; this store is the backend's lineage of each record.
+    fn provenance(&self) -> &ProvenanceStore;
 
     fn os(&self) -> ForensicResult<MemOsInfo>;
 

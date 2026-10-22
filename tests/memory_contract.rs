@@ -9,8 +9,29 @@ use forensic_rs::prelude::*;
 const HIDDEN: Va = Va::new(0xffff_c001_0000_2000);
 const SYSTEM: Va = Va::new(0xffff_c001_0000_1000);
 
-fn process(object: Va, pid: u64, name: &'static str, linked: bool) -> MemProcess {
-    let mut meta = MemRecordMeta::new(test_provenance_id());
+/// A process record, its provenance minted in `store` the way a backend does: `Allocated` when an
+/// OS list holds it, `Carved` when only a scan found it. Its command line is paged out, so the
+/// record's validity is that of the page file.
+fn process(
+    store: &ProvenanceStore,
+    object: Va,
+    pid: u64,
+    name: &'static str,
+    linked: bool,
+) -> MemProcess {
+    let paged = Validity::Paged {
+        backing: Backing::PageFile,
+        data: false,
+    };
+    let recovery = if linked {
+        Recovery::Allocated
+    } else {
+        Recovery::Carved
+    };
+    let id = store
+        .register_source(SourceKey::Synthetic("test-memory-image".to_string()))
+        .mint(Acquisition::Memory, recovery);
+    let mut meta = MemRecordMeta::new(id, paged);
     if linked {
         meta.sources.push(RecordSource::ListWalk {
             list: text("ActiveProcessList"),
@@ -24,20 +45,19 @@ fn process(object: Va, pid: u64, name: &'static str, linked: bool) -> MemProcess
     p.name = MemValue::Known(text(name));
     p.in_active_list = MemValue::Known(linked);
     // The command line lives in user memory, which is paged out here.
-    p.command_line = MemValue::Unavailable(Validity::Paged {
-        backing: Backing::PageFile,
-        data: false,
-    });
+    p.command_line = MemValue::Unavailable(paged);
     p
 }
 
 fn image() -> TestingMemoryImage {
-    let mut os = MemOsInfo::new(MemRecordMeta::new(test_provenance_id()));
+    let store = ProvenanceStore::new();
+    let mut os = MemOsInfo::new(MemRecordMeta::new(test_provenance_id(), Validity::Resident));
     os.family = MemValue::Known(text("windows"));
     TestingMemoryImage::empty()
         .with_os(os)
-        .with_process(process(SYSTEM, 4, "System", true))
-        .with_process(process(HIDDEN, 6620, "evil.exe", false))
+        .with_process(process(&store, SYSTEM, 4, "System", true))
+        .with_process(process(&store, HIDDEN, 6620, "evil.exe", false))
+        .with_provenance(store)
 }
 
 /// A detection written only against the contract: it works on any memory backend.
@@ -282,4 +302,25 @@ fn a_kind_the_backend_does_not_provide_is_unsupported_not_a_failure() {
         panic!("the empty test image has no kernel space");
     };
     assert!(!e.is_unsupported(), "{e}");
+}
+
+#[test]
+fn record_provenance_resolves_through_the_image() {
+    let image = image();
+    for p in image.processes().unwrap() {
+        let p = p.unwrap();
+        let snapshot = image
+            .provenance()
+            .get(p.meta.provenance)
+            .expect("a record's provenance id resolves in its image's store");
+        assert_eq!(snapshot.acquisition, Acquisition::Memory);
+        let want = if p.key == MemRecordKey::Object(HIDDEN) {
+            Recovery::Carved
+        } else {
+            Recovery::Allocated
+        };
+        assert_eq!(snapshot.recovery, want);
+        // The record's validity is what its worst field says, never a default.
+        assert!(matches!(p.meta.validity, Validity::Paged { .. }));
+    }
 }

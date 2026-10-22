@@ -11,6 +11,7 @@ use crate::memory::{
     MemRecordKind, MemRegion, MemThread, MemoryImage, MemoryInputInfo, Pa, PageSize, PhysRange,
     PhysicalMemory, ReadReport, SpaceId, Translation, Va, Validity, unsupported,
 };
+use crate::provenance::ProvenanceStore;
 
 /// Physical memory made of byte ranges, with everything else not captured.
 pub struct InMemoryPhysicalMemory {
@@ -266,6 +267,7 @@ pub struct TestingMemoryImage {
     modules: Vec<MemModule>,
     regions: Vec<MemRegion>,
     handles: Vec<MemHandle>,
+    provenance: ProvenanceStore,
 }
 
 impl TestingMemoryImage {
@@ -281,7 +283,15 @@ impl TestingMemoryImage {
             modules: Vec::new(),
             regions: Vec::new(),
             handles: Vec::new(),
+            provenance: ProvenanceStore::new(),
         }
+    }
+
+    /// The store the test minted its records' provenance ids in, returned by
+    /// [`MemoryImage::provenance`]. Without it the image has an empty store of its own.
+    pub fn with_provenance(mut self, store: ProvenanceStore) -> Self {
+        self.provenance = store;
+        self
     }
 
     /// An image over an empty physical memory, for tests that only need records.
@@ -362,6 +372,10 @@ fn iter_of<'a, T: Clone + 'a>(items: impl Iterator<Item = &'a T> + 'a) -> MemIte
 impl MemoryImage for TestingMemoryImage {
     fn kinds(&self) -> &[MemRecordKind] {
         &self.kinds
+    }
+
+    fn provenance(&self) -> &ProvenanceStore {
+        &self.provenance
     }
 
     fn os(&self) -> ForensicResult<MemOsInfo> {
@@ -482,7 +496,10 @@ mod tests {
     #[test]
     fn unsupported_kinds_error_instead_of_being_empty() {
         let key = MemRecordKey::Object(Va::new(0xffff_8000_0000_1000));
-        let mut p = MemProcess::new(key.clone(), MemRecordMeta::new(test_provenance_id()));
+        let mut p = MemProcess::new(
+            key.clone(),
+            MemRecordMeta::new(test_provenance_id(), Validity::Resident),
+        );
         p.pid = MemValue::Known(4);
         p.in_active_list = MemValue::Known(false);
         let image = TestingMemoryImage::empty()
