@@ -46,7 +46,11 @@ pub trait MemoryImage: Send + Sync {
     /// they export; this store is the backend's lineage of each record.
     fn provenance(&self) -> &ProvenanceStore;
 
-    fn os(&self) -> ForensicResult<MemOsInfo>;
+    /// Facts about the captured OS. Optional like every other kind: a backend that does not
+    /// provide them leaves [`MemRecordKind::OsInfo`] out of [`MemoryImage::kinds`].
+    fn os(&self) -> ForensicResult<MemOsInfo> {
+        Err(unsupported(MemRecordKind::OsInfo))
+    }
 
     fn physical(&self) -> &dyn PhysicalMemory;
 
@@ -63,11 +67,11 @@ pub trait MemoryImage: Send + Sync {
     }
 
     fn kernel_modules(&self) -> ForensicResult<MemIter<'_, MemModule>> {
-        Err(unsupported(MemRecordKind::Module))
+        Err(unsupported(MemRecordKind::KernelModule))
     }
 
     fn modules(&self, _process: &MemRecordKey) -> ForensicResult<MemIter<'_, MemModule>> {
-        Err(unsupported(MemRecordKind::Module))
+        Err(unsupported(MemRecordKind::ProcessModule))
     }
 
     fn regions(&self, _process: &MemRecordKey) -> ForensicResult<MemIter<'_, MemRegion>> {

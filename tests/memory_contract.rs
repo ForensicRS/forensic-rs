@@ -324,3 +324,31 @@ fn record_provenance_resolves_through_the_image() {
         assert!(matches!(p.meta.validity, Validity::Paged { .. }));
     }
 }
+
+#[test]
+fn kernel_and_process_modules_are_separate_kinds() {
+    let kernel_module = MemModule::new(
+        MemRecordKey::Object(Va::new(0xffff_f800_0000_0000)),
+        MemRecordMeta::new(test_provenance_id(), Validity::Resident),
+        None,
+    );
+    let image = TestingMemoryImage::empty().with_module(kernel_module);
+    assert!(image.kinds().contains(&MemRecordKind::KernelModule));
+    assert!(!image.kinds().contains(&MemRecordKind::ProcessModule));
+    assert_eq!(image.kernel_modules().unwrap().count(), 1);
+    // Providing kernel modules says nothing about process modules.
+    let Err(e) = image.modules(&MemRecordKey::Object(SYSTEM)) else {
+        panic!("process modules were not provided");
+    };
+    assert!(e.is_unsupported(), "{e}");
+    assert!(
+        !MemorySpec::new()
+            .kind(MemRecordKind::ProcessModule)
+            .is_satisfied_by(&image)
+    );
+    // OS facts are optional too.
+    let Err(e) = image.os() else {
+        panic!("this image has no OS facts");
+    };
+    assert!(e.is_unsupported(), "{e}");
+}

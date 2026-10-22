@@ -158,7 +158,10 @@ pub enum MemRecordKind {
     OsInfo,
     Process,
     Thread,
-    Module,
+    /// Kernel modules: [`MemoryImage::kernel_modules`](super::MemoryImage::kernel_modules).
+    KernelModule,
+    /// Modules loaded in a process: [`MemoryImage::modules`](super::MemoryImage::modules).
+    ProcessModule,
     Region,
     Handle,
 }

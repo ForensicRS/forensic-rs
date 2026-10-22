@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `provenance()` returns the store the records' provenance ids were minted in, so consumers
     can resolve them. `MemRecordMeta::new` takes the record's validity (no default that could
     claim a full read), and liveness is stated only by `PhysicalMemory::is_live`.
+    Kernel and process modules are separate kinds (`MemRecordKind::KernelModule`,
+    `ProcessModule`), one per method, and `os()` is optional like every other kind.
 - Memory integration points: `MountKind::Memory` / `Mounted::Memory` (+ `Mounted::as_memory`),
   `Requirement::Memory(MemorySpec)` resolved by `ParseContext::resolve`,
   `TriageSourcesBuilder::memory` / `TriageSources::memory` (the run's acquisition is then

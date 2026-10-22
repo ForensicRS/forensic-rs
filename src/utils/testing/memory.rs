@@ -339,9 +339,14 @@ impl TestingMemoryImage {
 
     /// Adds a module: a kernel module when its `process` is `None`.
     pub fn with_module(mut self, module: MemModule) -> Self {
+        let kind = if module.process.is_none() {
+            MemRecordKind::KernelModule
+        } else {
+            MemRecordKind::ProcessModule
+        };
         self.modules.push(module);
         self.modules.sort_by(|a, b| a.key.cmp(&b.key));
-        self.with_kind(MemRecordKind::Module)
+        self.with_kind(kind)
     }
 
     pub fn with_region(mut self, region: MemRegion) -> Self {
@@ -420,12 +425,12 @@ impl MemoryImage for TestingMemoryImage {
     }
 
     fn kernel_modules(&self) -> ForensicResult<MemIter<'_, MemModule>> {
-        self.provides(MemRecordKind::Module)?;
+        self.provides(MemRecordKind::KernelModule)?;
         Ok(iter_of(self.modules.iter().filter(|m| m.process.is_none())))
     }
 
     fn modules(&self, process: &MemRecordKey) -> ForensicResult<MemIter<'_, MemModule>> {
-        self.provides(MemRecordKind::Module)?;
+        self.provides(MemRecordKind::ProcessModule)?;
         let process = process.clone();
         Ok(iter_of(
             self.modules
@@ -504,7 +509,7 @@ mod tests {
         p.in_active_list = MemValue::Known(false);
         let image = TestingMemoryImage::empty()
             .with_process(p)
-            .with_kind(MemRecordKind::Module);
+            .with_kind(MemRecordKind::ProcessModule);
         assert!(image.threads(None).is_err());
         assert_eq!(image.modules(&key).unwrap().count(), 0);
         assert_eq!(image.unlinked_processes().unwrap().len(), 1);
