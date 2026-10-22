@@ -80,10 +80,11 @@ pub trait MemoryImage: Send + Sync {
     }
 }
 
-/// The error a [`MemoryImage`] returns for a record kind it does not provide.
+/// The error a [`MemoryImage`] returns for a record kind it does not provide. It is
+/// [`ForensicError::is_unsupported`], so callers can tell it from a failed read.
 pub fn unsupported(kind: MemRecordKind) -> ForensicError {
-    ForensicError::other(
-        "memory",
+    ForensicError::unsupported(
+        "memory records",
         format!("this memory backend does not provide {kind:?} records"),
     )
 }

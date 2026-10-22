@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DLL_PATH`, `MEMORY_VA`, `MEMORY_PA`, `MEMORY_VALIDITY`, `MEMORY_UNAVAILABLE`.
 - Memory test doubles: `InMemoryPhysicalMemory`, `TestingAddressSpace`, `TestingMemoryImage`,
   and `TestingFormatFactory::memory`.
+- `DataAccessError::Unsupported`, `ForensicError::unsupported` and `ForensicError::is_unsupported`:
+  "this source does not provide that data at all", distinct from data that is missing or failed
+  to read. `memory::unsupported(kind)`, which a `MemoryImage` returns for a record kind it does
+  not provide, now uses it.
 - Artifact locations (`src/catalog/`), in the ForensicArtifacts definition vocabulary:
   `ArtifactSource`, `ArtifactDefinition`, `SourceEntry`, `Os`, `Separator`,
   `RegistryValueRef`, the `ArtifactCatalog` trait and `SliceCatalog` (buildable as a `static`).

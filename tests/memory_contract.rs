@@ -264,3 +264,22 @@ fn memory_entities_are_distinct_and_stable() {
         EntityKind::Driver
     );
 }
+
+#[test]
+fn a_kind_the_backend_does_not_provide_is_unsupported_not_a_failure() {
+    let image = TestingMemoryImage::empty();
+    // "No handles" and "handles not supported" must not look alike (MemoryImage contract).
+    let Err(e) = image.processes() else {
+        panic!("an image without processes must not iterate them");
+    };
+    assert!(e.is_unsupported(), "{e}");
+    let Err(e) = image.handles(&MemRecordKey::Object(Va::new(0x10))) else {
+        panic!("an image without handles must not iterate them");
+    };
+    assert!(e.is_unsupported(), "{e}");
+    // A real failure is not "unsupported".
+    let Err(e) = image.kernel_space() else {
+        panic!("the empty test image has no kernel space");
+    };
+    assert!(!e.is_unsupported(), "{e}");
+}
