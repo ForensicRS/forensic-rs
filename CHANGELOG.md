@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The memory-forensics contract (`src/memory/`, in the prelude), so any memory backend can
   plug in and analyzers, parsers and tools written against it work on every backend:
   - `Va`, `Pa` (checked arithmetic only, serialized as `"0x…"`), `PageSize`;
+    `Va::is_canonical` / `is_upper_half` for a space's `AddressSpace::va_bits` (48 by default
+    for 8-byte pointers, 57 for 5-level paging);
   - `Validity`, `Backing`, `ReadReport`: which bytes of a read are real, run by run;
   - `PhysicalMemory`, `PhysRange`, `MemoryInputInfo`: the captured physical memory;
   - `PagingFile`, `PagingFiles`: paging files supplied next to the capture (`pagefile.sys`,

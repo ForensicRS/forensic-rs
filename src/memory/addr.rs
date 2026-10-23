@@ -130,6 +130,26 @@ address_type!(
     Pa
 );
 
+impl Va {
+    /// Whether this address is canonical in a space of `va_bits` implemented bits
+    /// ([`AddressSpace::va_bits`](super::AddressSpace::va_bits)): bits 63 down to `va_bits - 1`
+    /// all equal (x86-64 "canonical addressing", Intel SDM Vol. 1 §3.3.7.1; 48 bits with 4-level
+    /// paging, 57 with 5-level). With 64 or more bits (or 0) every address is canonical.
+    pub const fn is_canonical(self, va_bits: u8) -> bool {
+        if va_bits == 0 || va_bits >= 64 {
+            return true;
+        }
+        let top = self.0 >> (va_bits - 1);
+        top == 0 || top == u64::MAX >> (va_bits - 1)
+    }
+
+    /// Whether this address is in the upper (kernel) half of a space of `va_bits` bits: canonical,
+    /// with the sign bit set.
+    pub const fn is_upper_half(self, va_bits: u8) -> bool {
+        self.is_canonical(va_bits) && self.0 >> 63 == 1
+    }
+}
+
 #[cfg(feature = "serde")]
 fn parse_hex(s: &str) -> Option<u64> {
     let digits = s.strip_prefix("0x")?;
@@ -182,6 +202,25 @@ mod tests {
         assert_eq!(va.page_offset(PageSize::K4), 0x678);
         assert_eq!(va.align_down(PageSize::M2), Va::new(0x1220_0000));
         assert!(Pa::new(0x4000_0000).is_aligned(PageSize::G1));
+    }
+
+    #[test]
+    fn canonical_addresses() {
+        // 4-level paging: bits 63:47 equal.
+        assert!(Va::new(0x0000_7fff_ffff_f000).is_canonical(48));
+        assert!(Va::new(0xffff_8000_0000_0000).is_upper_half(48));
+        assert!(!Va::new(0x0000_8000_0000_0000).is_canonical(48));
+        assert!(!Va::new(0xff00_0000_0000_0000).is_canonical(48));
+        // 5-level paging: bits 63:56 equal, so the same address is canonical there.
+        assert!(Va::new(0xff00_0000_0000_0000).is_upper_half(57));
+        assert!(Va::new(0x00ff_ffff_ffff_f000).is_canonical(57));
+        assert!(!Va::new(0x0100_0000_0000_0000).is_canonical(57));
+        assert!(!Va::new(0x0000_7fff_ffff_f000).is_upper_half(57));
+        // 32-bit spaces and degenerate widths.
+        assert!(Va::new(0xffff_ffff_8000_0000).is_canonical(32));
+        assert!(!Va::new(0x1_0000_0000).is_canonical(32));
+        assert!(Va::new(0x8000_0000_0000_0000).is_canonical(64));
+        assert!(Va::new(0x8000_0000_0000_0000).is_canonical(0));
     }
 
     #[test]

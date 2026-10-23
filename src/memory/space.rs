@@ -112,6 +112,13 @@ pub trait AddressSpace: Send + Sync {
     /// Pointer size in bytes (8 for x64, 4 for x86 and WOW64 views).
     fn pointer_size(&self) -> u8;
 
+    /// Implemented virtual-address bits, for canonical checks ([`Va::is_canonical`]): 48 for
+    /// x86-64 with 4-level paging, 57 with 5-level paging (LA57). The default is 48 for 8-byte
+    /// pointers and 32 otherwise; a backend whose spaces are wider says so.
+    fn va_bits(&self) -> u8 {
+        if self.pointer_size() == 8 { 48 } else { 32 }
+    }
+
     /// The page-table root, when the architecture has one.
     fn dtb(&self) -> Option<Pa> {
         None
