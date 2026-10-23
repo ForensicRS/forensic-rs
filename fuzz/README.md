@@ -37,3 +37,9 @@ table can encode out-of-bounds source indices or a cyclic `derived_from`
 chain — the property under test is that none of this ever panics, hangs, or
 allocates unboundedly; `confidence()` must degrade to `Confidence::Unknown`
 instead.
+
+`decompress` feeds arbitrary bytes to the plain LZ77 (Xpress), Xpress Huffman
+and LZNT1 decoders (`utils::win::decompress`), the first byte choosing the
+decoder and an output bound. They decode attacker-controlled data (memory
+compression stores, hibernation files, prefetch, NTFS): no input may panic,
+and no decoder may write past its bound.

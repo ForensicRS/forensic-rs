@@ -343,6 +343,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It also let back-references reach into earlier chunks and decoded a `0x0000` header (NTFS
   compression-unit padding) as data. Every read is now bounds-checked, back-references stay in
   the current chunk, and a zero header ends the stream.
+- `lz77::decompress` (plain Xpress, `COMPRESSION_FORMAT_XPRESS`) panicked on hostile input: it
+  indexed past the input on a cut literal, flags word, match or length, underflowed on a
+  back-reference before the start of the output, and decoded padding after the data until it
+  ran off the end. Every read is now bounds-checked, back-references reach only the output this
+  call produced, and the new `lz77::decompress_bounded` stops at an output bound (a
+  memory-compression page is 4096 bytes followed by padding).
+- `xpress_huff::decompress` panicked on an input of 256 to 259 bytes (a Huffman table without
+  the bit stream's header), on an over-subscribed Huffman table (more tree nodes than the table
+  allows), on a back-reference before the start of the output, and when a match overshot the
+  output size. These are errors now; symbol decoding is bounded by the 15-bit code length, and
+  a non-empty `out_buf` is appended to as documented.
+- Fuzz target `decompress` (plain LZ77, Xpress Huffman, LZNT1).
 
 - `ContainerFs::read_dir` on a container nested inside a mounted container (`disk.001/media`)
   returned the bare file instead of listing its contents: only a container on the base
