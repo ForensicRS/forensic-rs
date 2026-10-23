@@ -8,7 +8,8 @@
 //! - [`PhysicalMemory`]: the captured physical memory, with [`ReadReport`]s saying which bytes
 //!   are real ([`Validity`]);
 //! - [`AddressSpace`]: a virtual address space over it, with [`Translation`]s and typed reads
-//!   ([`AddressSpaceExt`]);
+//!   ([`AddressSpaceExt`]); pages that were paged out are read from the attached
+//!   [`PagingFiles`] when the investigator supplies them;
 //! - [`MemoryImage`]: typed OS records ([`MemProcess`], [`MemThread`], [`MemModule`],
 //!   [`MemRegion`], [`MemHandle`], [`MemOsInfo`]) whose fields are [`MemValue`]s, each with
 //!   provenance and anomalies ([`MemRecordMeta`]).
@@ -28,8 +29,8 @@
 //!   an anomaly ([`AnomalyFlags::SOURCE_DIVERGENCE`]);
 //! - output is deterministic: records are yielded in key order.
 //!
-//! Test doubles: [`InMemoryPhysicalMemory`], [`TestingAddressSpace`] and [`TestingMemoryImage`]
-//! in [`crate::utils::testing`].
+//! Test doubles: [`InMemoryPhysicalMemory`], [`InMemoryPagingFile`], [`TestingAddressSpace`]
+//! and [`TestingMemoryImage`] in [`crate::utils::testing`].
 //!
 //! [`Mounted::Memory`]: crate::traits::format::Mounted::Memory
 //! [`FormatFactory`]: crate::traits::format::FormatFactory
@@ -40,12 +41,14 @@
 //! [`Locus::Physical`]: crate::provenance::Locus::Physical
 //! [`AnomalyFlags::SOURCE_DIVERGENCE`]: crate::provenance::AnomalyFlags::SOURCE_DIVERGENCE
 //! [`InMemoryPhysicalMemory`]: crate::utils::testing::InMemoryPhysicalMemory
+//! [`InMemoryPagingFile`]: crate::utils::testing::InMemoryPagingFile
 //! [`TestingAddressSpace`]: crate::utils::testing::TestingAddressSpace
 //! [`TestingMemoryImage`]: crate::utils::testing::TestingMemoryImage
 
 mod addr;
 mod image;
 mod model;
+mod paging;
 mod physical;
 mod space;
 mod validity;
@@ -56,6 +59,7 @@ pub use model::{
     MemHandle, MemLocation, MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind,
     MemRecordMeta, MemRegion, MemThread, MemValue, RecordSource, RegionKind,
 };
+pub use paging::{PagingFile, PagingFiles};
 pub use physical::{MemoryInputInfo, PhysRange, PhysicalMemory};
 pub use space::{
     AddressSpace, AddressSpaceExt, Bounded, InvalidReason, MAX_READ, MAX_STRING_SCAN, SpaceId,

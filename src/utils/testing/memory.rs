@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use crate::err::{ForensicError, ForensicResult};
 use crate::memory::{
-    AddressSpace, MemHandle, MemIter, MemModule, MemOsInfo, MemProcess, MemRecordKey,
-    MemRecordKind, MemRegion, MemThread, MemoryImage, MemoryInputInfo, Pa, PageSize, PhysRange,
-    PhysicalMemory, ReadReport, SpaceId, Translation, Va, Validity, unsupported,
+    AddressSpace, Backing, MemHandle, MemIter, MemModule, MemOsInfo, MemProcess, MemRecordKey,
+    MemRecordKind, MemRegion, MemThread, MemoryImage, MemoryInputInfo, Pa, PageSize, PagingFile,
+    PhysRange, PhysicalMemory, ReadReport, SpaceId, Translation, Va, Validity, unsupported,
 };
 use crate::provenance::ProvenanceStore;
 
@@ -126,6 +126,53 @@ impl PhysicalMemory for InMemoryPhysicalMemory {
 
     fn is_live(&self) -> bool {
         self.live
+    }
+}
+
+/// A paging file held in memory.
+pub struct InMemoryPagingFile {
+    backing: Backing,
+    bytes: Vec<u8>,
+}
+
+impl InMemoryPagingFile {
+    pub fn new(backing: Backing, bytes: Vec<u8>) -> Self {
+        Self { backing, bytes }
+    }
+}
+
+impl PagingFile for InMemoryPagingFile {
+    fn backing(&self) -> Backing {
+        self.backing
+    }
+
+    fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> ForensicResult<ReadReport> {
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let have = self.bytes.len().saturating_sub(start).min(buf.len());
+        if have > 0 {
+            buf[..have].copy_from_slice(&self.bytes[start..start + have]);
+        }
+        buf[have..].fill(0);
+        let mut report = ReadReport::new();
+        report.push(
+            have as u64,
+            Validity::Paged {
+                backing: self.backing,
+                data: true,
+            },
+        );
+        report.push(
+            (buf.len() - have) as u64,
+            Validity::Paged {
+                backing: self.backing,
+                data: false,
+            },
+        );
+        Ok(report)
     }
 }
 

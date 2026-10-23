@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Va`, `Pa` (checked arithmetic only, serialized as `"0x…"`), `PageSize`;
   - `Validity`, `Backing`, `ReadReport`: which bytes of a read are real, run by run;
   - `PhysicalMemory`, `PhysRange`, `MemoryInputInfo`: the captured physical memory;
+  - `PagingFile`, `PagingFiles`: paging files supplied next to the capture (`pagefile.sys`,
+    `swapfile.sys`), keyed by the OS's paging-file number, so a `Translation::PageFile` page
+    reads as `Paged { data: true }`;
   - `AddressSpace`, `Translation` (including `FileBacked` for pages of a mapped file),
     `SpaceId`, `InvalidReason`, and `AddressSpaceExt` (typed and
     bounded string reads returning `MemValue`). `read_bytes` refuses lengths above `MAX_READ`
@@ -38,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Handle}` with `EntityId::{thread, module, driver, handle}`, and the dictionary fields
   `PROCESS_PARENT_PID`, `PROCESS_START`, `PROCESS_END`, `PROCESS_THREAD_ID`, `DLL_NAME`,
   `DLL_PATH`, `MEMORY_VA`, `MEMORY_PA`, `MEMORY_VALIDITY`, `MEMORY_UNAVAILABLE`.
-- Memory test doubles: `InMemoryPhysicalMemory`, `TestingAddressSpace`, `TestingMemoryImage`,
+- Memory test doubles: `InMemoryPhysicalMemory`, `InMemoryPagingFile`, `TestingAddressSpace`, `TestingMemoryImage`,
   and `TestingFormatFactory::memory`.
 - `DataAccessError::Unsupported`, `ForensicError::unsupported` and `ForensicError::is_unsupported`:
   "this source does not provide that data at all", distinct from data that is missing or failed

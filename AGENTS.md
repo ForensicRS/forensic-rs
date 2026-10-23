@@ -474,7 +474,9 @@ so they work on any backend.
 
 - **Layers.** `PhysicalMemory` (the capture) → `AddressSpace` (kernel and per-process views,
   `Translation` per page) → `MemoryImage` (typed records: `MemOsInfo`, `MemProcess`, `MemThread`,
-  `MemModule`, `MemRegion`, `MemHandle`). Consumers take `&dyn MemoryImage`.
+  `MemModule`, `MemRegion`, `MemHandle`). Consumers take `&dyn MemoryImage`. Paging files
+  supplied next to the capture are `PagingFile`s in a `PagingFiles` set, keyed by the OS's
+  paging-file number; a backend reads `Translation::PageFile` pages from it.
 - **Reads report validity.** Every read returns a `ReadReport`; bytes without data are
   zero-filled and reported, never silently zeros. `AddressSpaceExt` reads give a `MemValue` that
   is `Known` only when every byte is real data.
@@ -502,7 +504,7 @@ so they work on any backend.
   `EntityId::{process, thread, module, driver, handle}` for correlation.
 - **Hostile input.** Memory images are attacker-controlled. Backends bounds-check, bound counts
   and iterations, detect cycles, and never panic; `Va`/`Pa` have no wrapping arithmetic.
-- **Testing.** `InMemoryPhysicalMemory`, `TestingAddressSpace` and `TestingMemoryImage`
+- **Testing.** `InMemoryPhysicalMemory`, `InMemoryPagingFile`, `TestingAddressSpace` and `TestingMemoryImage`
   (`prelude::testing`) build images by hand; `tests/memory_contract.rs` shows a
   backend-independent analyzer and parser factory end to end.
 

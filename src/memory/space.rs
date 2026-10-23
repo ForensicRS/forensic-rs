@@ -48,7 +48,8 @@ pub enum Translation {
     Prototype {
         pte_va: Va,
     },
-    /// In a paging file: which one, and at what byte offset.
+    /// In a paging file: `file` is the OS's paging-file number and `offset` the byte offset in
+    /// that file. [`PagingFiles`](super::PagingFiles) reads it when the file is supplied.
     PageFile {
         file: u8,
         offset: u64,

@@ -20,7 +20,9 @@ pub use db::{InMemoryForensicDb, InMemoryTable};
 pub use events::{TestingEventLogReader, basic_event_log};
 pub use factories::TestingFormatFactory;
 pub use hooks::TestingProviderHook;
-pub use memory::{InMemoryPhysicalMemory, TestingAddressSpace, TestingMemoryImage};
+pub use memory::{
+    InMemoryPagingFile, InMemoryPhysicalMemory, TestingAddressSpace, TestingMemoryImage,
+};
 pub use parser::{CollectingOutput, TestParserFactory, TestParserFactoryBuilder, collect_run};
 pub use registry::{MountedCell, TestingRegistry};
 pub use vfs::{InMemoryVirtualFile, InMemoryVirtualFileSystem};

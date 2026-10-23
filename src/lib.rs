@@ -148,8 +148,8 @@ pub mod prelude {
         AddressSpace, AddressSpaceExt, Backing, Bounded, InvalidReason, MemHandle, MemIter,
         MemLocation, MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind, MemRecordMeta,
         MemRegion, MemThread, MemValue, MemoryImage, MemoryImageExt, MemoryInputInfo, MemorySpec,
-        Pa, PageSize, PhysRange, PhysicalMemory, ReadReport, RecordSource, RegionKind, SpaceId,
-        Translation, Va, Validity,
+        Pa, PageSize, PagingFile, PagingFiles, PhysRange, PhysicalMemory, ReadReport, RecordSource,
+        RegionKind, SpaceId, Translation, Va, Validity,
     };
     pub use crate::provenance::{
         Acquisition, Anomalies, AnomalyDetail, AnomalyFlags, Confidence, DerivedFrom, Locus,
