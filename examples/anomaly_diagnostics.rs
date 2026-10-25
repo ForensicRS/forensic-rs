@@ -105,17 +105,17 @@ impl Analyzer for ThresholdAnalyzer {
         _context: &TriageContext,
         out: &mut Vec<Finding>,
     ) -> ForensicResult<()> {
-        if let Some(Field::U64(value)) = data.field("measurement.value") {
-            if *value > self.threshold {
-                out.push(
-                    Finding::new(
-                        FindingSeverity::Medium,
-                        FindingCategory::SuspiciousActivity,
-                        format!("Measurement {value} exceeds threshold {}", self.threshold),
-                    )
-                    .with_artifact(data.artifact().clone()),
-                );
-            }
+        if let Some(Field::U64(value)) = data.field("measurement.value")
+            && *value > self.threshold
+        {
+            out.push(
+                Finding::new(
+                    FindingSeverity::Medium,
+                    FindingCategory::SuspiciousActivity,
+                    format!("Measurement {value} exceeds threshold {}", self.threshold),
+                )
+                .with_artifact(data.artifact().clone()),
+            );
         }
         Ok(())
     }

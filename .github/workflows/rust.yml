@@ -52,8 +52,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Rust 1.86
-      uses: dtolnay/rust-toolchain@1.86
+    - name: Set up Rust 1.88
+      uses: dtolnay/rust-toolchain@1.88
 
     - name: Check
       run: cargo check --lib

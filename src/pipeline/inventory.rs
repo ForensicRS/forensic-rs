@@ -199,10 +199,10 @@ impl ArtifactParserFactory for ContainerInventoryParser {
                     })
                 };
 
-                if let Some(record) = record {
-                    if out.emit(Ok(record)).is_stop() {
-                        return Ok(());
-                    }
+                if let Some(record) = record
+                    && out.emit(Ok(record)).is_stop()
+                {
+                    return Ok(());
                 }
             }
             Ok(())

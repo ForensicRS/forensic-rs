@@ -83,18 +83,16 @@ impl FileSystem for MountTable {
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         for (prefix, _) in &self.mounts {
-            if let Some(parent) = prefix.parent() {
-                if parent == path {
-                    if let Some(name) = prefix.file_name() {
-                        if seen.insert(name.to_string()) {
-                            out.push(Ok(DirEntry {
-                                path: prefix.clone(),
-                                file_type: crate::traits::vfs::VFileType::Directory,
-                                metadata: None,
-                            }));
-                        }
-                    }
-                }
+            if let Some(parent) = prefix.parent()
+                && parent == path
+                && let Some(name) = prefix.file_name()
+                && seen.insert(name.to_string())
+            {
+                out.push(Ok(DirEntry {
+                    path: prefix.clone(),
+                    file_type: crate::traits::vfs::VFileType::Directory,
+                    metadata: None,
+                }));
             }
         }
         if out.is_empty() {
@@ -162,10 +160,10 @@ impl FileSystem for OverlayFs {
                 any_ok = true;
                 for entry in entries {
                     let Ok(entry) = entry else { continue };
-                    if let Some(name) = entry.file_name() {
-                        if seen.insert(name.to_string()) {
-                            out.push(Ok(entry));
-                        }
+                    if let Some(name) = entry.file_name()
+                        && seen.insert(name.to_string())
+                    {
+                        out.push(Ok(entry));
                     }
                 }
             }

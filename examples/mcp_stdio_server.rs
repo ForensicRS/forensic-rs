@@ -1103,17 +1103,17 @@ impl Server {
                                     Ok(content) => {
                                         let mut value =
                                             resource_content_to_mcp(&resource_id, content.clone());
-                                        if self.looks_like_container(&content, &resource_id.path, &cancellation) {
-                                            if let serde_json::Value::Object(map) = &mut value {
-                                                map.insert(
-                                                    "mount_uri".to_string(),
-                                                    serde_json::Value::String(mount_child_uri(
-                                                        &resource_id.provider,
-                                                        &resource_id.path,
-                                                        "",
-                                                    )),
-                                                );
-                                            }
+                                        if self.looks_like_container(&content, &resource_id.path, &cancellation)
+                                            && let serde_json::Value::Object(map) = &mut value
+                                        {
+                                            map.insert(
+                                                "mount_uri".to_string(),
+                                                serde_json::Value::String(mount_child_uri(
+                                                    &resource_id.provider,
+                                                    &resource_id.path,
+                                                    "",
+                                                )),
+                                            );
                                         }
                                         Ok(value)
                                     }

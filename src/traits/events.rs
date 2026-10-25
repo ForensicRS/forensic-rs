@@ -198,15 +198,15 @@ impl EventLogQuery {
         if !self.event_ids.is_empty() && !self.event_ids.contains(&record.event_id) {
             return false;
         }
-        if let Some(from) = self.time_from {
-            if record.timestamp < from {
-                return false;
-            }
+        if let Some(from) = self.time_from
+            && record.timestamp < from
+        {
+            return false;
         }
-        if let Some(to) = self.time_to {
-            if record.timestamp > to {
-                return false;
-            }
+        if let Some(to) = self.time_to
+            && record.timestamp > to
+        {
+            return false;
         }
         if !self.providers.is_empty() && !self.providers.iter().any(|p| p == &record.provider) {
             return false;

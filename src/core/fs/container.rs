@@ -392,12 +392,12 @@ impl FileSystem for ContainerFs {
                 .supports(crate::traits::format::MountKind::FileSystem);
             return Ok(Box::new(iter.map(move |entry| {
                 let mut entry = entry?;
-                if supports_fs && entry.file_type == VFileType::File {
-                    if let Some(m) = entry.metadata.as_mut() {
-                        if policy.should_probe(entry.path.as_path(), m.size, m.attributes) {
-                            m.attributes |= FileAttributes::CONTAINER;
-                        }
-                    }
+                if supports_fs
+                    && entry.file_type == VFileType::File
+                    && let Some(m) = entry.metadata.as_mut()
+                    && policy.should_probe(entry.path.as_path(), m.size, m.attributes)
+                {
+                    m.attributes |= FileAttributes::CONTAINER;
                 }
                 Ok(entry)
             })));

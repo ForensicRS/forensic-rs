@@ -217,10 +217,10 @@ impl MountResolver {
             cancellation,
         );
         for factory in &self.factories {
-            if let Some(want) = want {
-                if factory.yields() != want {
-                    continue;
-                }
+            if let Some(want) = want
+                && factory.yields() != want
+            {
+                continue;
             }
             if factory.probe(file, &ctx)? != ProbeScore::No {
                 return Ok(true);
@@ -307,10 +307,10 @@ impl MountResolver {
         // refused hop would have saved.
         let mut best: Option<(ProbeScore, &Arc<dyn FormatFactory>)> = None;
         for factory in &self.factories {
-            if let Some(want) = want {
-                if factory.yields() != want {
-                    continue;
-                }
+            if let Some(want) = want
+                && factory.yields() != want
+            {
+                continue;
             }
             let score = factory.probe(working_file.as_mut(), &ctx)?;
             if score == ProbeScore::No {

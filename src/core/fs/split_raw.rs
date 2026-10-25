@@ -74,10 +74,11 @@ fn numbered_siblings(
         let Some(digits) = name.strip_prefix(prefix) else {
             continue;
         };
-        if digits.len() == width && digits.bytes().all(|b| b.is_ascii_digit()) {
-            if let Ok(n) = digits.parse::<u64>() {
-                found.insert(n, name.to_string());
-            }
+        if digits.len() == width
+            && digits.bytes().all(|b| b.is_ascii_digit())
+            && let Ok(n) = digits.parse::<u64>()
+        {
+            found.insert(n, name.to_string());
         }
     }
     Ok(found)

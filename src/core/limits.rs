@@ -178,16 +178,16 @@ impl SpillStore for MemorySpillStore {
         src: &mut dyn Read,
         size_hint: Option<u64>,
     ) -> ForensicResult<Box<dyn VirtualFile>> {
-        if let Some(hint) = size_hint {
-            if hint as usize > self.limit {
-                return Err(ForensicError::other(
-                    "MemorySpillStore",
-                    format!(
-                        "refusing to materialize {hint} bytes in memory (limit {})",
-                        self.limit
-                    ),
-                ));
-            }
+        if let Some(hint) = size_hint
+            && hint as usize > self.limit
+        {
+            return Err(ForensicError::other(
+                "MemorySpillStore",
+                format!(
+                    "refusing to materialize {hint} bytes in memory (limit {})",
+                    self.limit
+                ),
+            ));
         }
         // Read one byte past the limit to detect an unbounded/lying
         // size_hint without ever holding more than limit+1 bytes.

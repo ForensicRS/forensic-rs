@@ -432,22 +432,22 @@ impl VfsProvider {
     fn resolve_hook(&self, path: &str) -> Option<(&dyn ProviderHook, String, String, BridgeValue)> {
         let mut candidate = FPath::new(path);
         loop {
-            if let Ok(meta) = self.inner.metadata(candidate) {
-                if meta.is_file() {
-                    let real_file_path = candidate.as_str().to_string();
-                    let tail = path[real_file_path.len()..]
-                        .trim_start_matches(['/', '\\'])
-                        .to_string();
-                    let peek = self.content_peek(&real_file_path).ok()?;
-                    for hook in &self.hooks {
-                        if hook.matches_path(&real_file_path)
-                            && hook.matches_value(&real_file_path, &peek)
-                        {
-                            return Some((hook.as_ref(), real_file_path, tail, peek));
-                        }
+            if let Ok(meta) = self.inner.metadata(candidate)
+                && meta.is_file()
+            {
+                let real_file_path = candidate.as_str().to_string();
+                let tail = path[real_file_path.len()..]
+                    .trim_start_matches(['/', '\\'])
+                    .to_string();
+                let peek = self.content_peek(&real_file_path).ok()?;
+                for hook in &self.hooks {
+                    if hook.matches_path(&real_file_path)
+                        && hook.matches_value(&real_file_path, &peek)
+                    {
+                        return Some((hook.as_ref(), real_file_path, tail, peek));
                     }
-                    return None;
                 }
+                return None;
             }
             candidate = candidate.parent()?;
         }
@@ -577,13 +577,13 @@ impl ResourceProvider for VfsProvider {
         // dot in it. A failed attribute fetch degrades to "no extra keys", never to a failed
         // `metadata` call -- `metadata` succeeding above is already the stronger guarantee this
         // method makes.
-        if let Some(attrs) = self.inner.as_attributes() {
-            if let Ok(facts) = attrs.attributes(FPath::new(path)) {
-                for (key, field) in facts {
-                    values
-                        .entry(key)
-                        .or_insert_with(|| CapabilityValue::from(field));
-                }
+        if let Some(attrs) = self.inner.as_attributes()
+            && let Ok(facts) = attrs.attributes(FPath::new(path))
+        {
+            for (key, field) in facts {
+                values
+                    .entry(key)
+                    .or_insert_with(|| CapabilityValue::from(field));
             }
         }
         Ok(ResourceMetadata {
@@ -717,11 +717,11 @@ impl ForensicProvider for VfsProvider {
         );
         // Format-specific facts, same rule as the ResourceProvider impl above: never shadow
         // core's own keys, never fail this call over a failed attribute fetch.
-        if let Some(attrs) = self.inner.as_attributes() {
-            if let Ok(facts) = attrs.attributes(FPath::new(path)) {
-                for (key, field) in facts {
-                    map.entry(key).or_insert_with(|| BridgeValue::from(field));
-                }
+        if let Some(attrs) = self.inner.as_attributes()
+            && let Ok(facts) = attrs.attributes(FPath::new(path))
+        {
+            for (key, field) in facts {
+                map.entry(key).or_insert_with(|| BridgeValue::from(field));
             }
         }
         Ok(map)

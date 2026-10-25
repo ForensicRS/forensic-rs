@@ -146,10 +146,10 @@ pub fn users_with_errors(
 
 /// Records a failure, but not a key or value that is simply absent.
 fn keep_unless_absent(result: ForensicResult<()>, errors: &mut Vec<ForensicError>) {
-    if let Err(e) = result {
-        if !e.is_registry_not_found() {
-            errors.push(e);
-        }
+    if let Err(e) = result
+        && !e.is_registry_not_found()
+    {
+        errors.push(e);
     }
 }
 

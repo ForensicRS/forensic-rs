@@ -492,7 +492,8 @@ fn acumulated_day_month(month: u8, year: u16) -> u16 {
 }
 
 fn is_leap_year(year: u16) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 100 == 0 && year % 400 == 0)
+    (year.is_multiple_of(4) && !year.is_multiple_of(100))
+        || (year.is_multiple_of(100) && year.is_multiple_of(400))
 }
 fn to_years(mut days: u128) -> (u16, u128) {
     let mut year = 1601;

@@ -698,10 +698,10 @@ impl<T: ForensicRows + ?Sized> ForensicRowsExt for T {
     fn find_column_index(&self, name: &str) -> ForensicResult<usize> {
         let count = self.column_count();
         for i in 0..count {
-            if let Some(col_name) = self.column_name(i) {
-                if col_name.eq_ignore_ascii_case(name) {
-                    return Ok(i);
-                }
+            if let Some(col_name) = self.column_name(i)
+                && col_name.eq_ignore_ascii_case(name)
+            {
+                return Ok(i);
             }
         }
         Err(ForensicError::missing_data(

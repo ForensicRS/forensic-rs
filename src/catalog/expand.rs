@@ -502,12 +502,12 @@ fn finish(pattern: &str, style: Style) -> String {
     let sep = if style == Style::PosixPath { '/' } else { '\\' };
     let bounded = format!("**{GLOBSTAR_DEFAULT_DEPTH}");
     let mut parts: Vec<&str> = pattern.split(sep).filter(|c| !c.is_empty()).collect();
-    if style == Style::WindowsPath {
-        if let Some(first) = parts.first() {
-            if first.len() == 2 && first.ends_with(':') {
-                parts.remove(0);
-            }
-        }
+    if style == Style::WindowsPath
+        && let Some(first) = parts.first()
+        && first.len() == 2
+        && first.ends_with(':')
+    {
+        parts.remove(0);
     }
     let parts: Vec<&str> = parts
         .into_iter()

@@ -194,7 +194,7 @@ impl<'a> ByteReader<'a> {
     /// often malformed, and callers generally prefer best-effort text over a
     /// hard parse failure for a single string field.
     pub fn read_utf16le_string(&mut self, byte_len: usize) -> ForensicResult<String> {
-        if byte_len % 2 != 0 {
+        if !byte_len.is_multiple_of(2) {
             return Err(ForensicError::format_corrupted(
                 "utf16le_string",
                 self.pos as u64,

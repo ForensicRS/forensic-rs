@@ -103,21 +103,21 @@ impl InvocationContext {
                 "progress state is unavailable",
             )
         })?;
-        if let Some(last) = *last_progress {
-            if update.current <= last {
-                return Err(CapabilityError::new(
-                    CapabilityErrorKind::InvalidInput,
-                    "progress must increase during an invocation",
-                ));
-            }
+        if let Some(last) = *last_progress
+            && update.current <= last
+        {
+            return Err(CapabilityError::new(
+                CapabilityErrorKind::InvalidInput,
+                "progress must increase during an invocation",
+            ));
         }
-        if let Some(total) = update.total {
-            if update.current > total {
-                return Err(CapabilityError::new(
-                    CapabilityErrorKind::InvalidInput,
-                    "progress cannot exceed total",
-                ));
-            }
+        if let Some(total) = update.total
+            && update.current > total
+        {
+            return Err(CapabilityError::new(
+                CapabilityErrorKind::InvalidInput,
+                "progress cannot exceed total",
+            ));
         }
         self.progress.report(update.clone())?;
         *last_progress = Some(update.current);

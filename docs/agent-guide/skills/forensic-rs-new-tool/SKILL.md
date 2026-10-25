@@ -12,7 +12,7 @@ Copy the templates in `assets/` and fill in the `{{...}}` placeholders rather th
 
 ## What a new repo needs, and why
 
-**`Cargo.toml`** — depend on `forensic-rs`; keep `edition`/`rust-version` compatible with the framework (`edition = "2024"`, `rust-version = "1.86"` as of forensic-rs 0.14.0 — verify against the current `Cargo.toml` before relying on this, since it will drift). State clearly in the crate description which trait(s) it implements.
+**`Cargo.toml`** — depend on `forensic-rs`; keep `edition`/`rust-version` compatible with the framework (`edition = "2024"`, `rust-version = "1.88"` as of forensic-rs 0.14.0 — verify against the current `Cargo.toml` before relying on this, since it will drift). State clearly in the crate description which trait(s) it implements.
 
 **`README.md`** (`assets/README.md.template`) — state which trait(s) the crate implements and the decoupling story: does an analyzer built against it run unmodified on a live system, a parsed image, and a mock? That is the framework's core value proposition, and a downstream README that doesn't lead with it loses the main reason to depend on forensic-rs instead of writing bespoke access code.
 
