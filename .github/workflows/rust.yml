@@ -23,15 +23,20 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
+  # Pinned so a new stable release can't fail the build with lints it
+  # just added. Raise it deliberately and fix what the new version finds.
   lint:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Set up Rust 1.99
+      uses: dtolnay/rust-toolchain@1.99
       with:
-        components: clippy
+        components: clippy, rustfmt
+
+    - name: Format
+      run: cargo fmt --check
 
     - name: Clippy
       run: cargo clippy --all-targets -- -D warnings
