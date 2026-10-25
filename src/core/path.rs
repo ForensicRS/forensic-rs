@@ -16,7 +16,7 @@
 //!
 //! `UNC` paths (`\\server\share\...`) parse without error but their leading
 //! `\\server\share` segment is folded into two plain [`Component::Normal`]
-//! segments in this version — round-tripping through [`FPath::to_string`]
+//! segments in this version — round-tripping through `FPath::to_string`
 //! preserves the text, but `\\server` is not yet a distinct addressable
 //! component. Likewise, a drive-relative path with no separator after the
 //! drive (`C:Windows`, a legacy DOS oddity) parses identically to the

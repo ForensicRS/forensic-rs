@@ -1,3 +1,45 @@
+//! A framework for building forensic artifact analysis tools that can be reused as libraries,
+//! unchanged, across many projects.
+//!
+//! The core idea is to separate *analysis* from *data access*. An analyzer that reads registry
+//! keys, files, database rows or event-log records is written against a trait, so the same code
+//! runs on a live system, a parsed hive or disk image, a triage ZIP, or a mock in a unit test.
+//!
+//! ```
+//! use forensic_rs::prelude::*;
+//! use forensic_rs::utils::testing::TestingRegistry;
+//!
+//! // Works on any `Registry` backend: live API, hive parser, memory image, test double.
+//! fn product_name(reg: &dyn Registry) -> ForensicResult<String> {
+//!     let key = reg.key(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion")?;
+//!     key.value("ProductName")?.try_into()
+//! }
+//!
+//! let registry = TestingRegistry::new();
+//! let _ = product_name(&registry);
+//! ```
+//!
+//! # Where to start
+//!
+//! - [`prelude`]: everything a consumer normally needs, in one `use`.
+//! - Evidence sources: [`traits::vfs`] (`FileSystem`), [`traits::registry`] (`Registry`),
+//!   [`traits::db`] (`ForensicDb`), [`traits::events`] (`EventLogReader`), and [`memory`]
+//!   (`MemoryImage`). Each has a minimal, object-safe core trait that backends implement and a
+//!   blanket-implemented `Ext` trait with the convenience API callers use.
+//! - Nested evidence (an archive inside an image inside a volume): [`traits::format`]
+//!   (`FormatFactory`) and [`core::resolver`] (`MountResolver`).
+//! - Running parsers and analyzers over evidence: [`pipeline`].
+//! - Where a value came from and how far to trust it: [`provenance`]. Recovered and carved
+//!   records: [`recovery`].
+//! - Exposing sources as MCP tools and resources with per-caller authorization:
+//!   [`capabilities`].
+//! - Test doubles for every source trait: [`utils::testing`].
+//!
+//! # Features
+//!
+//! - `serde` (default): `Serialize`/`Deserialize` on data types, the JSONL sinks, and
+//!   provenance side tables.
+
 pub mod activity;
 pub mod artifact;
 pub mod bridge;

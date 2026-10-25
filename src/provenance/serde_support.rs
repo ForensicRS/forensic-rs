@@ -109,7 +109,7 @@ impl ProvenanceStore {
     /// can contain dangling or cyclic references. That is intentional:
     /// per "divergence is evidence, not error", a malformed table doesn't
     /// fail to load; [`ProvenanceStore::confidence`] and [`expand`] both
-    /// degrade gracefully (to [`Confidence::Unknown`] / a truncated chain)
+    /// degrade gracefully (to [`Confidence::Unknown`](super::Confidence::Unknown) / a truncated chain)
     /// the first time such a reference is actually resolved, rather than
     /// rejecting the whole store up front.
     pub fn from_side_table(table: ProvenanceSideTable) -> Self {

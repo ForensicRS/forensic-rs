@@ -4,7 +4,7 @@
 //! [`ContainerInventoryParser`] knows no format itself: it walks the VFS looking for
 //! [`FileAttributes::CONTAINER`]-flagged entries (an OLE document, an archive, whatever the
 //! run's `MountResolver` has a factory for -- see `crate::core::fs::ContainerFs`, which is what
-//! sets that bit) and, when the backend supports it, forwards [`PathAttributes`]'s per-path facts
+//! sets that bit) and, when the backend supports it, forwards [`PathAttributes`](crate::traits::vfs::PathAttributes)'s per-path facts
 //! verbatim. One registration therefore covers every format the resolver knows, with zero
 //! per-format code living here.
 

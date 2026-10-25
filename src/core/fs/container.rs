@@ -1,15 +1,16 @@
 //! [`ContainerFs`]: makes container files transparently walkable. A container file (a `.doc`, a
-//! `.zip`, anything a registered [`FormatFactory`] can mount as a [`MountKind::FileSystem`])
+//! `.zip`, anything a registered [`FormatFactory`](crate::traits::format::FormatFactory) can mount as a
+//! [`MountKind::FileSystem`](crate::traits::format::MountKind::FileSystem))
 //! doubles as a directory -- `C:\docs\report.doc\Macros\VBA\Module1` is an ordinary path, with
 //! no `[mount]` marker segment. The file itself keeps `file_type: VFileType::File` (so
 //! `read_all`/hashing still sees the original bytes) and gains
-//! [`FileAttributes::CONTAINER`]; `read_dir` on it succeeds, gated at the [`Walk`] level by
-//! [`WalkOptions::descend_into_containers`].
+//! [`FileAttributes::CONTAINER`]; `read_dir` on it succeeds, gated at the [`Walk`](crate::core::fs::walk::Walk) level by
+//! [`WalkOptions::descend_into_containers`](crate::core::fs::walk::WalkOptions::descend_into_containers).
 //!
 //! Path splitting (finding where a container boundary is crossed) costs **zero byte reads** on
 //! the common case: an ordinary path resolves with exactly one `metadata()` call, identical to
 //! today, because the fast path checks the base filesystem first and only walks the boundary
-//! search when that misses. See [`ContainerFs::resolve_chain`].
+//! search when that misses. See `ContainerFs::resolve_chain`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -75,13 +76,14 @@ impl Default for DescentPolicy {
 
 impl DescentPolicy {
     /// Derives a policy from a resolver's own registered factories: the extension allow-list is
-    /// the union of every factory's [`FormatFactory::extensions`], and `max_size` matches the
+    /// the union of every factory's
+    /// [`FormatFactory::extensions`](crate::traits::format::FormatFactory::extensions), and `max_size` matches the
     /// resolver's own `Limits::materialize_in_memory_limit` (the real wall -- core's only
     /// shipped `SpillStore` already refuses above it, so a larger file would fail to mount
     /// anyway; deriving the policy from it means refusing cheaply, before any open, instead of
     /// expensively, after one). Adding a factory to the resolver automatically extends what this
     /// policy is willing to attempt; core never has to name a format itself. A factory whose
-    /// [`FormatFactory::hop_cost`] is `View` also lands its extensions in `view_extensions`,
+    /// [`FormatFactory::hop_cost`](crate::traits::format::FormatFactory::hop_cost) is `View` also lands its extensions in `view_extensions`,
     /// since it never materializes what it mounts.
     pub fn from_resolver(resolver: &MountResolver) -> Self {
         let mut extensions = BTreeSet::new();

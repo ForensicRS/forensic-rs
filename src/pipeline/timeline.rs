@@ -2,7 +2,7 @@
 //!
 //! [`TimelineSink`](super::sinks::TimelineSink) tracks earliest/latest
 //! bounds and counts — it never stores a record.
-//! [`JsonlTimelineSink`](super::sinks::JsonlTimelineSink) appends in
+//! `JsonlTimelineSink` (with the `serde` feature) appends in
 //! emission order and explicitly declines to sort. So the crate named
 //! after triage had no timeline: nothing ordered records, nothing deduped
 //! a re-parse of the same evidence, nothing gave a record a stable

@@ -137,7 +137,7 @@ impl ProvenanceStore {
     /// `derived_from` chain (weakest link wins) and then capping it by
     /// `anomalies`' own ceiling — anomalies can only lower confidence, never
     /// raise it. Cycle- and dangling-reference-safe: see
-    /// [`super::confidence::fold_chain_confidence`].
+    /// `fold_chain_confidence`.
     pub fn confidence(&self, id: ProvenanceId, anomalies: &Anomalies) -> Confidence {
         let chain = fold_chain_confidence(id, |lookup_id| {
             let inner = self.lock();

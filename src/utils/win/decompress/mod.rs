@@ -4,7 +4,7 @@ pub mod lz77;
 pub mod lznt1;
 pub mod xpress_huff;
 
-/// https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-xca/a8b7cb0a-92a6-4187-a23b-5e14273b96f8
+/// <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-xca/a8b7cb0a-92a6-4187-a23b-5e14273b96f8>
 #[repr(u32)]
 #[derive(Debug, Clone)]
 pub enum CompressionAlgorithm {

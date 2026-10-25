@@ -109,7 +109,7 @@ impl SourceView {
     }
 
     /// Convenience over `self.vfs().and_then(|fs| fs.as_attributes())`: per-path facts from the
-    /// configured VFS's [`PathAttributes`] probe, when both a VFS is configured and its backend
+    /// configured VFS's [`PathAttributes`](crate::traits::vfs::PathAttributes) probe, when both a VFS is configured and its backend
     /// supports the probe. `None` means "can't answer" (no VFS, or this backend doesn't surface
     /// per-path facts) -- never "the path has no attributes"; that distinction is the inner
     /// `ForensicResult`'s to make.
@@ -164,7 +164,7 @@ impl TriageContext {
     /// [`ContainerFs`](crate::core::fs::ContainerFs)-backed VFS already makes an ordinary path).
     ///
     /// Empty (every accessor returns `None`) until a pipeline installs the real sources via
-    /// [`Self::attach_sources`] at run start, or a caller pre-attaches them with
+    /// `attach_sources` at run start, or a caller pre-attaches them with
     /// [`Self::with_sources`] -- an analyzer never has to deal with a second layer of `Option`
     /// to tell "no sources configured" apart from "not running inside a pipeline".
     pub fn sources(&self) -> &SourceView {
@@ -172,7 +172,7 @@ impl TriageContext {
     }
 
     /// Pre-attaches sources to a context driven outside a [`crate::pipeline::TriagePipeline`]
-    /// run (a test harness, a bespoke driver). A real pipeline run calls [`Self::attach_sources`]
+    /// run (a test harness, a bespoke driver). A real pipeline run calls `attach_sources`
     /// itself at run start; this is for everything else.
     #[must_use]
     pub fn with_sources(mut self, sources: &TriageSources) -> Self {
@@ -447,7 +447,7 @@ impl<'a> ParseContext<'a> {
     }
 
     /// Best-effort resolution of a self-contained
-    /// [`Requirement`](crate::traits::forensic::Requirement) — one that
+    /// [`Requirement`] — one that
     /// needs no caller-chosen target locator to resolve:
     /// - [`Requirement::File`] resolves to the first match of a glob search
     ///   rooted at the VFS; [`ParseContext::resolve_files`] returns them all.
@@ -458,8 +458,8 @@ impl<'a> ParseContext<'a> {
     ///
     /// `Database`/`Registry`/`EventLog` requirements are declarative only:
     /// they document what a parser needs (for coverage reporting and
-    /// pre-flight authorization on [`ParserDescriptor::requirements`]
-    /// (crate::traits::forensic::ParserDescriptor::requirements)), but
+    /// pre-flight authorization on
+    /// [`ParserDescriptor::requirements`](crate::traits::forensic::ParserDescriptor::requirements)), but
     /// resolving one needs a specific target locator the parser itself
     /// chose — typically after resolving a `File` requirement first, or
     /// after finding the target another way. There is deliberately no

@@ -20,7 +20,7 @@ const MAX_CODE_BITS: usize = 15;
 /// Decompresses `in_buf`, appending to `out_buf` up to `out_buf.capacity()` bytes in total (the
 /// expected uncompressed size).
 ///
-/// Inspired by https://raw.githubusercontent.com/Velocidex/go-prefetch/master/lzxpress.go
+/// Inspired by <https://raw.githubusercontent.com/Velocidex/go-prefetch/master/lzxpress.go>
 pub fn decompress(in_buf: &[u8], out_buf: &mut Vec<u8>) -> ForensicResult<()> {
     let mut in_index = 0;
     let start = out_buf.len();

@@ -21,7 +21,7 @@ pub const BUILTIN_GUESTS_SID_BIN: [u8; 16] = [
 
 /// Converts a binary SID to a string
 ///
-/// https://learn.microsoft.com/es-es/windows/win32/secauthz/sid-components?redirectedfrom=MSDN
+/// <https://learn.microsoft.com/es-es/windows/win32/secauthz/sid-components?redirectedfrom=MSDN>
 ///
 /// ```rust
 /// use forensic_rs::utils::win::to_string_sid;
