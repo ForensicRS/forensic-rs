@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::anomalies::Anomalies;
-use super::confidence::{fold_chain_confidence, Confidence};
+use super::confidence::{Confidence, fold_chain_confidence};
 use super::ids::{ProvenanceId, SourceId};
 use super::model::{
     Acquisition, DerivedFrom, MergeReason, Provenance, ProvenanceSnapshot, Recovery, SourceKey,
@@ -53,7 +53,9 @@ impl ProvenanceStore {
         // Recover from poisoning rather than propagating a panic: a prior
         // panic elsewhere while holding the lock shouldn't take down every
         // subsequent provenance lookup with it.
-        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Interns `key`, returning a [`SourceHandle`] for it. Registering an
@@ -139,10 +141,13 @@ impl ProvenanceStore {
     pub fn confidence(&self, id: ProvenanceId, anomalies: &Anomalies) -> Confidence {
         let chain = fold_chain_confidence(id, |lookup_id| {
             let inner = self.lock();
-            inner
-                .records
-                .get(lookup_id.raw() as usize)
-                .map(|record| (record.acquisition, record.recovery, record.derived_from.clone()))
+            inner.records.get(lookup_id.raw() as usize).map(|record| {
+                (
+                    record.acquisition,
+                    record.recovery,
+                    record.derived_from.clone(),
+                )
+            })
         });
         chain.min(anomalies.confidence_ceiling())
     }
@@ -178,7 +183,9 @@ impl ProvenanceStore {
     /// order. Used to walk an entire store after deserializing it (e.g. the
     /// `store_deserialize` fuzz target), not needed for normal pipeline use.
     pub fn provenance_ids(&self) -> Vec<ProvenanceId> {
-        (0..self.record_count() as u32).map(ProvenanceId::from_raw).collect()
+        (0..self.record_count() as u32)
+            .map(ProvenanceId::from_raw)
+            .collect()
     }
 }
 
@@ -303,7 +310,9 @@ mod tests {
         {
             let mut inner = store.lock();
             let source_id = SourceId::from_raw(0);
-            inner.sources.push(SourceKey::Synthetic("cycle".to_string()));
+            inner
+                .sources
+                .push(SourceKey::Synthetic("cycle".to_string()));
             inner.records.push(Provenance {
                 source: source_id,
                 acquisition: Acquisition::ImageRead,

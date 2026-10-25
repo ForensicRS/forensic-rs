@@ -220,7 +220,9 @@ impl<'a> ByteReader<'a> {
                 return Err(ForensicError::format_corrupted(
                     "utf16le_cstring",
                     start as u64,
-                    compact_str::CompactString::const_new("no null terminator found within the scan limit"),
+                    compact_str::CompactString::const_new(
+                        "no null terminator found within the scan limit",
+                    ),
                 ));
             }
             let unit = self.read_u16_le()?;
@@ -255,7 +257,9 @@ impl<'a> ByteReader<'a> {
                 return Err(ForensicError::format_corrupted(
                     "cstring",
                     start as u64,
-                    compact_str::CompactString::const_new("no null terminator found within the scan limit"),
+                    compact_str::CompactString::const_new(
+                        "no null terminator found within the scan limit",
+                    ),
                 ));
             }
             let byte = self.read_u8()?;

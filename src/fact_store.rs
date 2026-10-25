@@ -172,7 +172,10 @@ impl FactStore for InMemoryFactStore {
         let groups = entity_facts.facts.entry(fact.clone()).or_default();
 
         if let Some(group) = groups.iter_mut().find(|g| g.value == value) {
-            let merged = store.merge(&[group.provenance, provenance], MergeReason::CrossSourceCorroboration);
+            let merged = store.merge(
+                &[group.provenance, provenance],
+                MergeReason::CrossSourceCorroboration,
+            );
             group.provenance = merged;
             group.count += 1;
             return ObservationOutcome::Corroborated {
@@ -241,7 +244,10 @@ impl FactStore for InMemoryFactStore {
     }
 
     fn entity_count(&self) -> usize {
-        self.entities.lock().expect("InMemoryFactStore poisoned").len()
+        self.entities
+            .lock()
+            .expect("InMemoryFactStore poisoned")
+            .len()
     }
 }
 
@@ -263,7 +269,13 @@ mod tests {
         let entity = EntityId::host("WORKSTATION01");
         let id = mint(&store, "prefetch");
 
-        let outcome = facts.observe(entity, "executed".into(), Field::Text("evil.exe".into()), id, &store);
+        let outcome = facts.observe(
+            entity,
+            "executed".into(),
+            Field::Text("evil.exe".into()),
+            id,
+            &store,
+        );
         assert!(matches!(outcome, ObservationOutcome::First { .. }));
         assert_eq!(facts.entity_count(), 1);
     }
@@ -286,11 +298,16 @@ mod tests {
             );
             last_provenance = Some(match outcome {
                 ObservationOutcome::First { provenance } => provenance,
-                ObservationOutcome::Corroborated { provenance, agreeing_count } => {
+                ObservationOutcome::Corroborated {
+                    provenance,
+                    agreeing_count,
+                } => {
                     assert_eq!(agreeing_count, i + 1);
                     provenance
                 }
-                ObservationOutcome::Diverged { .. } => panic!("all six sources agree; must not diverge"),
+                ObservationOutcome::Diverged { .. } => {
+                    panic!("all six sources agree; must not diverge")
+                }
             });
         }
 
@@ -319,10 +336,22 @@ mod tests {
         let entity = EntityId::host("WORKSTATION01");
 
         let id1 = mint(&store, "registry");
-        facts.observe(entity, "timezone".into(), Field::Text("UTC".into()), id1, &store);
+        facts.observe(
+            entity,
+            "timezone".into(),
+            Field::Text("UTC".into()),
+            id1,
+            &store,
+        );
 
         let id2 = mint(&store, "event_log");
-        let outcome = facts.observe(entity, "timezone".into(), Field::Text("EST".into()), id2, &store);
+        let outcome = facts.observe(
+            entity,
+            "timezone".into(),
+            Field::Text("EST".into()),
+            id2,
+            &store,
+        );
 
         match outcome {
             ObservationOutcome::Diverged {
@@ -349,8 +378,20 @@ mod tests {
         let host_a = EntityId::host("HOST-A");
         let host_b = EntityId::host("HOST-B");
 
-        facts.observe(host_a, "timezone".into(), Field::Text("UTC".into()), mint(&store, "s1"), &store);
-        facts.observe(host_b, "timezone".into(), Field::Text("EST".into()), mint(&store, "s2"), &store);
+        facts.observe(
+            host_a,
+            "timezone".into(),
+            Field::Text("UTC".into()),
+            mint(&store, "s1"),
+            &store,
+        );
+        facts.observe(
+            host_b,
+            "timezone".into(),
+            Field::Text("EST".into()),
+            mint(&store, "s2"),
+            &store,
+        );
 
         assert!(!facts.facts(&host_a)[0].is_disputed());
         assert!(!facts.facts(&host_b)[0].is_disputed());

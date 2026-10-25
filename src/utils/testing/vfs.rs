@@ -127,7 +127,10 @@ impl FileSystem for InMemoryVirtualFileSystem {
             .get(&key)
             .cloned()
             .ok_or_else(|| ForensicError::path_not_found(key))?;
-        Ok(Box::new(InMemoryVirtualFile { data: bytes, pos: 0 }))
+        Ok(Box::new(InMemoryVirtualFile {
+            data: bytes,
+            pos: 0,
+        }))
     }
 
     fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {

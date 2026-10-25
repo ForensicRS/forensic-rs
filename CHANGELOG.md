@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The memory-forensics contract (`src/memory/`, in the prelude), so any memory backend can
+  plug in and analyzers, parsers and tools written against it work on every backend:
+  - `Va`, `Pa` (checked arithmetic only, serialized as `"0x…"`), `PageSize`;
+    `Va::is_canonical` / `is_upper_half` for a space's `AddressSpace::va_bits` (48 by default
+    for 8-byte pointers, 57 for 5-level paging);
+  - `Validity`, `Backing`, `ReadReport`: which bytes of a read are real, run by run;
+  - `PhysicalMemory`, `PhysRange`, `MemoryInputInfo`: the captured physical memory;
+  - `PagingFile`, `PagingFiles`: paging files supplied next to the capture (`pagefile.sys`,
+    `swapfile.sys`), keyed by the OS's paging-file number, so a `Translation::PageFile` page
+    reads as `Paged { data: true }`;
+  - `AddressSpace`, `Translation` (including `FileBacked` for pages of a mapped file),
+    `SpaceId`, `InvalidReason`, and `AddressSpaceExt` (typed and
+    bounded string reads returning `MemValue`). `read_bytes` refuses lengths above `MAX_READ`
+    (16 MiB) instead of allocating them; the string readers return `Bounded<T>`, which says
+    when the bound cut the string;
+  - `MemValue` (`Known` / `Unavailable(Validity)` / `Unsupported`), `MemLocation`,
+    `MemRecordMeta`, `RecordSource`, `MemRecordKey`, `MemRecordKind`, and the typed records
+    `MemOsInfo`, `MemProcess`, `MemThread`, `MemModule`, `MemRegion` (+ `RegionKind`),
+    `MemHandle`;
+  - `MemoryImage` (with `as_registry`/`as_files` probes), `MemoryImageExt`, `MemorySpec`. Its
+    `provenance()` returns the store the records' provenance ids were minted in, so consumers
+    can resolve them. `MemRecordMeta::new` takes the record's validity (no default that could
+    claim a full read), and liveness is stated only by `PhysicalMemory::is_live`.
+    Kernel and process modules are separate kinds (`MemRecordKind::KernelModule`,
+    `ProcessModule`), one per method, and `os()` is optional like every other kind.
+- Memory integration points: `MountKind::Memory` / `Mounted::Memory` (+ `Mounted::as_memory`),
+  `Requirement::Memory(MemorySpec)` resolved by `ParseContext::resolve`,
+  `TriageSourcesBuilder::memory` / `TriageSources::memory` (the run's acquisition is then
+  `Acquisition::Memory`, or `LiveApi` for a live source), `CommonArtifact::Memory(MemoryArtifact)`,
+  `Locus::Memory` / `Locus::Physical`, `LocatorSegment::AddressSpace`,
+  `AnomalyFlags::INFERRED_LAYOUT` (`inferred_layout`), `EntityKind::{Thread, Module, Driver,
+  Handle}` with `EntityId::{thread, module, driver, handle}`, and the dictionary fields
+  `PROCESS_PARENT_PID`, `PROCESS_START`, `PROCESS_END`, `PROCESS_THREAD_ID`, `DLL_NAME`,
+  `DLL_PATH`, `MEMORY_VA`, `MEMORY_PA`, `MEMORY_VALIDITY`, `MEMORY_UNAVAILABLE`.
+- Memory test doubles: `InMemoryPhysicalMemory`, `InMemoryPagingFile`, `TestingAddressSpace`, `TestingMemoryImage`,
+  and `TestingFormatFactory::memory`.
+- `DataAccessError::Unsupported`, `ForensicError::unsupported` and `ForensicError::is_unsupported`:
+  "this source does not provide that data at all", distinct from data that is missing or failed
+  to read. `memory::unsupported(kind)`, which a `MemoryImage` returns for a record kind it does
+  not provide, now uses it.
 - Artifact locations (`src/catalog/`), in the ForensicArtifacts definition vocabulary:
   `ArtifactSource`, `ArtifactDefinition`, `SourceEntry`, `Os`, `Separator`,
   `RegistryValueRef`, the `ArtifactCatalog` trait and `SliceCatalog` (buildable as a `static`).
@@ -305,6 +345,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It also let back-references reach into earlier chunks and decoded a `0x0000` header (NTFS
   compression-unit padding) as data. Every read is now bounds-checked, back-references stay in
   the current chunk, and a zero header ends the stream.
+- `lz77::decompress` (plain Xpress, `COMPRESSION_FORMAT_XPRESS`) panicked on hostile input: it
+  indexed past the input on a cut literal, flags word, match or length, underflowed on a
+  back-reference before the start of the output, and decoded padding after the data until it
+  ran off the end. Every read is now bounds-checked, back-references reach only the output this
+  call produced, and the new `lz77::decompress_bounded` stops at an output bound (a
+  memory-compression page is 4096 bytes followed by padding).
+- `xpress_huff::decompress` panicked on an input of 256 to 259 bytes (a Huffman table without
+  the bit stream's header), on an over-subscribed Huffman table (more tree nodes than the table
+  allows), on a back-reference before the start of the output, and when a match overshot the
+  output size. These are errors now; symbol decoding is bounded by the 15-bit code length, and
+  a non-empty `out_buf` is appended to as documented.
+- Fuzz target `decompress` (plain LZ77, Xpress Huffman, LZNT1).
 
 - `ContainerFs::read_dir` on a container nested inside a mounted container (`disk.001/media`)
   returned the bare file instead of listing its contents: only a container on the base

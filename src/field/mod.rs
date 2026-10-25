@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 #[cfg(feature = "serde")]
-use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Visitor};
 
 pub mod ip;
 pub mod utils;
@@ -14,7 +14,11 @@ use crate::err::ForensicError;
 use crate::utils::time::{Filetime, ForensicTimestamp};
 
 fn field_cast_err(from: &'static str, to: &'static str) -> ForensicError {
-    ForensicError::cast_error(from, to, CompactString::const_new("incompatible field variant"))
+    ForensicError::cast_error(
+        from,
+        to,
+        CompactString::const_new("incompatible field variant"),
+    )
 }
 
 fn field_range_err(from: &'static str, to: &'static str) -> ForensicError {

@@ -35,7 +35,10 @@ impl TestingProviderHook {
         }
     }
 
-    pub fn matching_path(mut self, predicate: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
+    pub fn matching_path(
+        mut self,
+        predicate: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
         self.path_predicate = Box::new(predicate);
         self
     }

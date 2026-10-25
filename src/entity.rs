@@ -28,6 +28,14 @@ pub enum EntityKind {
     RegistryKey,
     ScheduledTask,
     Service,
+    /// A thread of a process.
+    Thread,
+    /// A loaded module (DLL, shared object), in a process or in the kernel.
+    Module,
+    /// A kernel driver.
+    Driver,
+    /// An open handle of a process.
+    Handle,
 }
 
 /// A stable, content-derived identifier for one entity.
@@ -93,7 +101,10 @@ impl EntityId {
 
     /// A file identified by content hash.
     pub fn file_by_hash(hash: &ContentAddress) -> Self {
-        Self::from_parts(EntityKind::File, &[&format!("{:?}", hash.algorithm), &hash.to_hex()])
+        Self::from_parts(
+            EntityKind::File,
+            &[&format!("{:?}", hash.algorithm), &hash.to_hex()],
+        )
     }
 
     /// A file identified by host + path, when no content hash is available.
@@ -104,7 +115,10 @@ impl EntityId {
     /// A process instance: PID alone is reused constantly, so identity
     /// requires the host and the process's start time too.
     pub fn process(host: &str, pid: u32, start_time: ForensicTimestamp) -> Self {
-        Self::from_parts(EntityKind::Process, &[host, &pid.to_string(), &format!("{start_time:?}")])
+        Self::from_parts(
+            EntityKind::Process,
+            &[host, &pid.to_string(), &format!("{start_time:?}")],
+        )
     }
 
     /// A network endpoint: an address, optionally scoped by port.
@@ -125,6 +139,41 @@ impl EntityId {
     pub fn service(host: &str, name: &str) -> Self {
         Self::from_parts(EntityKind::Service, &[host, name])
     }
+
+    /// A thread: like a pid, a tid is reused, so identity needs the owning
+    /// process and the thread's start time too.
+    pub fn thread(host: &str, pid: u32, tid: u32, start_time: ForensicTimestamp) -> Self {
+        Self::from_parts(
+            EntityKind::Thread,
+            &[
+                host,
+                &pid.to_string(),
+                &tid.to_string(),
+                &format!("{start_time:?}"),
+            ],
+        )
+    }
+
+    /// A module loaded into `process` (an [`EntityId::process`]), or into the
+    /// kernel when `process` is `None`, identified by its path.
+    pub fn module(host: &str, process: Option<&EntityId>, path: &str) -> Self {
+        let owner = process.map_or_else(|| "kernel".to_string(), |p| p.hash.to_string());
+        Self::from_parts(EntityKind::Module, &[host, &owner, path])
+    }
+
+    /// A kernel driver, identified by its service or image name.
+    pub fn driver(host: &str, name: &str) -> Self {
+        Self::from_parts(EntityKind::Driver, &[host, name])
+    }
+
+    /// A handle, identified by its owning process (an [`EntityId::process`])
+    /// and its value in that process's handle table.
+    pub fn handle(host: &str, process: &EntityId, value: u64) -> Self {
+        Self::from_parts(
+            EntityKind::Handle,
+            &[host, &process.hash.to_string(), &value.to_string()],
+        )
+    }
 }
 
 #[cfg(test)]
@@ -134,7 +183,10 @@ mod tests {
 
     #[test]
     fn same_inputs_produce_the_same_id() {
-        assert_eq!(EntityId::host("WORKSTATION01"), EntityId::host("WORKSTATION01"));
+        assert_eq!(
+            EntityId::host("WORKSTATION01"),
+            EntityId::host("WORKSTATION01")
+        );
         assert_eq!(
             EntityId::user("WORKSTATION01", "S-1-5-21-1"),
             EntityId::user("WORKSTATION01", "S-1-5-21-1")
@@ -171,7 +223,10 @@ mod tests {
     fn process_identity_includes_start_time_not_just_pid() {
         let t1 = ForensicTimestamp::from_unix_secs(1_700_000_000);
         let t2 = ForensicTimestamp::from_unix_secs(1_700_000_100);
-        assert_ne!(EntityId::process("h", 1234, t1), EntityId::process("h", 1234, t2));
+        assert_ne!(
+            EntityId::process("h", 1234, t1),
+            EntityId::process("h", 1234, t2)
+        );
     }
 
     #[test]

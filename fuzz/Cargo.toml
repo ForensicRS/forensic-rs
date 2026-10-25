@@ -21,3 +21,10 @@ path = "fuzz_targets/store_deserialize.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decompress"
+path = "fuzz_targets/decompress.rs"
+test = false
+doc = false
+bench = false

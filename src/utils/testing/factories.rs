@@ -43,6 +43,15 @@ impl TestingFormatFactory {
             mounted: Mounted::Database(Arc::new(db)),
         }
     }
+
+    /// A factory that mounts every probed file as `image`
+    /// ([`Mounted::Memory`]), e.g. a [`super::TestingMemoryImage`].
+    pub fn memory(name: &'static str, image: Arc<dyn crate::memory::MemoryImage>) -> Self {
+        Self {
+            name,
+            mounted: Mounted::Memory(image),
+        }
+    }
 }
 
 impl FormatFactory for TestingFormatFactory {
@@ -54,11 +63,19 @@ impl FormatFactory for TestingFormatFactory {
         self.mounted.kind()
     }
 
-    fn probe(&self, _file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        _file: &mut dyn VirtualFile,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         Ok(ProbeScore::Strong)
     }
 
-    fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    fn mount(
+        &self,
+        _file: Box<dyn VirtualFile>,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<Mounted> {
         Ok(self.mounted.clone())
     }
 }
@@ -124,8 +141,36 @@ mod tests {
     }
 
     #[test]
+    fn memory_factory_mounts_a_memory_image() {
+        use crate::memory::{MemProcess, MemRecordKey, MemRecordMeta, Va};
+        let image = super::super::TestingMemoryImage::empty().with_process(MemProcess::new(
+            MemRecordKey::Object(Va::new(0x1000)),
+            MemRecordMeta::new(
+                super::super::test_provenance_id(),
+                crate::memory::Validity::Resident,
+            ),
+        ));
+        let factory = TestingFormatFactory::memory("test-memory", StdArc::new(image));
+        assert_eq!(factory.yields(), MountKind::Memory);
+        let fs: StdArc<dyn crate::traits::vfs::FileSystem> =
+            StdArc::new(super::super::InMemoryVirtualFileSystem::new());
+        let locator = EvidenceLocator::root();
+        let limits = crate::core::limits::Limits::default();
+        let spill = MemorySpillStore::new(1024);
+        let cancel = crate::bridge::CancellationToken::new();
+        let mount_ctx = ctx(&fs, &locator, &limits, &spill, &cancel);
+        let mounted = factory
+            .mount(Box::new(EmptyFile(Cursor::new(Vec::new()))), &mount_ctx)
+            .unwrap();
+        assert_eq!(mounted.kind(), MountKind::Memory);
+        let image = mounted.as_memory().unwrap();
+        assert_eq!(image.processes().unwrap().count(), 1);
+    }
+
+    #[test]
     fn event_log_factory_mounts_a_working_reader() {
-        let factory = TestingFormatFactory::event_log("test-events", super::super::basic_event_log());
+        let factory =
+            TestingFormatFactory::event_log("test-events", super::super::basic_event_log());
         let fs: StdArc<dyn crate::traits::vfs::FileSystem> =
             StdArc::new(super::super::InMemoryVirtualFileSystem::new());
         let locator = EvidenceLocator::root();
@@ -173,6 +218,9 @@ mod tests {
         let cancel = crate::bridge::CancellationToken::new();
         let mount_ctx = ctx(&fs, &locator, &limits, &spill, &cancel);
         let mut file = EmptyFile(Cursor::new(b"anything at all".to_vec()));
-        assert_eq!(factory.probe(&mut file, &mount_ctx).unwrap(), ProbeScore::Strong);
+        assert_eq!(
+            factory.probe(&mut file, &mount_ctx).unwrap(),
+            ProbeScore::Strong
+        );
     }
 }

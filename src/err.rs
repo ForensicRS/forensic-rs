@@ -869,6 +869,18 @@ pub enum DataAccessError {
     ///
     /// Used when iterating over data sources and reaching the end.
     NoMoreData,
+
+    /// The source does not provide this kind of data at all
+    ///
+    /// Distinct from [`DataAccessError::Missing`]: nothing is missing from the evidence, the
+    /// implementation (a memory backend, a live connector) does not offer this data. Callers
+    /// can tell "none of these" from "not supported" with [`ForensicError::is_unsupported`].
+    Unsupported {
+        /// What is not provided (e.g. "memory handles")
+        what: &'static str,
+        /// Which implementation, or why
+        context: CompactString,
+    },
 }
 
 impl std::fmt::Display for DataAccessError {
@@ -896,6 +908,9 @@ impl std::fmt::Display for DataAccessError {
             }
             DataAccessError::NoMoreData => {
                 write!(f, "No more content/data/files")
+            }
+            DataAccessError::Unsupported { what, context } => {
+                write!(f, "Not supported: {}: {}", what, context)
             }
         }
     }
@@ -1620,6 +1635,15 @@ impl ForensicError {
         Self::DataAccess(DataAccessError::Missing { data_type, context })
     }
 
+    /// Creates an "unsupported" error: the source does not provide `what` at all (see
+    /// [`DataAccessError::Unsupported`]). Test for it with [`Self::is_unsupported`].
+    pub fn unsupported(what: &'static str, context: impl Into<CompactString>) -> Self {
+        Self::DataAccess(DataAccessError::Unsupported {
+            what,
+            context: context.into(),
+        })
+    }
+
     /// Creates a file size error
     ///
     /// Use this when files exceed allowed size limits.
@@ -1777,6 +1801,16 @@ impl ForensicError {
                 RegistryError::KeyNotFound { .. } | RegistryError::ValueNotFound { .. },
             ) => true,
             Self::Contextualized { inner, .. } => inner.is_registry_not_found(),
+            _ => false,
+        }
+    }
+
+    /// Whether the source does not provide this data at all ([`DataAccessError::Unsupported`]),
+    /// as opposed to failing to read it. Looks through context wrappers.
+    pub fn is_unsupported(&self) -> bool {
+        match self {
+            Self::DataAccess(DataAccessError::Unsupported { .. }) => true,
+            Self::Contextualized { inner, .. } => inner.is_unsupported(),
             _ => false,
         }
     }

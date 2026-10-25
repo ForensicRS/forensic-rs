@@ -320,6 +320,15 @@ pub(crate) fn derive_acquisition(sources: &TriageSources) -> (Acquisition, Optio
     let acquisition = sources
         .acquisition()
         .or_else(|| source_kind.map(Acquisition::from))
+        .or_else(|| {
+            sources.memory().map(|image| {
+                if image.physical().is_live() {
+                    Acquisition::LiveApi
+                } else {
+                    Acquisition::Memory
+                }
+            })
+        })
         .unwrap_or(Acquisition::LiveApi);
     (acquisition, source_kind)
 }
@@ -458,6 +467,10 @@ impl<'a> ParseContext<'a> {
     /// lazy, on-demand mounting. Once you have a locator and an opened
     /// file, use [`ParseContext::mount`].
     ///
+    /// - [`Requirement::Memory`] resolves to the run's memory image
+    ///   ([`Mounted::Memory`]) when it satisfies the spec; `NotPresent`
+    ///   without one, `Unsupported` when it lacks a kind or the OS family.
+    ///
     /// `Secret` requirements never resolve through this method — see
     /// [`ParseContext::resolve_secret`] and its doc for why.
     pub fn resolve(&self, requirement: &Requirement) -> crate::err::ForensicResult<Resolution> {
@@ -478,6 +491,13 @@ impl<'a> ParseContext<'a> {
                 Ok(Resolution::Unavailable(UnavailableReason::Unsupported))
             }
             Requirement::Secret(_) => Ok(Resolution::Unavailable(UnavailableReason::Unsupported)),
+            Requirement::Memory(spec) => Ok(match self.sources.memory() {
+                None => Resolution::Unavailable(UnavailableReason::NotPresent),
+                Some(image) if spec.is_satisfied_by(image.as_ref()) => {
+                    Resolution::Resolved(Mounted::Memory(Arc::clone(image)))
+                }
+                Some(_) => Resolution::Unavailable(UnavailableReason::Unsupported),
+            }),
         }
     }
 

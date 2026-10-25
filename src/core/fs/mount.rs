@@ -36,7 +36,9 @@ impl MountTable {
     fn resolve(&self, path: &FPath) -> Option<(&FPathBuf, &Arc<dyn FileSystem>)> {
         self.mounts
             .iter()
-            .filter(|(prefix, _)| path.starts_with(prefix.as_path()) || prefix.as_str() == path.as_str())
+            .filter(|(prefix, _)| {
+                path.starts_with(prefix.as_path()) || prefix.as_str() == path.as_str()
+            })
             .max_by_key(|(prefix, _)| prefix.components().count())
             .map(|(p, f)| (p, f))
     }
@@ -270,19 +272,25 @@ mod tests {
         table.mount("C:/nested", Arc::new(TestFs(inner_b)));
 
         assert_eq!(
-            table.open(FPath::new("C:/file.txt")).and_then(|mut f| {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut f, &mut buf).map_err(ForensicError::from)?;
-                Ok(buf)
-            }).unwrap(),
+            table
+                .open(FPath::new("C:/file.txt"))
+                .and_then(|mut f| {
+                    let mut buf = Vec::new();
+                    std::io::Read::read_to_end(&mut f, &mut buf).map_err(ForensicError::from)?;
+                    Ok(buf)
+                })
+                .unwrap(),
             b"from-a"
         );
         assert_eq!(
-            table.open(FPath::new("C:/nested/file.txt")).and_then(|mut f| {
-                let mut buf = Vec::new();
-                std::io::Read::read_to_end(&mut f, &mut buf).map_err(ForensicError::from)?;
-                Ok(buf)
-            }).unwrap(),
+            table
+                .open(FPath::new("C:/nested/file.txt"))
+                .and_then(|mut f| {
+                    let mut buf = Vec::new();
+                    std::io::Read::read_to_end(&mut f, &mut buf).map_err(ForensicError::from)?;
+                    Ok(buf)
+                })
+                .unwrap(),
             b"from-b"
         );
     }
@@ -306,7 +314,11 @@ mod tests {
         overlay.push_layer(Arc::new(TestFs(bottom)));
 
         let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut overlay.open(FPath::new("shared.txt")).unwrap(), &mut buf).unwrap();
+        std::io::Read::read_to_end(
+            &mut overlay.open(FPath::new("shared.txt")).unwrap(),
+            &mut buf,
+        )
+        .unwrap();
         assert_eq!(buf, b"top");
 
         let mut buf2 = Vec::new();

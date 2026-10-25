@@ -121,6 +121,28 @@ pub const PROCESS_ARGS: &str = "process.args";
 /// ECS `process.command_line`: the full command line, as recorded (unexpanded when the source
 /// stores it unexpanded).
 pub const PROCESS_COMMAND_LINE: &str = "process.command_line";
+/// ECS `process.parent.pid`: the parent process's id.
+pub const PROCESS_PARENT_PID: &str = "process.parent.pid";
+/// ECS `process.start`: when the process started.
+pub const PROCESS_START: &str = "process.start";
+/// ECS `process.end`: when the process ended.
+pub const PROCESS_END: &str = "process.end";
+/// ECS `process.thread.id`: thread id.
+pub const PROCESS_THREAD_ID: &str = "process.thread.id";
+/// ECS `dll.name`: the loaded module's file name.
+pub const DLL_NAME: &str = "dll.name";
+/// ECS `dll.path`: the loaded module's full path.
+pub const DLL_PATH: &str = "dll.path";
+/// The virtual address of the structure a memory record was read from. A forensic-rs extension,
+/// not ECS; written as a `"0x…"` string.
+pub const MEMORY_VA: &str = "memory.va";
+/// The physical address of that structure. A forensic-rs extension, not ECS.
+pub const MEMORY_PA: &str = "memory.pa";
+/// The record's worst validity (`crate::memory::Validity`). A forensic-rs extension, not ECS.
+pub const MEMORY_VALIDITY: &str = "memory.validity";
+/// The fields a memory record could not read, each with its validity. They are omitted from the
+/// record rather than filled with a fabricated value. A forensic-rs extension, not ECS.
+pub const MEMORY_UNAVAILABLE: &str = "memory.unavailable";
 
 pub const FILE_INODE: &str = "file.inode";
 pub const FILE_NAME: &str = "file.name";

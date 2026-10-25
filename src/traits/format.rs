@@ -28,6 +28,7 @@ use crate::core::locator::{EvidenceLocator, LocatorSegment};
 use crate::core::path::FPathBuf;
 use crate::err::ForensicResult;
 use crate::field::{Field, Text};
+use crate::memory::MemoryImage;
 use crate::traits::db::ForensicDb;
 use crate::traits::digest::Digest;
 use crate::traits::events::EventLogReader;
@@ -48,6 +49,8 @@ pub enum MountKind {
     File,
     /// A group of files that together make up one artifact.
     FileSet,
+    /// A memory image, read as typed OS records.
+    Memory,
 }
 
 /// The result of mounting one container/interpretation/embedding hop.
@@ -78,6 +81,10 @@ pub enum Mounted {
     /// the primary back through the resolver to interpret it, with the
     /// companions in hand.
     FileSet(FileSet),
+    /// Interpretation: the same bytes read as a memory image -- typed OS records (processes,
+    /// threads, modules, ...) through the [`crate::memory`] contract. The memory counterpart of
+    /// `Registry`: a backend's factory probes a capture and hands out its [`MemoryImage`].
+    Memory(Arc<dyn MemoryImage>),
 }
 
 impl Mounted {
@@ -90,6 +97,7 @@ impl Mounted {
             Mounted::Object(_) => MountKind::Object,
             Mounted::File(_) => MountKind::File,
             Mounted::FileSet(_) => MountKind::FileSet,
+            Mounted::Memory(_) => MountKind::Memory,
         }
     }
 
@@ -135,6 +143,13 @@ impl Mounted {
         }
     }
 
+    pub fn as_memory(&self) -> Option<&Arc<dyn MemoryImage>> {
+        match self {
+            Mounted::Memory(image) => Some(image),
+            _ => None,
+        }
+    }
+
     pub fn as_file_set(&self) -> Option<&FileSet> {
         match self {
             Mounted::FileSet(set) => Some(set),
@@ -153,6 +168,7 @@ impl Clone for Mounted {
             Mounted::Object(object) => Mounted::Object(Arc::clone(object)),
             Mounted::File(locator) => Mounted::File(locator.clone()),
             Mounted::FileSet(set) => Mounted::FileSet(set.clone()),
+            Mounted::Memory(image) => Mounted::Memory(Arc::clone(image)),
         }
     }
 }

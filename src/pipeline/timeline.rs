@@ -51,7 +51,12 @@ impl EventId {
     /// entry's `$SI` created time vs. its `$FN` created time) — pass a
     /// stable tag such as `"si_created"`/`"fn_created"`, or the timestamp
     /// field name for the single-timestamp-per-record case.
-    pub fn new(evidence_id: &str, source_key: &SourceKey, locus: Locus, projection_kind: &str) -> Self {
+    pub fn new(
+        evidence_id: &str,
+        source_key: &SourceKey,
+        locus: Locus,
+        projection_kind: &str,
+    ) -> Self {
         let mut buf = Vec::new();
         buf.extend_from_slice(evidence_id.as_bytes());
         buf.push(0);
@@ -146,7 +151,11 @@ impl TimelineStore for InMemoryTimelineStore {
     }
 
     fn len(&self) -> usize {
-        self.inner.lock().expect("InMemoryTimelineStore poisoned").ordered.len()
+        self.inner
+            .lock()
+            .expect("InMemoryTimelineStore poisoned")
+            .ordered
+            .len()
     }
 }
 
@@ -232,7 +241,12 @@ impl<S: TimelineStore> TriageSink for TimelineRecordSink<S> {
             self.unresolved_provenance += 1;
             return Ok(());
         };
-        let id = EventId::new(&self.evidence_id, &snapshot.source, Locus::Api, &self.timestamp_field);
+        let id = EventId::new(
+            &self.evidence_id,
+            &snapshot.source,
+            Locus::Api,
+            &self.timestamp_field,
+        );
         let event = TimelineData {
             time: *ts,
             data: data.clone(),
@@ -286,12 +300,27 @@ mod tests {
         assert_ne!(base, EventId::new("host2", &key, Locus::Api, "created"));
         assert_ne!(
             base,
-            EventId::new("host1", &SourceKey::Path("other.zip".to_string()), Locus::Api, "created")
+            EventId::new(
+                "host1",
+                &SourceKey::Path("other.zip".to_string()),
+                Locus::Api,
+                "created"
+            )
         );
         assert_ne!(base, EventId::new("host1", &key, Locus::Api, "modified"));
         assert_ne!(
             base,
-            EventId::new("host1", &key, Locus::Ntfs { entry: 1, sequence: 1, attribute: 0, offset: 0 }, "created")
+            EventId::new(
+                "host1",
+                &key,
+                Locus::Ntfs {
+                    entry: 1,
+                    sequence: 1,
+                    attribute: 0,
+                    offset: 0
+                },
+                "created"
+            )
         );
     }
 
@@ -303,7 +332,10 @@ mod tests {
         store.insert(EventId::new("h", &key, Locus::Api, "a"), sample_event(100));
         store.insert(EventId::new("h", &key, Locus::Api, "b"), sample_event(200));
 
-        let times: Vec<i64> = store.iter_ordered().map(|(_, e)| e.time.to_unix_secs()).collect();
+        let times: Vec<i64> = store
+            .iter_ordered()
+            .map(|(_, e)| e.time.to_unix_secs())
+            .collect();
         assert_eq!(times, vec![100, 200, 300]);
         assert_eq!(store.len(), 3);
     }
@@ -316,7 +348,10 @@ mod tests {
 
         assert_eq!(store.insert(id, sample_event(100)), InsertOutcome::Inserted);
         // Same id, different (distinguishable) event content -- still a duplicate by id.
-        assert_eq!(store.insert(id, sample_event(999)), InsertOutcome::Duplicate);
+        assert_eq!(
+            store.insert(id, sample_event(999)),
+            InsertOutcome::Duplicate
+        );
         assert_eq!(store.len(), 1);
     }
 
@@ -383,7 +418,8 @@ mod tests {
         let mut data = ForensicData::new("host1", Artifact::Unknown, id);
         data.set("@timestamp", Field::Date(ts(1_700_000_000)));
 
-        let mut sink = TimelineRecordSink::new(store.clone(), provenance.clone(), "@timestamp", "host1");
+        let mut sink =
+            TimelineRecordSink::new(store.clone(), provenance.clone(), "@timestamp", "host1");
         sink.on_data(&data).unwrap();
         sink.on_data(&data).unwrap();
 

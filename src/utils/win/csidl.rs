@@ -1,4 +1,4 @@
-use crate::core::{interpolate_env_vars, UserEnvVars};
+use crate::core::{UserEnvVars, interpolate_env_vars};
 
 pub const FOLDERID_ACCOUNT_PICTURES: &str = "{008CA0B1-55B4-4C56-B8A8-4DE4B299D3BE}";
 pub const FOLDERID_ADMINTOOLS: &str = "{724EF170-A42D-4FEF-9F26-B60E846FBA4F}";

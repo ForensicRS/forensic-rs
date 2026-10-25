@@ -16,7 +16,7 @@
 //! DPAPI-protected under a master key that itself needs the user's
 //! password.
 
-use std::sync::atomic::{compiler_fence, Ordering};
+use std::sync::atomic::{Ordering, compiler_fence};
 
 use crate::field::Text;
 

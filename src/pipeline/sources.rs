@@ -1,5 +1,6 @@
 use crate::catalog::ArtifactCatalog;
 use crate::core::resolver::MountResolver;
+use crate::memory::MemoryImage;
 use crate::provenance::Acquisition;
 use crate::secrets::SecretProvider;
 use crate::traits::{registry::Registry, vfs::FileSystem};
@@ -32,6 +33,7 @@ pub struct TriageSources {
     mount_resolver: Option<Arc<MountResolver>>,
     secrets: Option<Arc<dyn SecretProvider>>,
     catalog: Option<Arc<dyn ArtifactCatalog>>,
+    memory: Option<Arc<dyn MemoryImage>>,
 }
 
 impl TriageSources {
@@ -44,6 +46,7 @@ impl TriageSources {
             mount_resolver: None,
             secrets: None,
             catalog: None,
+            memory: None,
         }
     }
 
@@ -70,6 +73,11 @@ impl TriageSources {
     /// Whether a pre-opened registry source has been configured.
     pub fn has_registry(&self) -> bool {
         self.registry.is_some()
+    }
+
+    /// The memory image of this run, if one was attached.
+    pub fn memory(&self) -> Option<&Arc<dyn MemoryImage>> {
+        self.memory.as_ref()
     }
 
     /// The explicit [`Acquisition`] override for this run, if the caller who
@@ -112,6 +120,7 @@ pub struct TriageSourcesBuilder {
     mount_resolver: Option<Arc<MountResolver>>,
     secrets: Option<Arc<dyn SecretProvider>>,
     catalog: Option<Arc<dyn ArtifactCatalog>>,
+    memory: Option<Arc<dyn MemoryImage>>,
 }
 
 impl TriageSourcesBuilder {
@@ -158,6 +167,15 @@ impl TriageSourcesBuilder {
         self
     }
 
+    /// Attach a memory image so parsers can resolve
+    /// [`crate::traits::forensic::Requirement::Memory`]. Without a VFS or an
+    /// acquisition override, the run's acquisition is then
+    /// `Acquisition::Memory` (or `LiveApi` for a live source).
+    pub fn memory(mut self, image: Arc<dyn MemoryImage>) -> Self {
+        self.memory = Some(image);
+        self
+    }
+
     pub fn build(self) -> TriageSources {
         TriageSources {
             vfs: self.vfs,
@@ -166,6 +184,7 @@ impl TriageSourcesBuilder {
             mount_resolver: self.mount_resolver,
             secrets: self.secrets,
             catalog: self.catalog,
+            memory: self.memory,
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
 #[cfg(feature = "serde")]
-use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Visitor, ser::SerializeMap};
 
 use crate::{
     field::{Field, FieldAccess, Ip, Text},
@@ -523,7 +523,11 @@ mod data_tests {
 
     #[test]
     fn iterate_fields_test() {
-        let mut data = ForensicData::new("host007", RegistryArtifacts::ShellBags.into(), test_provenance_id());
+        let mut data = ForensicData::new(
+            "host007",
+            RegistryArtifacts::ShellBags.into(),
+            test_provenance_id(),
+        );
         data.insert("field001".into(), "value001".into());
         data.insert("field002".into(), "value002".into());
         data.insert("field003".into(), "value003".into());
@@ -538,7 +542,11 @@ mod data_tests {
     #[cfg(feature = "serde")]
     #[test]
     fn should_serialize_data() {
-        let mut data = ForensicData::new("host007", RegistryArtifacts::ShellBags.into(), test_provenance_id());
+        let mut data = ForensicData::new(
+            "host007",
+            RegistryArtifacts::ShellBags.into(),
+            test_provenance_id(),
+        );
         data.insert("field001".into(), "value001".into());
         data.insert("field002".into(), "value002".into());
         data.insert("field003".into(), "value003".into());

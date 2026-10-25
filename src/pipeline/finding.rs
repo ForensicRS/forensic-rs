@@ -7,7 +7,7 @@ use crate::{
     data::ForensicData,
     err::ForensicError,
     field::Text,
-    provenance::{AnomalyFlags, Anomalies},
+    provenance::{Anomalies, AnomalyFlags},
     utils::time::ForensicTimestamp,
 };
 
@@ -232,7 +232,9 @@ const KNOWN_ANOMALY_FLAGS: [AnomalyFlags; 7] = [
 ];
 
 fn known_anomaly_mask() -> u32 {
-    KNOWN_ANOMALY_FLAGS.iter().fold(0u32, |acc, f| acc | f.bits())
+    KNOWN_ANOMALY_FLAGS
+        .iter()
+        .fold(0u32, |acc, f| acc | f.bits())
 }
 
 /// Accumulates per-flag anomaly counts across a parser run, so cheap,

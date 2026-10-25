@@ -139,6 +139,16 @@ pub enum Locus {
     RawOffset {
         offset: u64,
     },
+    /// A virtual address in a memory image's address space (`crate::memory::SpaceId`'s value):
+    /// the structure a memory record was read from.
+    Memory {
+        space: u32,
+        va: u64,
+    },
+    /// A physical address in a memory capture.
+    Physical {
+        pa: u64,
+    },
     /// No byte locus exists — the value came from an API call, not a
     /// structure at a specific offset.
     Api,
@@ -155,10 +165,16 @@ pub enum Locus {
 pub enum SourceKey {
     Path(String),
     ContentHash(String),
-    VolumeOffset { volume: String, offset: u64 },
+    VolumeOffset {
+        volume: String,
+        offset: u64,
+    },
     /// A chain of nested containers, outermost first.
     Chain(Vec<SourceKey>),
-    Live { host: String, api: String },
+    Live {
+        host: String,
+        api: String,
+    },
     /// For tests and placeholders — never meant to identify a real source.
     Synthetic(String),
 }

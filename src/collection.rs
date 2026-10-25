@@ -156,7 +156,10 @@ mod tests {
     fn static_manifest_reports_back_exactly_what_it_was_built_with() {
         let manifest = StaticCollectionManifest::new(ToolIdentity::new("KAPE", "1.2.0"))
             .with_operator("j.doe")
-            .with_target(TargetSpec::new("C:/Windows/System32/config/SYSTEM", "SYSTEM hive"))
+            .with_target(TargetSpec::new(
+                "C:/Windows/System32/config/SYSTEM",
+                "SYSTEM hive",
+            ))
             .with_error(CollectionError::new(
                 "C:/$MFT",
                 "access denied (file locked)",

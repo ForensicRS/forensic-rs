@@ -196,10 +196,7 @@ impl<'a> ForensicRows for InMemoryRows<'a> {
             .get(row_idx)
             .ok_or_else(ForensicError::no_more_data)?;
         let val = row.get(i).ok_or_else(|| {
-            ForensicError::missing_data(
-                "column",
-                format!("column index {i} out of bounds").into(),
-            )
+            ForensicError::missing_data("column", format!("column index {i} out of bounds").into())
         })?;
         Ok(val.as_ref())
     }
@@ -254,11 +251,17 @@ mod tests {
         let mut rows = table.iter_rows().unwrap();
 
         assert!(rows.next().unwrap());
-        assert_eq!(rows.read_named("name").unwrap(), ForensicValue::Text("Alice".into()));
+        assert_eq!(
+            rows.read_named("name").unwrap(),
+            ForensicValue::Text("Alice".into())
+        );
         assert_eq!(rows.read_named("AGE").unwrap(), ForensicValue::I64(42));
 
         assert!(rows.next().unwrap());
-        assert_eq!(rows.read_named("Name").unwrap(), ForensicValue::Text("Bob".into()));
+        assert_eq!(
+            rows.read_named("Name").unwrap(),
+            ForensicValue::Text("Bob".into())
+        );
 
         assert!(!rows.next().unwrap());
     }

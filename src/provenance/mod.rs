@@ -45,7 +45,7 @@ mod serde_support;
 mod store;
 mod tracked;
 
-pub use anomalies::{AnomalyDetail, AnomalyFlags, Anomalies};
+pub use anomalies::{Anomalies, AnomalyDetail, AnomalyFlags};
 pub use confidence::Confidence;
 pub use ids::{ProvenanceId, SourceId};
 pub use model::{
@@ -54,6 +54,6 @@ pub use model::{
 };
 pub use parsed::Parsed;
 #[cfg(feature = "serde")]
-pub use serde_support::{expand, ExpandedDerivedFrom, ExpandedProvenance, ProvenanceSideTable};
+pub use serde_support::{ExpandedDerivedFrom, ExpandedProvenance, ProvenanceSideTable, expand};
 pub use store::{ProvenanceStore, SourceHandle};
 pub use tracked::Tracked;

@@ -48,6 +48,9 @@ pub enum LocatorSegment {
     /// identified by its position in the parent's snapshot store, oldest first -- the same
     /// numbering as [`Acquisition::VssSnapshot`](crate::provenance::Acquisition::VssSnapshot).
     Snapshot { id: u32 },
+    /// An address space inside a memory image (`crate::memory::SpaceId`'s value), optionally
+    /// down to one virtual address: how a blob read from a process's memory is located.
+    AddressSpace { id: u32, va: Option<u64> },
 }
 
 impl fmt::Display for LocatorSegment {
@@ -72,6 +75,10 @@ impl fmt::Display for LocatorSegment {
                 write!(f, "[volume {index} @{offset}+{len}]")
             }
             LocatorSegment::Snapshot { id } => write!(f, "[snapshot {id}]"),
+            LocatorSegment::AddressSpace { id, va: Some(va) } => {
+                write!(f, "[space {id} @{va:#x}]")
+            }
+            LocatorSegment::AddressSpace { id, va: None } => write!(f, "[space {id}]"),
         }
     }
 }
