@@ -7,7 +7,7 @@ categories = ["parsing"]
 description = "A Rust-based framework to build tools that analyze forensic artifacts and can be reused as libraries across multiple projects without changing anything."
 license = "MIT"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.86"
 repository = "https://github.com/ForensicRS/forensic-rs"
 
 [features]
