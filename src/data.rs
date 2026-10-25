@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeMap};
+use std::collections::BTreeMap;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, de::Visitor, ser::SerializeMap};
@@ -479,7 +479,7 @@ impl<'de> Visitor<'de> for DataVisitor {
         let mut artifact = Artifact::default();
         let mut fields = BTreeMap::new();
         while let Some((key, value)) = map.next_entry()? {
-            fields.insert(Cow::Owned(key), value);
+            fields.insert(std::borrow::Cow::Owned(key), value);
         }
         if let Some(Field::Text(artf)) = fields.get(ARTIFACT_NAME) {
             artifact = (&artf[..]).into();

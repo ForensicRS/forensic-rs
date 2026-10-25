@@ -1,5 +1,5 @@
 error[E0277]: the trait bound `ProvenanceId: serde::Serialize` is not satisfied
- --> tests/compile_fail/serialize_without_store.rs:8:35
+ --> tests/compile_fail/serde/serialize_without_store.rs:8:35
   |
 8 |     let _ = serde_json::to_string(&id).unwrap();
   |             --------------------- ^^^ the trait `serde_core::ser::Serialize` is not implemented for `ProvenanceId`

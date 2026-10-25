@@ -7,4 +7,8 @@
 fn compile_fail_tests() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/compile_fail/*.rs");
+    // These prove a type has no `Serialize` impl, which only means something
+    // when the `serde` feature puts `Serialize` in scope at all.
+    #[cfg(feature = "serde")]
+    t.compile_fail("tests/compile_fail/serde/*.rs");
 }

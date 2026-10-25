@@ -44,6 +44,7 @@ path = "examples/parallel_triage.rs"
 [[example]]
 name = "mcp_stdio_server"
 path = "examples/mcp_stdio_server.rs"
+required-features = ["serde"]
 
 [[example]]
 name = "byte_parsing"

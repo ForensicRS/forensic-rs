@@ -12,7 +12,7 @@
 //! isolation — only [`super::ProvenanceStore::to_side_table`] (which takes the
 //! store) and [`super::expand`] can turn provenance into serialized form. This
 //! is enforced at compile time, not by convention: see
-//! `tests/compile_fail/serialize_without_store.rs`.
+//! `tests/compile_fail/serde/serialize_without_store.rs`.
 
 /// A handle into a [`super::ProvenanceStore`], identifying one interned
 /// [`super::Provenance`] record.
@@ -43,7 +43,7 @@ impl ProvenanceId {
     /// `pub(crate)`, not `pub`: the whole point of this module is that a
     /// bare id cannot escape the crate without the store that resolves it
     /// (there is deliberately no `Serialize` -- see
-    /// `tests/compile_fail/serialize_without_store.rs`). Sibling modules
+    /// `tests/compile_fail/serde/serialize_without_store.rs`). Sibling modules
     /// that already hold a [`super::ProvenanceStore`] and emit the matching
     /// side table alongside -- currently
     /// [`ProvenanceJsonlSink`](crate::pipeline::sinks::ProvenanceJsonlSink) --
