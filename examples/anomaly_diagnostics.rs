@@ -38,9 +38,9 @@ impl MeasurementParser {
             records: vec![
                 (42, checksum(42)),     // clean
                 (9001, checksum(9001)), // clean, but analyzer-worthy (over threshold)
-                (7, 0xDEAD_BEEF),        // checksum mismatch — corrupted on disk
+                (7, 0xDEAD_BEEF),       // checksum mismatch — corrupted on disk
                 (13, checksum(13)),     // clean
-                (500, 0xDEAD_BEEF),      // another mismatch
+                (500, 0xDEAD_BEEF),     // another mismatch
             ],
         }
     }
@@ -133,7 +133,10 @@ impl TriageSink for PrintingSink {
         Ok(())
     }
     fn on_finding(&mut self, finding: &Finding) -> ForensicResult<()> {
-        print!("  [{}] [{}] {}", finding.severity, finding.category, finding.title);
+        print!(
+            "  [{}] [{}] {}",
+            finding.severity, finding.category, finding.title
+        );
         if finding.description.is_empty() {
             println!();
         } else {

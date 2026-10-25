@@ -54,9 +54,8 @@ fn civil_from_days(days: i64) -> (i64, u8, u8) {
     let days = days + 719_468;
     let era = days.div_euclid(146_097);
     let day_of_era = days - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524
-        - day_of_era / 146_096)
-        / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
@@ -225,9 +224,7 @@ fn capability_value_to_json(val: &CapabilityValue) -> serde_json::Value {
         CapabilityValue::U64(u) => serde_json::json!(*u),
         CapabilityValue::F64(f) => serde_json::json!(*f),
         CapabilityValue::Text(t) => serde_json::Value::String(t.as_ref().to_string()),
-        CapabilityValue::Timestamp(ts) => {
-            serde_json::Value::String(timestamp_to_iso(*ts))
-        }
+        CapabilityValue::Timestamp(ts) => serde_json::Value::String(timestamp_to_iso(*ts)),
         CapabilityValue::Bytes(b) => {
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD.encode(b);
@@ -287,7 +284,11 @@ fn convert_schema(raw: serde_json::Value) -> serde_json::Value {
                     let required = inner
                         .get("required")
                         .and_then(|r| r.as_array())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect::<Vec<_>>()
+                        })
                         .unwrap_or_default();
                     let additional = inner
                         .get("allow_additional_properties")
@@ -337,7 +338,11 @@ fn tool_result_to_mcp_content(result: &ToolResult) -> Vec<serde_json::Value> {
                 }
                 obj
             }
-            ToolContent::ResourceReference { provider, path, name } => {
+            ToolContent::ResourceReference {
+                provider,
+                path,
+                name,
+            } => {
                 serde_json::json!({
                     "type": "resource",
                     "resource": {
@@ -443,14 +448,8 @@ impl ForensicTool for CaseSummaryTool {
             ));
         };
         let mut summary = BTreeMap::new();
-        summary.insert(
-            Text::Borrowed("case_id"),
-            CapabilityValue::from(case_id),
-        );
-        summary.insert(
-            Text::Borrowed("finding_count"),
-            CapabilityValue::from(3u64),
-        );
+        summary.insert(Text::Borrowed("case_id"), CapabilityValue::from(case_id));
+        summary.insert(Text::Borrowed("finding_count"), CapabilityValue::from(3u64));
         summary.insert(Text::Borrowed("status"), CapabilityValue::from("active"));
         Ok(ToolResult::structured(CapabilityValue::Object(summary)))
     }
@@ -476,11 +475,10 @@ impl LongScanTool {
             descriptor: ToolDescriptor {
                 id: "forensic.long_scan".to_string(),
                 title: "Long forensic scan".to_string(),
-                description:
-                    "Demonstrates progress reporting and cooperative cancellation. \
+                description: "Demonstrates progress reporting and cooperative cancellation. \
                      Accepts an optional 'iterations' parameter (default 10); each iteration \
                      sleeps briefly and reports progress."
-                        .to_string(),
+                    .to_string(),
                 input_schema: ValueSchema::object()
                     .property(
                         "iterations",
@@ -494,7 +492,10 @@ impl LongScanTool {
                     .into(),
                 output_schema: Some(
                     ValueSchema::object()
-                        .property("completed_iterations", ValueSchema::Type(ValueType::Integer))
+                        .property(
+                            "completed_iterations",
+                            ValueSchema::Type(ValueType::Integer),
+                        )
                         .property("cancelled", ValueSchema::Type(ValueType::Boolean))
                         .required("completed_iterations")
                         .required("cancelled")
@@ -628,15 +629,27 @@ impl FormatFactory for MiniArchiveFactory {
         MountKind::FileSystem
     }
 
-    fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        file: &mut dyn VirtualFile,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         let start = file.stream_position()?;
         let mut magic = vec![0u8; MINI_ARCHIVE_MAGIC.len()];
         let matches = file.read_exact(&mut magic).is_ok() && magic == MINI_ARCHIVE_MAGIC.as_bytes();
         file.seek(SeekFrom::Start(start))?;
-        Ok(if matches { ProbeScore::Strong } else { ProbeScore::No })
+        Ok(if matches {
+            ProbeScore::Strong
+        } else {
+            ProbeScore::No
+        })
     }
 
-    fn mount(&self, mut file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    fn mount(
+        &self,
+        mut file: Box<dyn VirtualFile>,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<Mounted> {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         let fs = parse_mini_archive(&bytes).ok_or_else(|| {
@@ -668,7 +681,10 @@ fn mount_child_uri(provider: &str, container_path: &str, inner_path: &str) -> St
     } else {
         format!("/{}", inner_path)
     };
-    encode_resource_uri(provider, &format!("{}/{}{}", container_path, MOUNT_MARKER, suffix))
+    encode_resource_uri(
+        provider,
+        &format!("{}/{}{}", container_path, MOUNT_MARKER, suffix),
+    )
 }
 
 /// A `Cursor<Vec<u8>>`-backed [`VirtualFile`] over already-read bytes, so
@@ -728,7 +744,8 @@ fn list_children_as_json(
     path: &str,
     cancellation: &CancellationToken,
 ) -> CapabilityResult<Vec<serde_json::Value>> {
-    let page = scoped.list_resources(provider, path, PageRequest::new(0, u64::MAX), cancellation)?;
+    let page =
+        scoped.list_resources(provider, path, PageRequest::new(0, u64::MAX), cancellation)?;
     Ok(page
         .entries
         .into_iter()
@@ -807,7 +824,10 @@ impl McpRequest {
         }
         let id = raw.get("id").cloned();
         let method = raw.get("method")?.as_str()?.to_string();
-        let params = raw.get("params").cloned().unwrap_or(serde_json::Value::Null);
+        let params = raw
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         Some(Self { id, method, params })
     }
 }
@@ -872,7 +892,9 @@ impl Server {
             access,
             cancellations: Mutex::new(BTreeMap::new()),
             vfs,
-            mount_resolver: MountResolver::builder().factory(Arc::new(MiniArchiveFactory)).build(),
+            mount_resolver: MountResolver::builder()
+                .factory(Arc::new(MiniArchiveFactory))
+                .build(),
         }
     }
 
@@ -899,7 +921,13 @@ impl Server {
             })?;
             let mounted = self
                 .mount_resolver
-                .resolve(&current_fs, &locator, file, Some(MountKind::FileSystem), cancellation)
+                .resolve(
+                    &current_fs,
+                    &locator,
+                    file,
+                    Some(MountKind::FileSystem),
+                    cancellation,
+                )
                 .map_err(|_| {
                     CapabilityError::new(
                         CapabilityErrorKind::InvalidInput,
@@ -939,7 +967,13 @@ impl Server {
         let mut file = BytesFile(std::io::Cursor::new(bytes));
         let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from(path)));
         self.mount_resolver
-            .probe_only(&self.vfs, &locator, &mut file, Some(MountKind::FileSystem), cancellation)
+            .probe_only(
+                &self.vfs,
+                &locator,
+                &mut file,
+                Some(MountKind::FileSystem),
+                cancellation,
+            )
             .unwrap_or(false)
     }
 
@@ -956,14 +990,21 @@ impl Server {
     ) -> CapabilityResult<serde_json::Value> {
         let fs = self.mounted_filesystem(container_chain, cancellation)?;
         let uri = mount_child_uri(provider, container_chain, inner_path);
-        let inner = if inner_path.is_empty() { "/" } else { inner_path };
+        let inner = if inner_path.is_empty() {
+            "/"
+        } else {
+            inner_path
+        };
 
         if let Ok(bytes) = fs.read_all(FPath::new(inner)) {
             return Ok(match String::from_utf8(bytes) {
-                Ok(text) => serde_json::json!({ "uri": uri, "mimeType": "text/plain", "text": text }),
+                Ok(text) => {
+                    serde_json::json!({ "uri": uri, "mimeType": "text/plain", "text": text })
+                }
                 Err(err) => {
                     use base64::Engine;
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(err.into_bytes());
+                    let encoded =
+                        base64::engine::general_purpose::STANDARD.encode(err.into_bytes());
                     serde_json::json!({
                         "uri": uri,
                         "mimeType": "application/octet-stream",
@@ -1014,21 +1055,18 @@ impl Server {
                         "version": "0.1.0"
                     }
                 });
-                Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string())
+                Some(
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string(),
+                )
             }
             "notifications/initialized" => None,
             "tools/list" => {
                 let scoped = self.registry.scope(self.access.clone());
-                let tools: Vec<_> = scoped
-                    .list_tools()
-                    .iter()
-                    .map(tool_to_mcp)
-                    .collect();
+                let tools: Vec<_> = scoped.list_tools().iter().map(tool_to_mcp).collect();
                 let result = serde_json::json!({ "tools": tools });
                 let id = req.id?;
                 Some(
-                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
-                        .to_string(),
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string(),
                 )
             }
             // "tools/call" is intentionally not handled here — `main()` dispatches
@@ -1066,7 +1104,8 @@ impl Server {
                 Some(match list_result {
                     Ok(resources) => {
                         let result = serde_json::json!({ "resources": resources });
-                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
+                            .to_string()
                     }
                     Err(err) => {
                         let (code, msg, data) = map_error(&err);
@@ -1085,77 +1124,82 @@ impl Server {
                 let cancellation = CancellationToken::new();
                 let uri = req.params.get("uri").and_then(|v| v.as_str());
 
-                let read_result: CapabilityResult<serde_json::Value> =
-                    match uri.and_then(decode_resource_uri) {
-                        Some((provider, path)) => {
-                            // A `[mount]` marker means the caller is asking to
-                            // browse *inside* an already-discovered container
-                            // file (see the `mount_uri` hint added below) —
-                            // handled directly against the mounted filesystem,
-                            // bypassing the resource-provider registry entirely
-                            // (the mounted filesystem isn't a registered
-                            // `ResourceProvider`, just a plain `FileSystem`).
-                            if let Some((container_chain, inner_path)) = split_mount_path(&path) {
-                                self.read_mounted(&provider, container_chain, inner_path, &cancellation)
-                            } else {
-                                let resource_id = ResourceId::new(provider, path);
-                                match scoped.read_resource(&resource_id, &cancellation) {
-                                    Ok(content) => {
-                                        let mut value =
-                                            resource_content_to_mcp(&resource_id, content.clone());
-                                        if self.looks_like_container(&content, &resource_id.path, &cancellation)
-                                            && let serde_json::Value::Object(map) = &mut value
-                                        {
-                                            map.insert(
-                                                "mount_uri".to_string(),
-                                                serde_json::Value::String(mount_child_uri(
-                                                    &resource_id.provider,
-                                                    &resource_id.path,
-                                                    "",
-                                                )),
-                                            );
-                                        }
-                                        Ok(value)
+                let read_result: CapabilityResult<serde_json::Value> = match uri
+                    .and_then(decode_resource_uri)
+                {
+                    Some((provider, path)) => {
+                        // A `[mount]` marker means the caller is asking to
+                        // browse *inside* an already-discovered container
+                        // file (see the `mount_uri` hint added below) —
+                        // handled directly against the mounted filesystem,
+                        // bypassing the resource-provider registry entirely
+                        // (the mounted filesystem isn't a registered
+                        // `ResourceProvider`, just a plain `FileSystem`).
+                        if let Some((container_chain, inner_path)) = split_mount_path(&path) {
+                            self.read_mounted(&provider, container_chain, inner_path, &cancellation)
+                        } else {
+                            let resource_id = ResourceId::new(provider, path);
+                            match scoped.read_resource(&resource_id, &cancellation) {
+                                Ok(content) => {
+                                    let mut value =
+                                        resource_content_to_mcp(&resource_id, content.clone());
+                                    if self.looks_like_container(
+                                        &content,
+                                        &resource_id.path,
+                                        &cancellation,
+                                    ) && let serde_json::Value::Object(map) = &mut value
+                                    {
+                                        map.insert(
+                                            "mount_uri".to_string(),
+                                            serde_json::Value::String(mount_child_uri(
+                                                &resource_id.provider,
+                                                &resource_id.path,
+                                                "",
+                                            )),
+                                        );
                                     }
-                                    Err(read_err) => {
-                                        // Not readable as content — this may be a
-                                        // container (a directory, a registry key, ...)
-                                        // rather than a leaf. Fall back to its
-                                        // children listing so a generic MCP client
-                                        // can still browse it via plain
-                                        // `resources/read`, without needing this
-                                        // server's non-standard
-                                        // `resources/list?uri=...` convention. If it
-                                        // isn't a container either, surface the
-                                        // original read error.
-                                        match list_children_as_json(
-                                            &scoped,
-                                            &resource_id.provider,
-                                            &resource_id.path,
-                                            &cancellation,
-                                        ) {
-                                            Ok(children) => Ok(serde_json::json!({
-                                                "uri": encode_resource_uri(&resource_id.provider, &resource_id.path),
-                                                "mimeType": "application/json",
-                                                "text": serde_json::to_string(&serde_json::json!({ "children": children }))
-                                                    .unwrap_or_default(),
-                                            })),
-                                            Err(_) => Err(read_err),
-                                        }
+                                    Ok(value)
+                                }
+                                Err(read_err) => {
+                                    // Not readable as content — this may be a
+                                    // container (a directory, a registry key, ...)
+                                    // rather than a leaf. Fall back to its
+                                    // children listing so a generic MCP client
+                                    // can still browse it via plain
+                                    // `resources/read`, without needing this
+                                    // server's non-standard
+                                    // `resources/list?uri=...` convention. If it
+                                    // isn't a container either, surface the
+                                    // original read error.
+                                    match list_children_as_json(
+                                        &scoped,
+                                        &resource_id.provider,
+                                        &resource_id.path,
+                                        &cancellation,
+                                    ) {
+                                        Ok(children) => Ok(serde_json::json!({
+                                            "uri": encode_resource_uri(&resource_id.provider, &resource_id.path),
+                                            "mimeType": "application/json",
+                                            "text": serde_json::to_string(&serde_json::json!({ "children": children }))
+                                                .unwrap_or_default(),
+                                        })),
+                                        Err(_) => Err(read_err),
                                     }
                                 }
                             }
                         }
-                        None => Err(CapabilityError::new(
-                            CapabilityErrorKind::InvalidInput,
-                            "invalid resource uri",
-                        )),
-                    };
+                    }
+                    None => Err(CapabilityError::new(
+                        CapabilityErrorKind::InvalidInput,
+                        "invalid resource uri",
+                    )),
+                };
 
                 Some(match read_result {
                     Ok(contents) => {
                         let result = serde_json::json!({ "contents": [contents] });
-                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
+                            .to_string()
                     }
                     Err(err) => {
                         let (code, msg, data) = map_error(&err);
@@ -1203,7 +1247,10 @@ impl Server {
     /// `"notifications/cancelled"` arm of `handle`.
     fn handle_tools_call(&self, req: McpRequest) -> Option<String> {
         let name = req.params.get("name")?.as_str()?;
-        let args = req.params.get("arguments").unwrap_or(&serde_json::Value::Null);
+        let args = req
+            .params
+            .get("arguments")
+            .unwrap_or(&serde_json::Value::Null);
         let progress_token = req
             .params
             .get("_meta")
@@ -1223,8 +1270,7 @@ impl Server {
 
         let mut invocation = {
             let reporter = Arc::new(StdioProgressReporter::new(token));
-            InvocationContext::new(self.access.clone())
-                .with_progress_reporter(reporter)
+            InvocationContext::new(self.access.clone()).with_progress_reporter(reporter)
         };
         invocation.cancellation = cancellation;
 
@@ -1239,13 +1285,16 @@ impl Server {
             Ok(tool_result) => {
                 let mut content = tool_result_to_mcp_content(&tool_result);
                 if let Some(ref structured_val) = tool_result.structured {
-                    let json_str = serde_json::to_string(&capability_value_to_json(structured_val)).unwrap_or_default();
+                    let json_str = serde_json::to_string(&capability_value_to_json(structured_val))
+                        .unwrap_or_default();
                     content.push(serde_json::json!({
                         "type": "text",
                         "text": json_str
                     }));
                 }
-                let structured = tool_result.structured.as_ref()
+                let structured = tool_result
+                    .structured
+                    .as_ref()
                     .map(capability_value_to_json);
                 serde_json::json!({
                     "jsonrpc": "2.0",
@@ -1377,7 +1426,9 @@ mod nested_mount_tests {
             access: AccessContext::new("test", "test"),
             cancellations: Mutex::new(BTreeMap::new()),
             vfs,
-            mount_resolver: MountResolver::builder().factory(Arc::new(MiniArchiveFactory)).build(),
+            mount_resolver: MountResolver::builder()
+                .factory(Arc::new(MiniArchiveFactory))
+                .build(),
         }
     }
 
@@ -1388,7 +1439,9 @@ mod nested_mount_tests {
         let fs = server
             .mounted_filesystem("outer.frtriage/[mount]/inner.frtriage", &cancellation)
             .expect("second-level mount should resolve");
-        let bytes = fs.read_all(FPath::new("hello.txt")).expect("hello.txt inside the inner mount");
+        let bytes = fs
+            .read_all(FPath::new("hello.txt"))
+            .expect("hello.txt inside the inner mount");
         assert_eq!(bytes, b"hi");
     }
 

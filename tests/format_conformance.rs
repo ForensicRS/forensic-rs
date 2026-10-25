@@ -60,7 +60,11 @@ impl FormatFactory for MagicFactory {
     fn yields(&self) -> MountKind {
         MountKind::Registry
     }
-    fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        file: &mut dyn VirtualFile,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         let start = file.stream_position()?;
         let mut buf = vec![0u8; self.magic.len()];
         let matched = file.read_exact(&mut buf).is_ok() && buf == self.magic;
@@ -69,7 +73,11 @@ impl FormatFactory for MagicFactory {
         file.seek(SeekFrom::Start(start))?;
         Ok(if matched { self.score } else { ProbeScore::No })
     }
-    fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    fn mount(
+        &self,
+        _file: Box<dyn VirtualFile>,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<Mounted> {
         Ok(Mounted::Registry(Arc::new(TestingRegistry::empty())))
     }
 }
@@ -84,10 +92,21 @@ impl FormatFactory for AlwaysErrorsFactory {
     fn yields(&self) -> MountKind {
         MountKind::Registry
     }
-    fn probe(&self, _file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
-        Err(ForensicError::other("AlwaysErrorsFactory", "boom".to_string()))
+    fn probe(
+        &self,
+        _file: &mut dyn VirtualFile,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
+        Err(ForensicError::other(
+            "AlwaysErrorsFactory",
+            "boom".to_string(),
+        ))
     }
-    fn mount(&self, _file: Box<dyn VirtualFile>, _ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    fn mount(
+        &self,
+        _file: Box<dyn VirtualFile>,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<Mounted> {
         unreachable!("probe always errors first")
     }
 }
@@ -112,22 +131,36 @@ fn probe_position_is_restored_regardless_of_match() {
         name: "b-winning",
         score: ProbeScore::Strong,
     });
-    let resolver = MountResolver::builder().factory(losing).factory(winning).build();
+    let resolver = MountResolver::builder()
+        .factory(losing)
+        .factory(winning)
+        .build();
     let fs = evidence_fs();
     let cancel = CancellationToken::new();
     let mounted = resolver
-        .resolve(&fs, &locator("x"), bytes_file(b"REAL-payload"), None, &cancel)
+        .resolve(
+            &fs,
+            &locator("x"),
+            bytes_file(b"REAL-payload"),
+            None,
+            &cancel,
+        )
         .expect("the winning factory should still match after the losing one probed first");
     assert!(mounted.as_registry().is_some());
 }
 
 #[test]
 fn a_probe_error_surfaces_instead_of_being_treated_as_no_match() {
-    let resolver = MountResolver::builder().factory(Arc::new(AlwaysErrorsFactory)).build();
+    let resolver = MountResolver::builder()
+        .factory(Arc::new(AlwaysErrorsFactory))
+        .build();
     let fs = evidence_fs();
     let cancel = CancellationToken::new();
     let result = resolver.resolve(&fs, &locator("x"), bytes_file(b"anything"), None, &cancel);
-    assert!(result.is_err(), "a probe error must propagate, not be swallowed as ProbeScore::No");
+    assert!(
+        result.is_err(),
+        "a probe error must propagate, not be swallowed as ProbeScore::No"
+    );
 }
 
 #[test]
@@ -153,9 +186,15 @@ fn winner_selection_is_deterministic_across_shuffled_registration_order() {
 
     for round in 0..20u32 {
         let resolver = if round % 2 == 0 {
-            MountResolver::builder().factory(weak()).factory(strong()).build()
+            MountResolver::builder()
+                .factory(weak())
+                .factory(strong())
+                .build()
         } else {
-            MountResolver::builder().factory(strong()).factory(weak()).build()
+            MountResolver::builder()
+                .factory(strong())
+                .factory(weak())
+                .build()
         };
         let fs = evidence_fs();
         let cancel = CancellationToken::new();
@@ -191,10 +230,22 @@ fn tie_break_on_equal_score_is_alphabetically_first_name() {
     let fs = evidence_fs();
     let cancel = CancellationToken::new();
     let first = resolver
-        .resolve(&fs, &locator("a"), bytes_file(b"TIE!-payload"), None, &cancel)
+        .resolve(
+            &fs,
+            &locator("a"),
+            bytes_file(b"TIE!-payload"),
+            None,
+            &cancel,
+        )
         .unwrap();
     let second = resolver
-        .resolve(&fs, &locator("b"), bytes_file(b"TIE!-payload"), None, &cancel)
+        .resolve(
+            &fs,
+            &locator("b"),
+            bytes_file(b"TIE!-payload"),
+            None,
+            &cancel,
+        )
         .unwrap();
     assert_eq!(first.kind(), second.kind());
 }
@@ -242,14 +293,26 @@ impl FormatFactory for LogSetFactory {
     fn yields(&self) -> MountKind {
         MountKind::FileSet
     }
-    fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        file: &mut dyn VirtualFile,
+        _ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         let start = file.stream_position()?;
         let mut buf = [0u8; 4];
         let matched = file.read_exact(&mut buf).is_ok() && &buf == b"EDB0";
         file.seek(SeekFrom::Start(start))?;
-        Ok(if matched { ProbeScore::Exact } else { ProbeScore::No })
+        Ok(if matched {
+            ProbeScore::Exact
+        } else {
+            ProbeScore::No
+        })
     }
-    fn mount(&self, _file: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+    fn mount(
+        &self,
+        _file: Box<dyn VirtualFile>,
+        ctx: &MountContext<'_>,
+    ) -> ForensicResult<Mounted> {
         let mut set = FileSet::new(ctx.locator().clone());
         // The format-specific part is only the naming rule; listing the
         // directory and building locators is the framework's job now.
@@ -288,7 +351,9 @@ fn ese_evidence_fs() -> Arc<dyn FileSystem> {
 
 #[test]
 fn a_file_set_mount_reports_every_member_with_its_role() {
-    let resolver = MountResolver::builder().factory(Arc::new(LogSetFactory)).build();
+    let resolver = MountResolver::builder()
+        .factory(Arc::new(LogSetFactory))
+        .build();
     let fs = ese_evidence_fs();
     let cancel = CancellationToken::new();
     let mounted = resolver
@@ -316,7 +381,9 @@ fn a_file_set_mount_reports_every_member_with_its_role() {
 
 #[test]
 fn a_file_set_factory_is_filtered_out_by_a_mismatched_want() {
-    let resolver = MountResolver::builder().factory(Arc::new(LogSetFactory)).build();
+    let resolver = MountResolver::builder()
+        .factory(Arc::new(LogSetFactory))
+        .build();
     let fs = ese_evidence_fs();
     let cancel = CancellationToken::new();
     let result = resolver.resolve(
@@ -336,14 +403,28 @@ fn a_file_set_factory_is_filtered_out_by_a_mismatched_want() {
 
 #[test]
 fn a_file_set_is_cached_by_locator_like_any_other_mount() {
-    let resolver = MountResolver::builder().factory(Arc::new(LogSetFactory)).build();
+    let resolver = MountResolver::builder()
+        .factory(Arc::new(LogSetFactory))
+        .build();
     let fs = ese_evidence_fs();
     let cancel = CancellationToken::new();
     let first = resolver
-        .resolve(&fs, &locator("/evidence/db.dat"), bytes_file(b"EDB0payload"), None, &cancel)
+        .resolve(
+            &fs,
+            &locator("/evidence/db.dat"),
+            bytes_file(b"EDB0payload"),
+            None,
+            &cancel,
+        )
         .unwrap();
     let second = resolver
-        .resolve(&fs, &locator("/evidence/db.dat"), bytes_file(b"EDB0payload"), None, &cancel)
+        .resolve(
+            &fs,
+            &locator("/evidence/db.dat"),
+            bytes_file(b"EDB0payload"),
+            None,
+            &cancel,
+        )
         .unwrap();
     assert_eq!(
         first.as_file_set().unwrap(),
@@ -365,10 +446,18 @@ fn companion_discovery_helpers_resolve_against_the_targets_own_directory() {
         fn yields(&self) -> MountKind {
             MountKind::FileSet
         }
-        fn probe(&self, _f: &mut dyn VirtualFile, _c: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+        fn probe(
+            &self,
+            _f: &mut dyn VirtualFile,
+            _c: &MountContext<'_>,
+        ) -> ForensicResult<ProbeScore> {
             Ok(ProbeScore::Exact)
         }
-        fn mount(&self, _f: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+        fn mount(
+            &self,
+            _f: Box<dyn VirtualFile>,
+            ctx: &MountContext<'_>,
+        ) -> ForensicResult<Mounted> {
             assert_eq!(ctx.parent_dir().unwrap().as_path(), FPath::new("/evidence"));
             assert_eq!(ctx.siblings()?.len(), 5);
             assert_eq!(
@@ -379,7 +468,9 @@ fn companion_discovery_helpers_resolve_against_the_targets_own_directory() {
         }
     }
 
-    let resolver = MountResolver::builder().factory(Arc::new(AssertingFactory)).build();
+    let resolver = MountResolver::builder()
+        .factory(Arc::new(AssertingFactory))
+        .build();
     let cancel = CancellationToken::new();
     resolver
         .resolve(
@@ -405,10 +496,18 @@ fn companion_discovery_declines_for_a_target_that_is_not_a_path() {
         fn yields(&self) -> MountKind {
             MountKind::FileSet
         }
-        fn probe(&self, _f: &mut dyn VirtualFile, _c: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+        fn probe(
+            &self,
+            _f: &mut dyn VirtualFile,
+            _c: &MountContext<'_>,
+        ) -> ForensicResult<ProbeScore> {
             Ok(ProbeScore::Exact)
         }
-        fn mount(&self, _f: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+        fn mount(
+            &self,
+            _f: Box<dyn VirtualFile>,
+            ctx: &MountContext<'_>,
+        ) -> ForensicResult<Mounted> {
             assert!(ctx.parent_dir().is_none());
             assert!(ctx.siblings()?.is_empty());
             assert!(ctx.sibling_locator("anything").is_none());
@@ -423,9 +522,17 @@ fn companion_discovery_declines_for_a_target_that_is_not_a_path() {
             name: "inner.dat".into(),
         });
 
-    let resolver = MountResolver::builder().factory(Arc::new(NonPathFactory)).build();
+    let resolver = MountResolver::builder()
+        .factory(Arc::new(NonPathFactory))
+        .build();
     let cancel = CancellationToken::new();
     resolver
-        .resolve(&ese_evidence_fs(), &inside_zip, bytes_file(b"x"), None, &cancel)
+        .resolve(
+            &ese_evidence_fs(),
+            &inside_zip,
+            bytes_file(b"x"),
+            None,
+            &cancel,
+        )
         .unwrap();
 }

@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use forensic_rs::utils::unpack::{read_u32_le_at, read_u64_le_at};
 
 fn unpack_at_offsets(criterion: &mut Criterion) {

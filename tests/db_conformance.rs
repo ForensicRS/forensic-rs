@@ -154,7 +154,9 @@ fn a_recovered_rows_locus_yields_a_distinct_event_id() {
     let recovery = db.as_recovery().unwrap();
     let mut recovered = recovery.recovered_rows("Users").unwrap();
     assert!(recovered.next().unwrap());
-    let recovered_locus = recovered.locus().expect("recovered row must be addressable");
+    let recovered_locus = recovered
+        .locus()
+        .expect("recovered row must be addressable");
 
     let table = db.table("Users").unwrap();
     let mut allocated = table.iter_rows().unwrap();
