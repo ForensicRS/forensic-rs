@@ -61,6 +61,8 @@ src/
     processor.rs      — RecordProcessor, RecordDestination (pub(crate); the one enrich→tally→analyze→route body shared by the serial and parallel drivers)
     context.rs        — TriageContext (shared run context: host/tenant/artifact metadata, shared KV store, ProvenanceStore), ParseContext (what one ArtifactParserFactory::open() call sees: sources, host, acquisition, cancellation, register_source(), the cached host_profile(), resolve()/resolve_files()/resolve_artifact()/locate_artifact_files())
     registry.rs       — ParserRegistry (ID-keyed store of ArtifactParserFactory instances, backing AccessRequirements::parser(id))
+    inventory.rs      — ContainerInventoryParser (format-agnostic inventory of CONTAINER-flagged VFS entries, forwarding their PathAttributes)
+    registry_collector.rs — RegistryCollector (`core.registry_collector`: the raw keys/values the run's artifact catalog names, uninterpreted)
     sources.rs        — TriageSources, TriageSourcesBuilder (VFS/registry evidence sources available to parsers, plus optional MountResolver/SecretProvider/ArtifactCatalog attachments)
     sinks.rs          — TimelineSink, FindingCollector, JsonlTimelineSink, JsonlFindingSink, ProvenanceJsonlSink (the only sink whose output keeps provenance)
     timeline.rs       — EventId, TimelineStore, InMemoryTimelineStore, TimelineRecordSink: an ordered, deduped timeline (TimelineSink is stats-only; this is the "implement a custom TriageSink" it points to)
