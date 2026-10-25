@@ -63,7 +63,7 @@ pub mod raw;
 pub mod windows;
 pub use raw::{
     KeyEntry, KeyInfo, OwnedRegKey, PredefinedHive, RawKey, RecoverDeleted, RecoveredKey,
-    RecoveredValue, RegKey, Registry, RegistryExt,
+    RecoveredValue, RegKey, Registry, RegistryExt, canonical_key_path,
 };
 
 /// Owned registry value. Allocates heap memory for variable-length data.

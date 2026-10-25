@@ -122,22 +122,33 @@ impl ArtifactParserFactory for RegistryCollector {
                 api: "Registry".into(),
             })
         });
+        // One source per key, registered when the key opens: the key path, behind the source of
+        // its hive when the reader names one (the same key in two hives is two sources).
         let mut sources: BTreeMap<String, SourceHandle> = BTreeMap::new();
-        for (key, _) in targets.keys() {
-            if !sources.contains_key(key) {
-                let source = match &live {
-                    Some(live) => live.clone(),
-                    None => ctx.register_source(SourceKey::Path(key.clone())),
-                };
-                sources.insert(key.clone(), source);
-            }
-        }
 
         let mut out: Vec<ForensicResult<ForensicData>> = std::mem::take(&mut head);
         for ((key, read), target) in targets {
-            let Some(source) = sources.get(&key) else {
-                continue;
+            // A read error names the key: the registry error types carry no path of their own
+            // for anything but a missing key or value, and those are no match, not errors.
+            let at = |e: ForensicError| ForensicError::other(PARSER_ID, format!("{key}: {e}"));
+            let opened = match registry.key(&key) {
+                Ok(opened) => opened,
+                Err(e) if e.is_registry_not_found() => continue,
+                Err(e) => {
+                    out.push(Err(at(e)));
+                    continue;
+                }
             };
+            let source = sources
+                .entry(key.clone())
+                .or_insert_with(|| match &live {
+                    Some(live) => live.clone(),
+                    None => ctx.register_source(match opened.hive_source() {
+                        Some(hive) => SourceKey::Chain(vec![hive, SourceKey::Path(key.clone())]),
+                        None => SourceKey::Path(key.clone()),
+                    }),
+                })
+                .clone();
             let record = |value: Option<(&str, &RegValue)>| {
                 let mut data = ForensicData::new(
                     &host,
@@ -161,17 +172,6 @@ impl ArtifactParserFactory for RegistryCollector {
                     data.set(REGISTRY_PATH, key.clone());
                 }
                 data
-            };
-            // A read error names the key: the registry error types carry no path of their own
-            // for anything but a missing key or value, and those are no match, not errors.
-            let at = |e: ForensicError| ForensicError::other(PARSER_ID, format!("{key}: {e}"));
-            let opened = match registry.key(&key) {
-                Ok(opened) => opened,
-                Err(e) if e.is_registry_not_found() => continue,
-                Err(e) => {
-                    out.push(Err(at(e)));
-                    continue;
-                }
             };
             let last_write = match opened.info() {
                 Ok(info) => info.last_write_time,
@@ -366,6 +366,7 @@ mod tests {
     use crate::catalog::{ArtifactDefinition, RegistryValueRef, SliceCatalog, SourceEntry};
     use crate::pipeline::context::TriageContext;
     use crate::pipeline::sources::TriageSources;
+    use crate::traits::registry::{KeyEntry, KeyInfo, PredefinedHive, RawKey};
     use crate::utils::testing::{TestingRegistry, collect_run};
     use crate::utils::time::ForensicTimestamp;
 
@@ -594,6 +595,76 @@ mod tests {
                 panic!("{source:?}");
             };
             assert!(key.starts_with(&path), "{key} from {path}");
+        }
+    }
+
+    /// A reader that names the hive behind every key, like a hive file or a memory image.
+    struct Hived(TestingRegistry);
+
+    impl Registry for Hived {
+        fn root(&self, hive: PredefinedHive) -> ForensicResult<RawKey> {
+            self.0.root(hive)
+        }
+        fn open_raw(&self, parent: &RawKey, name: &str) -> ForensicResult<RawKey> {
+            self.0.open_raw(parent, name)
+        }
+        fn close_raw(&self, key: &RawKey) {
+            self.0.close_raw(key)
+        }
+        fn read_raw(&self, key: &RawKey, value: &str) -> ForensicResult<RegValue> {
+            self.0.read_raw(key, value)
+        }
+        fn values_raw(&self, key: &RawKey) -> ForensicResult<Vec<(String, RegValue)>> {
+            self.0.values_raw(key)
+        }
+        fn keys_raw(&self, key: &RawKey) -> ForensicResult<Vec<KeyEntry>> {
+            self.0.keys_raw(key)
+        }
+        fn info_raw(&self, key: &RawKey) -> ForensicResult<KeyInfo> {
+            self.0.info_raw(key)
+        }
+        fn values_iter_raw<'a>(
+            &'a self,
+            key: &RawKey,
+        ) -> ForensicResult<Box<dyn Iterator<Item = (String, RegValue)> + 'a>> {
+            self.0.values_iter_raw(key)
+        }
+        fn keys_iter_raw<'a>(
+            &'a self,
+            key: &RawKey,
+        ) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + 'a>> {
+            self.0.keys_iter_raw(key)
+        }
+        fn hive_source(&self, _key: &RawKey) -> Option<SourceKey> {
+            Some(SourceKey::Path("/evidence/host7.raw#hive@ffff8001".into()))
+        }
+    }
+
+    #[test]
+    fn a_named_hive_comes_before_the_key_path() {
+        let triage = TriageContext::new("HOST", "t");
+        let store = triage.provenance_store();
+        let cancellation = CancellationToken::new();
+        let sources = TriageSources::builder()
+            .registry(Arc::new(Hived(registry())))
+            .catalog(catalog())
+            .acquisition(Acquisition::Memory)
+            .build();
+        let ctx = ParseContext::new(&sources, &triage, &cancellation);
+        let records = collect_run(RegistryCollector::new().open(&ctx).unwrap()).unwrap();
+        assert!(!records.is_empty());
+        for record in records.iter().map(|r| r.as_ref().unwrap()) {
+            let key = text(record, REGISTRY_PATH).unwrap();
+            let p = store.get(record.provenance()).unwrap();
+            assert_eq!(p.acquisition, Acquisition::Memory);
+            let SourceKey::Chain(parts) = p.source else {
+                panic!("{:?}", p.source);
+            };
+            let [SourceKey::Path(hive), SourceKey::Path(path)] = parts.as_slice() else {
+                panic!("{parts:?}");
+            };
+            assert_eq!(hive, "/evidence/host7.raw#hive@ffff8001");
+            assert!(key.starts_with(path.as_str()), "{key} from {path}");
         }
     }
 

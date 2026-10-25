@@ -183,6 +183,11 @@ pub struct MemOsInfo {
     /// The capture time as the OS recorded it, never host time.
     pub capture_time: MemValue<ForensicTimestamp>,
     pub processor_count: MemValue<u32>,
+    /// The name the host was running under at capture time (on Windows, the active computer
+    /// name in the in-memory registry). It names the host for `EntityId`s built from memory;
+    /// [`HostProfile::resolve`](crate::host_profile::HostProfile::resolve) over
+    /// [`MemoryImage::as_registry`](super::MemoryImage::as_registry) gives the full profile.
+    pub computer_name: MemValue<Text>,
 }
 
 impl MemOsInfo {
@@ -197,6 +202,7 @@ impl MemOsInfo {
             dtb: MemValue::Unsupported,
             capture_time: MemValue::Unsupported,
             processor_count: MemValue::Unsupported,
+            computer_name: MemValue::Unsupported,
         }
     }
 }

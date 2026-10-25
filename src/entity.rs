@@ -10,7 +10,15 @@
 
 use crate::core::fnv1a64;
 use crate::traits::digest::ContentAddress;
+use crate::traits::registry::canonical_key_path;
 use crate::utils::time::ForensicTimestamp;
+
+/// A timestamp as an identity part: the UTC instant only (`<seconds>.<nanoseconds>`). The
+/// offset, precision and source flags say how the time was recorded, not which instant it is,
+/// so the same start time read from two sources gives one identity.
+fn instant(t: ForensicTimestamp) -> String {
+    format!("{}.{:09}", t.utc_seconds(), t.nanoseconds())
+}
 
 /// What kind of real-world subject an [`EntityId`] identifies.
 ///
@@ -117,7 +125,7 @@ impl EntityId {
     pub fn process(host: &str, pid: u32, start_time: ForensicTimestamp) -> Self {
         Self::from_parts(
             EntityKind::Process,
-            &[host, &pid.to_string(), &format!("{start_time:?}")],
+            &[host, &pid.to_string(), &instant(start_time)],
         )
     }
 
@@ -127,9 +135,14 @@ impl EntityId {
         Self::from_parts(EntityKind::NetworkEndpoint, &[address, &port_str])
     }
 
-    /// A registry key, scoped to the host it was observed on.
+    /// A registry key, scoped to the host it was observed on. The path is canonicalized
+    /// ([`canonical_key_path`]): `HKEY_LOCAL_MACHINE\System`, `HKLM\SYSTEM` and the kernel's
+    /// `\REGISTRY\MACHINE\system` are one key.
     pub fn registry_key(host: &str, key_path: &str) -> Self {
-        Self::from_parts(EntityKind::RegistryKey, &[host, key_path])
+        Self::from_parts(
+            EntityKind::RegistryKey,
+            &[host, &canonical_key_path(key_path)],
+        )
     }
 
     pub fn scheduled_task(host: &str, name: &str) -> Self {
@@ -149,7 +162,7 @@ impl EntityId {
                 host,
                 &pid.to_string(),
                 &tid.to_string(),
-                &format!("{start_time:?}"),
+                &instant(start_time),
             ],
         )
     }
@@ -227,6 +240,34 @@ mod tests {
             EntityId::process("h", 1234, t1),
             EntityId::process("h", 1234, t2)
         );
+    }
+
+    #[test]
+    fn one_instant_is_one_process_whatever_recorded_it() {
+        // The same instant from a FILETIME and from Unix seconds: different flags, one identity.
+        let filetime = ForensicTimestamp::from_win_filetime(133_000_000_000_000_000);
+        let unix = ForensicTimestamp::from_unix_secs(filetime.utc_seconds());
+        assert_eq!(filetime.nanoseconds(), 0);
+        assert_eq!(
+            EntityId::process("h", 4, filetime),
+            EntityId::process("h", 4, unix)
+        );
+        assert_eq!(
+            EntityId::thread("h", 4, 8, filetime),
+            EntityId::thread("h", 4, 8, unix)
+        );
+    }
+
+    #[test]
+    fn registry_keys_are_one_key_whatever_names_them() {
+        let a = EntityId::registry_key("h", r"HKEY_LOCAL_MACHINE\System\Select");
+        assert_eq!(a, EntityId::registry_key("h", r"HKLM\SYSTEM\SELECT"));
+        assert_eq!(
+            a,
+            EntityId::registry_key("h", r"\REGISTRY\MACHINE\system\select")
+        );
+        assert_ne!(a, EntityId::registry_key("h", r"HKU\System\Select"));
+        assert_ne!(a, EntityId::registry_key("other", r"HKLM\SYSTEM\SELECT"));
     }
 
     #[test]

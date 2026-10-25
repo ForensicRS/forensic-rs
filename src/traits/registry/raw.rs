@@ -154,6 +154,17 @@ pub trait Registry: Send + Sync {
         None
     }
 
+    /// The source of the hive that holds `key`, when the reader knows it: the hive file a
+    /// file-backed reader opened, or a hive in a memory image. Parsers put it in front of the
+    /// key path in their provenance ([`SourceKey::Chain`](crate::provenance::SourceKey::Chain)),
+    /// so the same key read from two hives (the disk `SYSTEM` file and that hive in memory) is
+    /// two sources, never one. A [`Locus::Hive`](crate::provenance::Locus::Hive) cell is then
+    /// relative to this source. `None` by default: a live or merged registry has no single
+    /// hive to name.
+    fn hive_source(&self, _key: &RawKey) -> Option<crate::provenance::SourceKey> {
+        None
+    }
+
     /// Like [`values_raw`](Registry::values_raw), but appends into a
     /// caller-owned buffer instead of allocating a fresh `Vec` on every
     /// call. Intended for a caller that re-enumerates the same-shaped path
@@ -303,6 +314,10 @@ impl<'r, T: Registry + ?Sized> RegKey<'r, T> {
     pub fn keys_iter(&self) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + '_>> {
         self.reg.keys_iter_raw(&self.raw)
     }
+    /// The source of the hive holding this key ([`Registry::hive_source`]).
+    pub fn hive_source(&self) -> Option<crate::provenance::SourceKey> {
+        self.reg.hive_source(&self.raw)
+    }
     pub fn info(&self) -> ForensicResult<KeyInfo> {
         self.reg.info_raw(&self.raw)
     }
@@ -397,6 +412,10 @@ impl OwnedRegKey {
     /// [`Registry::keys_iter_raw`] for the laziness contract.
     pub fn keys_iter(&self) -> ForensicResult<Box<dyn Iterator<Item = KeyEntry> + '_>> {
         self.reg.keys_iter_raw(&self.raw)
+    }
+    /// The source of the hive holding this key ([`Registry::hive_source`]).
+    pub fn hive_source(&self) -> Option<crate::provenance::SourceKey> {
+        self.reg.hive_source(&self.raw)
     }
     pub fn info(&self) -> ForensicResult<KeyInfo> {
         self.reg.info_raw(&self.raw)
@@ -614,6 +633,61 @@ fn resolve_hive(name: &str) -> ForensicResult<PredefinedHive> {
         }
     };
     Ok(hive)
+}
+
+/// A registry key path in one form, for identity ([`EntityId::registry_key`](crate::entity::EntityId::registry_key)):
+/// the same key named by different readers compares equal.
+///
+/// - The root becomes its short designator: `HKEY_LOCAL_MACHINE`, `HKLM` and the kernel's
+///   `\REGISTRY\MACHINE` are all `HKLM`; `HKEY_USERS` and `\REGISTRY\USER` are `HKU`; the other
+///   predefined roots get their usual abbreviation. An unknown root is kept as a name.
+/// - Separators are one `\`, with no leading, trailing or repeated ones. `/` is a name
+///   character in the registry, so it is kept.
+/// - Names are upper-cased one character at a time (registry names compare without case), and
+///   a character whose upper case is several characters (`ß`) is kept as it is.
+pub fn canonical_key_path(path: &str) -> String {
+    let mut parts = path.split('\\').filter(|p| !p.is_empty()).peekable();
+    let mut out = String::with_capacity(path.len());
+    let root = match parts.peek().map(|p| p.to_ascii_uppercase()) {
+        Some(r) if r == "REGISTRY" => {
+            parts.next();
+            match parts.peek().map(|p| p.to_ascii_uppercase()).as_deref() {
+                Some("MACHINE") => Some("HKLM"),
+                Some("USER") => Some("HKU"),
+                _ => Some("REGISTRY"),
+            }
+        }
+        Some(r) => match r.as_str() {
+            "HKLM" | "HKEY_LOCAL_MACHINE" => Some("HKLM"),
+            "HKU" | "HKEY_USERS" => Some("HKU"),
+            "HKCU" | "HKEY_CURRENT_USER" => Some("HKCU"),
+            "HKCR" | "HKEY_CLASSES_ROOT" => Some("HKCR"),
+            "HKCC" | "HKEY_CURRENT_CONFIG" => Some("HKCC"),
+            "HKPD" | "HKEY_PERFORMANCE_DATA" => Some("HKPD"),
+            "HKDD" | "HKEY_DYN_DATA" => Some("HKDD"),
+            _ => None,
+        },
+        None => None,
+    };
+    if let Some(root) = root {
+        out.push_str(root);
+        if root != "REGISTRY" {
+            parts.next();
+        }
+    }
+    for part in parts {
+        if !out.is_empty() {
+            out.push('\\');
+        }
+        for c in part.chars() {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(u), None) => out.push(u),
+                _ => out.push(c),
+            }
+        }
+    }
+    out
 }
 
 /// Deleted-cell recovery capability, discovered via [`Registry::as_recovery`].
@@ -1089,6 +1163,28 @@ mod tests {
             PredefinedHive::LocalMachine
         );
         assert!(resolve_hive("NOT_A_HIVE").is_err());
+    }
+
+    #[test]
+    fn canonical_key_paths_have_one_form() {
+        let want = r"HKLM\SYSTEM\CURRENTCONTROLSET\SERVICES\A/B";
+        for p in [
+            r"HKLM\System\CurrentControlSet\Services\a/b",
+            r"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\A/B",
+            r"\REGISTRY\MACHINE\system\currentcontrolset\services\a/b",
+            r"hklm\\System\CurrentControlSet\Services\a/b\",
+        ] {
+            assert_eq!(canonical_key_path(p), want, "{p}");
+        }
+        assert_eq!(
+            canonical_key_path(r"\REGISTRY\USER\S-1-5-21-1\Software"),
+            r"HKU\S-1-5-21-1\SOFTWARE"
+        );
+        assert_eq!(canonical_key_path(r"HKEY_USERS\.DEFAULT"), r"HKU\.DEFAULT");
+        assert_eq!(canonical_key_path(r"\REGISTRY\A\{x}"), r"REGISTRY\A\{X}");
+        assert_eq!(canonical_key_path(r"Software\Straße"), r"SOFTWARE\STRAßE");
+        assert_eq!(canonical_key_path(r"HKLM\Ünï"), r"HKLM\ÜNÏ");
+        assert_eq!(canonical_key_path(""), "");
     }
 
     #[test]

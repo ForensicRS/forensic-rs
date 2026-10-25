@@ -83,7 +83,11 @@ pub trait MemoryImage: Send + Sync {
     }
 
     /// The registry as it was in memory (hives, including volatile ones), when supported.
-    fn as_registry(&self) -> Option<&dyn Registry> {
+    ///
+    /// Owned, so it can be the run's registry: a memory-only run passes it to
+    /// [`TriageSourcesBuilder::registry`](crate::pipeline::sources::TriageSourcesBuilder::registry),
+    /// and every registry parser then reads the in-memory hives unchanged.
+    fn as_registry(&self) -> Option<Arc<dyn Registry>> {
         None
     }
 

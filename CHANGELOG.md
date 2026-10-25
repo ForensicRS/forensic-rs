@@ -45,6 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DLL_PATH`, `MEMORY_VA`, `MEMORY_PA`, `MEMORY_VALIDITY`, `MEMORY_UNAVAILABLE`.
 - Memory test doubles: `InMemoryPhysicalMemory`, `InMemoryPagingFile`, `TestingAddressSpace`, `TestingMemoryImage`,
   and `TestingFormatFactory::memory`.
+- The in-memory registry in a run, and identity that meets across readers:
+  - `MemoryImage::as_registry` returns an owned `Arc<dyn Registry>`, so a memory-only run
+    passes it to `TriageSourcesBuilder::registry` and every registry parser reads the in-memory
+    hives unchanged; `TestingMemoryImage::with_registry`;
+  - `MemOsInfo::computer_name`;
+  - `Registry::hive_source` (and `RegKey::hive_source` / `OwnedRegKey::hive_source`): the
+    source of the hive that holds a key, `None` by default. `RegistryCollector` registers
+    `SourceKey::Chain([hive, key path])` when the reader names one, so the same key read from
+    the disk hive and from memory is two sources;
+  - `traits::registry::canonical_key_path`: one form for a key path (short root designator,
+    `\REGISTRY\MACHINE` and `\REGISTRY\USER` included, single `\` separators, names
+    upper-cased). `EntityId::registry_key` uses it, so `HKEY_LOCAL_MACHINE\System` and
+    `HKLM\SYSTEM` are one key. `EntityId::process` and `EntityId::thread` hash the start time's
+    UTC instant (`<seconds>.<nanoseconds>`) instead of its `Debug` text, so one start time
+    recorded by two sources is one process.
 - `DataAccessError::Unsupported`, `ForensicError::unsupported` and `ForensicError::is_unsupported`:
   "this source does not provide that data at all", distinct from data that is missing or failed
   to read. `memory::unsupported(kind)`, which a `MemoryImage` returns for a record kind it does

@@ -352,3 +352,33 @@ fn kernel_and_process_modules_are_separate_kinds() {
     };
     assert!(e.is_unsupported(), "{e}");
 }
+
+#[test]
+fn the_in_memory_registry_is_the_runs_registry() {
+    use forensic_rs::prelude::testing::TestingRegistry;
+
+    let mut hives = TestingRegistry::empty();
+    hives.add_value(
+        r"HKLM\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName",
+        "ComputerName",
+        RegValue::new_sz("HOST7"),
+    );
+    let image: Arc<dyn MemoryImage> = Arc::new(image().with_registry(Arc::new(hives)));
+    let registry = image.as_registry().expect("the image has a registry");
+    // A memory-only run: the registry is the image's, the acquisition is memory.
+    let sources = TriageSources::builder()
+        .memory(image.clone())
+        .registry(registry)
+        .build();
+    let triage = TriageContext::new("host7", "t");
+    let cancellation = CancellationToken::new();
+    let ctx = ParseContext::new(&sources, &triage, &cancellation);
+    assert_eq!(ctx.acquisition(), Acquisition::Memory);
+    let profile = ctx.host_profile().expect("a registry gives a host profile");
+    let name = profile.computer_name.as_ref().expect("the computer name");
+    assert_eq!(name.value(), "HOST7");
+    let p = triage.provenance_store().get(name.provenance()).unwrap();
+    assert_eq!(p.acquisition, Acquisition::Memory);
+    // An image without one says so.
+    assert!(TestingMemoryImage::empty().as_registry().is_none());
+}

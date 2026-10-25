@@ -503,7 +503,10 @@ so they work on any backend.
   the run has `TriageSourcesBuilder::memory`. Exported records use
   `CommonArtifact::Memory(MemoryArtifact::…)`, `Locus::Memory`/`Locus::Physical`,
   `LocatorSegment::AddressSpace`, the `process.*`/`dll.*`/`memory.*` dictionary fields, and
-  `EntityId::{process, thread, module, driver, handle}` for correlation.
+  `EntityId::{process, thread, module, driver, handle}` for correlation. The in-memory
+  registry is `MemoryImage::as_registry` (owned): a memory-only run passes it to
+  `TriageSourcesBuilder::registry`, and `Registry::hive_source` names the hive in each key's
+  provenance.
 - **Hostile input.** Memory images are attacker-controlled. Backends bounds-check, bound counts
   and iterations, detect cycles, and never panic; `Va`/`Pa` have no wrapping arithmetic.
 - **Testing.** `InMemoryPhysicalMemory`, `InMemoryPagingFile`, `TestingAddressSpace` and `TestingMemoryImage`

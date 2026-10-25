@@ -12,6 +12,7 @@ use crate::memory::{
     PhysRange, PhysicalMemory, ReadReport, SpaceId, Translation, Va, Validity, unsupported,
 };
 use crate::provenance::ProvenanceStore;
+use crate::traits::registry::Registry;
 
 /// Physical memory made of byte ranges, with everything else not captured.
 pub struct InMemoryPhysicalMemory {
@@ -314,6 +315,7 @@ pub struct TestingMemoryImage {
     modules: Vec<MemModule>,
     regions: Vec<MemRegion>,
     handles: Vec<MemHandle>,
+    registry: Option<Arc<dyn Registry>>,
     provenance: ProvenanceStore,
 }
 
@@ -330,6 +332,7 @@ impl TestingMemoryImage {
             modules: Vec::new(),
             regions: Vec::new(),
             handles: Vec::new(),
+            registry: None,
             provenance: ProvenanceStore::new(),
         }
     }
@@ -400,6 +403,12 @@ impl TestingMemoryImage {
         self.regions.push(region);
         self.regions.sort_by(|a, b| a.key.cmp(&b.key));
         self.with_kind(MemRecordKind::Region)
+    }
+
+    /// The registry [`MemoryImage::as_registry`] returns (a `TestingRegistry`, say).
+    pub fn with_registry(mut self, registry: Arc<dyn Registry>) -> Self {
+        self.registry = Some(registry);
+        self
     }
 
     pub fn with_handle(mut self, handle: MemHandle) -> Self {
@@ -500,6 +509,10 @@ impl MemoryImage for TestingMemoryImage {
         Ok(iter_of(
             self.handles.iter().filter(move |h| h.process == process),
         ))
+    }
+
+    fn as_registry(&self) -> Option<Arc<dyn Registry>> {
+        self.registry.clone()
     }
 }
 
