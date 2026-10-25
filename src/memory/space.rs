@@ -210,8 +210,10 @@ pub trait AddressSpaceExt: AddressSpace {
         let max_bytes = max_units.saturating_mul(2).min(MAX_STRING_SCAN);
         let (bytes, report) = self.read_bytes(va, max_bytes)?;
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
             .collect();
         let found = units.iter().position(|&u| u == 0);
         let end = found.unwrap_or(units.len());
@@ -231,8 +233,10 @@ pub trait AddressSpaceExt: AddressSpace {
         let len = (len_bytes & !1).min(MAX_STRING_SCAN);
         let (bytes, report) = self.read_bytes(va, len)?;
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
             .collect();
         Ok(value_if_data(&report, units).map(|u| Bounded {
             value: String::from_utf16_lossy(&u),
