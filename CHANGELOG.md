@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `HKLM\SYSTEM` are one key. `EntityId::process` and `EntityId::thread` hash the start time's
     UTC instant (`<seconds>.<nanoseconds>`) instead of its `Debug` text, so one start time
     recorded by two sources is one process.
+- Files recovered from memory in a run: `MemoryImage::as_files` returns an owned
+  `Arc<dyn FileSystem>`, so a memory-only run passes it to `TriageSourcesBuilder::vfs` and file
+  parsers read what memory holds of each file unchanged; `TestingMemoryImage::with_files`.
 - `DataAccessError::Unsupported`, `ForensicError::unsupported` and `ForensicError::is_unsupported`:
   "this source does not provide that data at all", distinct from data that is missing or failed
   to read. `memory::unsupported(kind)`, which a `MemoryImage` returns for a record kind it does

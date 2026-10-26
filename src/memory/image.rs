@@ -92,7 +92,14 @@ pub trait MemoryImage: Send + Sync {
     }
 
     /// Files recovered from memory (cache manager, mapped sections), when supported.
-    fn as_files(&self) -> Option<&dyn FileSystem> {
+    ///
+    /// Owned, so it can be the run's file system: a memory-only run passes it to
+    /// [`TriageSourcesBuilder::vfs`](crate::pipeline::sources::TriageSourcesBuilder::vfs), and
+    /// file parsers read what memory holds of each file unchanged. Such files are usually
+    /// partial: bytes memory does not hold read as zeros, and the file system says which
+    /// (`FileAttributes::SPARSE`, `VMetadata::allocated_size`, `MediaMap` without a parent
+    /// offset for a hole).
+    fn as_files(&self) -> Option<Arc<dyn FileSystem>> {
         None
     }
 }

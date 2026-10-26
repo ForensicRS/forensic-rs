@@ -382,3 +382,34 @@ fn the_in_memory_registry_is_the_runs_registry() {
     // An image without one says so.
     assert!(TestingMemoryImage::empty().as_registry().is_none());
 }
+
+#[test]
+fn the_in_memory_files_are_the_runs_file_system() {
+    use forensic_rs::prelude::testing::InMemoryVirtualFileSystem;
+
+    let files = InMemoryVirtualFileSystem::new().with_file(
+        "/HarddiskVolume3/Windows/System32/winevt/Logs/System.evtx",
+        b"ElfFile\0".to_vec(),
+    );
+    let image: Arc<dyn MemoryImage> = Arc::new(image().with_files(Arc::new(files)));
+    let vfs = image.as_files().expect("the image has files");
+    // A memory-only run: the file system is the image's, the acquisition is memory.
+    let sources = TriageSources::builder()
+        .memory(image.clone())
+        .vfs(vfs)
+        .build();
+    let triage = TriageContext::new("host7", "t");
+    let cancellation = CancellationToken::new();
+    let ctx = ParseContext::new(&sources, &triage, &cancellation);
+    assert_eq!(ctx.acquisition(), Acquisition::Memory);
+    let bytes = sources
+        .vfs()
+        .unwrap()
+        .read_all(FPath::new(
+            "/HarddiskVolume3/Windows/System32/winevt/Logs/System.evtx",
+        ))
+        .unwrap();
+    assert_eq!(bytes, b"ElfFile\0");
+    // An image without them says so.
+    assert!(TestingMemoryImage::empty().as_files().is_none());
+}

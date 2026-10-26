@@ -13,6 +13,7 @@ use crate::memory::{
 };
 use crate::provenance::ProvenanceStore;
 use crate::traits::registry::Registry;
+use crate::traits::vfs::FileSystem;
 
 /// Physical memory made of byte ranges, with everything else not captured.
 pub struct InMemoryPhysicalMemory {
@@ -316,6 +317,7 @@ pub struct TestingMemoryImage {
     regions: Vec<MemRegion>,
     handles: Vec<MemHandle>,
     registry: Option<Arc<dyn Registry>>,
+    files: Option<Arc<dyn FileSystem>>,
     provenance: ProvenanceStore,
 }
 
@@ -333,6 +335,7 @@ impl TestingMemoryImage {
             regions: Vec::new(),
             handles: Vec::new(),
             registry: None,
+            files: None,
             provenance: ProvenanceStore::new(),
         }
     }
@@ -408,6 +411,12 @@ impl TestingMemoryImage {
     /// The registry [`MemoryImage::as_registry`] returns (a `TestingRegistry`, say).
     pub fn with_registry(mut self, registry: Arc<dyn Registry>) -> Self {
         self.registry = Some(registry);
+        self
+    }
+
+    /// The files [`MemoryImage::as_files`] returns (an `InMemoryVirtualFileSystem`, say).
+    pub fn with_files(mut self, files: Arc<dyn FileSystem>) -> Self {
+        self.files = Some(files);
         self
     }
 
@@ -513,6 +522,10 @@ impl MemoryImage for TestingMemoryImage {
 
     fn as_registry(&self) -> Option<Arc<dyn Registry>> {
         self.registry.clone()
+    }
+
+    fn as_files(&self) -> Option<Arc<dyn FileSystem>> {
+        self.files.clone()
     }
 }
 

@@ -506,7 +506,8 @@ so they work on any backend.
   `EntityId::{process, thread, module, driver, handle}` for correlation. The in-memory
   registry is `MemoryImage::as_registry` (owned): a memory-only run passes it to
   `TriageSourcesBuilder::registry`, and `Registry::hive_source` names the hive in each key's
-  provenance.
+  provenance. Files recovered from memory are `MemoryImage::as_files` (owned), a run's `vfs`
+  the same way; they are sparse (holes read as zeros, `SPARSE`, `allocated_size`).
 - **Hostile input.** Memory images are attacker-controlled. Backends bounds-check, bound counts
   and iterations, detect cycles, and never panic; `Va`/`Pa` have no wrapping arithmetic.
 - **Testing.** `InMemoryPhysicalMemory`, `InMemoryPagingFile`, `TestingAddressSpace` and `TestingMemoryImage`
