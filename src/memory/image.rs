@@ -10,8 +10,8 @@ use crate::traits::vfs::FileSystem;
 
 use super::addr::Va;
 use super::model::{
-    MemHandle, MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind, MemRegion, MemThread,
-    MemValue,
+    MemHandle, MemHive, MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind, MemRegion,
+    MemThread, MemValue,
 };
 use super::physical::PhysicalMemory;
 use super::space::{AddressSpace, AddressSpaceExt};
@@ -80,6 +80,11 @@ pub trait MemoryImage: Send + Sync {
 
     fn handles(&self, _process: &MemRecordKey) -> ForensicResult<MemIter<'_, MemHandle>> {
         Err(unsupported(MemRecordKind::Handle))
+    }
+
+    /// The registry hives loaded in memory.
+    fn hives(&self) -> ForensicResult<MemIter<'_, MemHive>> {
+        Err(unsupported(MemRecordKind::Hive))
     }
 
     /// The registry as it was in memory (hives, including volatile ones), when supported.

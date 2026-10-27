@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use crate::err::{ForensicError, ForensicResult};
 use crate::memory::{
-    AddressSpace, Backing, MemHandle, MemIter, MemModule, MemOsInfo, MemProcess, MemRecordKey,
-    MemRecordKind, MemRegion, MemThread, MemoryImage, MemoryInputInfo, Pa, PageSize, PagingFile,
-    PhysRange, PhysicalMemory, ReadReport, SpaceId, Translation, Va, Validity, unsupported,
+    AddressSpace, Backing, MemHandle, MemHive, MemIter, MemModule, MemOsInfo, MemProcess,
+    MemRecordKey, MemRecordKind, MemRegion, MemThread, MemoryImage, MemoryInputInfo, Pa, PageSize,
+    PagingFile, PhysRange, PhysicalMemory, ReadReport, SpaceId, Translation, Va, Validity,
+    unsupported,
 };
 use crate::provenance::ProvenanceStore;
 use crate::traits::registry::Registry;
@@ -316,6 +317,7 @@ pub struct TestingMemoryImage {
     modules: Vec<MemModule>,
     regions: Vec<MemRegion>,
     handles: Vec<MemHandle>,
+    hives: Vec<MemHive>,
     registry: Option<Arc<dyn Registry>>,
     files: Option<Arc<dyn FileSystem>>,
     provenance: ProvenanceStore,
@@ -334,6 +336,7 @@ impl TestingMemoryImage {
             modules: Vec::new(),
             regions: Vec::new(),
             handles: Vec::new(),
+            hives: Vec::new(),
             registry: None,
             files: None,
             provenance: ProvenanceStore::new(),
@@ -424,6 +427,12 @@ impl TestingMemoryImage {
         self.handles.push(handle);
         self.handles.sort_by(|a, b| a.key.cmp(&b.key));
         self.with_kind(MemRecordKind::Handle)
+    }
+
+    pub fn with_hive(mut self, hive: MemHive) -> Self {
+        self.hives.push(hive);
+        self.hives.sort_by(|a, b| a.key.cmp(&b.key));
+        self.with_kind(MemRecordKind::Hive)
     }
 
     fn provides(&self, kind: MemRecordKind) -> ForensicResult<()> {
@@ -518,6 +527,11 @@ impl MemoryImage for TestingMemoryImage {
         Ok(iter_of(
             self.handles.iter().filter(move |h| h.process == process),
         ))
+    }
+
+    fn hives(&self) -> ForensicResult<MemIter<'_, MemHive>> {
+        self.provides(MemRecordKind::Hive)?;
+        Ok(iter_of(self.hives.iter()))
     }
 
     fn as_registry(&self) -> Option<Arc<dyn Registry>> {

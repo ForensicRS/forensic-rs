@@ -174,14 +174,15 @@ impl TimelineStore for InMemoryTimelineStore {
 /// docs). A record whose provenance doesn't resolve against `provenance`
 /// (an unshared-context run) is counted but not inserted.
 ///
-/// `Locus` is not yet available at the sink layer — no pipeline stage
-/// currently attaches one to a `ForensicData` — so every `EventId` here
-/// uses [`Locus::Api`] uniformly. This still dedupes correctly whenever
-/// `SourceKey` resolves consistently (the common case); true byte-level
-/// locus precision needs a projector stage that attaches a real `Locus`
-/// per record, a further phase.
+/// A `ForensicData` carries no [`Locus`], so by default every `EventId` here
+/// uses [`Locus::Api`]. That dedupes correctly when each record has its own
+/// `SourceKey` (a key path, a file). When many records share one source (the
+/// records of a memory capture), give the sink a way to find each record's
+/// locus with [`TimelineRecordSink::with_locus`] — for memory records,
+/// [`crate::memory::record_locus`] — or their events collapse into one.
 pub struct TimelineRecordSink<S: TimelineStore> {
     store: Arc<S>,
+    locus: Box<dyn Fn(&ForensicData) -> Locus + Send + Sync>,
     provenance: ProvenanceStore,
     timestamp_field: Text,
     evidence_id: Text,
@@ -200,6 +201,7 @@ impl<S: TimelineStore> TimelineRecordSink<S> {
     ) -> Self {
         Self {
             store,
+            locus: Box::new(|_| Locus::Api),
             provenance,
             timestamp_field: timestamp_field.into(),
             evidence_id: evidence_id.into(),
@@ -208,6 +210,16 @@ impl<S: TimelineStore> TimelineRecordSink<S> {
             missing_timestamp: 0,
             unresolved_provenance: 0,
         }
+    }
+
+    /// How to find each record's locus, part of its [`EventId`] (by default
+    /// [`Locus::Api`] for every record).
+    pub fn with_locus(
+        mut self,
+        locus: impl Fn(&ForensicData) -> Locus + Send + Sync + 'static,
+    ) -> Self {
+        self.locus = Box::new(locus);
+        self
     }
 
     pub fn inserted(&self) -> u64 {
@@ -244,7 +256,7 @@ impl<S: TimelineStore> TriageSink for TimelineRecordSink<S> {
         let id = EventId::new(
             &self.evidence_id,
             &snapshot.source,
-            Locus::Api,
+            (self.locus)(data),
             &self.timestamp_field,
         );
         let event = TimelineData {
@@ -446,6 +458,42 @@ mod tests {
 
         assert_eq!(sink.unresolved_provenance(), 1);
         assert_eq!(sink.inserted(), 0);
+    }
+
+    #[test]
+    fn records_of_one_source_are_told_apart_by_their_locus() {
+        use crate::dictionary::{MEMORY_SPACE, MEMORY_VA};
+
+        let provenance = ProvenanceStore::new();
+        let source = provenance.register_source(SourceKey::Path("host7.raw".to_string()));
+        let records: Vec<ForensicData> = [0xffff_a000_0000_1000u64, 0xffff_a000_0000_2000]
+            .into_iter()
+            .map(|va| {
+                let id = source.mint(Acquisition::Memory, Recovery::Allocated);
+                let mut data = ForensicData::new("host1", Artifact::Unknown, id);
+                data.set("process.start", Field::Date(ts(1_700_000_000)));
+                data.set(MEMORY_SPACE, Field::U64(0));
+                data.set(MEMORY_VA, format!("{va:#x}"));
+                data
+            })
+            .collect();
+        // Without a locus, two processes of one capture are one event.
+        let store = Arc::new(InMemoryTimelineStore::new());
+        let mut sink =
+            TimelineRecordSink::new(store.clone(), provenance.clone(), "process.start", "h");
+        for d in &records {
+            sink.on_data(d).unwrap();
+        }
+        assert_eq!((sink.inserted(), sink.duplicates()), (1, 1));
+        // With it, two.
+        let store = Arc::new(InMemoryTimelineStore::new());
+        let mut sink = TimelineRecordSink::new(store.clone(), provenance, "process.start", "h")
+            .with_locus(crate::memory::record_locus);
+        for d in &records {
+            sink.on_data(d).unwrap();
+        }
+        assert_eq!((sink.inserted(), sink.duplicates()), (2, 0));
+        assert_eq!(store.len(), 2);
     }
 
     #[allow(dead_code)]

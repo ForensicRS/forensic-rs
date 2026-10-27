@@ -384,6 +384,24 @@ fn the_in_memory_registry_is_the_runs_registry() {
 }
 
 #[test]
+fn hives_are_records_too() {
+    use forensic_rs::memory::{MemHive, MemRecordKind};
+
+    let meta = MemRecordMeta::new(test_provenance_id(), Validity::Resident);
+    let mut hive = MemHive::new(MemRecordKey::Object(Va::new(0xffff_a000_0000_5000)), meta);
+    hive.root_path = MemValue::Known("\\REGISTRY\\MACHINE\\SYSTEM".into());
+    hive.last_write = MemValue::Known(Some(ForensicTimestamp::from_unix_secs(1_700_000_000)));
+    let image = image().with_hive(hive);
+    let hives: Vec<MemHive> = image.hives().unwrap().map(Result::unwrap).collect();
+    assert_eq!(hives.len(), 1);
+    assert!(hives[0].last_write.known().is_some());
+    // A backend without hives says so, distinctly from a failure.
+    let e = TestingMemoryImage::empty().hives().err().unwrap();
+    assert!(e.is_unsupported(), "{e}");
+    let _ = MemRecordKind::Hive;
+}
+
+#[test]
 fn the_in_memory_files_are_the_runs_file_system() {
     use forensic_rs::prelude::testing::InMemoryVirtualFileSystem;
 

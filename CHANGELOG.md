@@ -63,6 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Files recovered from memory in a run: `MemoryImage::as_files` returns an owned
   `Arc<dyn FileSystem>`, so a memory-only run passes it to `TriageSourcesBuilder::vfs` and file
   parsers read what memory holds of each file unchanged; `TestingMemoryImage::with_files`.
+- A memory capture's timeline:
+  - `TimelineRecordSink::with_locus`: a record's locus is part of its `EventId`, so records
+    that share a source (a memory capture's) no longer collapse into one event. The default
+    stays `Locus::Api`;
+  - `memory::record_locus`: `Locus::Memory` from a record's `memory.space` and `memory.va`,
+    else `Locus::Physical` from `memory.pa`; `dictionary::MEMORY_SPACE`;
+  - registry hives as typed memory records: `MemHive` (root path, file, last write),
+    `MemRecordKind::Hive`, `MemoryImage::hives`, `MemoryArtifact::Hive`,
+    `TestingMemoryImage::with_hive`.
 - `DataAccessError::Unsupported`, `ForensicError::unsupported` and `ForensicError::is_unsupported`:
   "this source does not provide that data at all", distinct from data that is missing or failed
   to read. `memory::unsupported(kind)`, which a `MemoryImage` returns for a record kind it does

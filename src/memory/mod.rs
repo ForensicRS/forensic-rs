@@ -47,6 +47,7 @@
 
 mod addr;
 mod image;
+mod locus;
 mod model;
 mod paging;
 mod physical;
@@ -55,8 +56,9 @@ mod validity;
 
 pub use addr::{Pa, PageSize, Va};
 pub use image::{MemIter, MemoryImage, MemoryImageExt, MemorySpec, unsupported};
+pub use locus::record_locus;
 pub use model::{
-    MemHandle, MemLocation, MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind,
+    MemHandle, MemHive, MemLocation, MemModule, MemOsInfo, MemProcess, MemRecordKey, MemRecordKind,
     MemRecordMeta, MemRegion, MemThread, MemValue, RecordSource, RegionKind,
 };
 pub use paging::{PagingFile, PagingFiles};

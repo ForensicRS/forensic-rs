@@ -508,6 +508,9 @@ so they work on any backend.
   `TriageSourcesBuilder::registry`, and `Registry::hive_source` names the hive in each key's
   provenance. Files recovered from memory are `MemoryImage::as_files` (owned), a run's `vfs`
   the same way; they are sparse (holes read as zeros, `SPARSE`, `allocated_size`).
+  Memory records carry where they were read from (`memory.space`, `memory.va`, `memory.pa`);
+  a timeline of them uses `TimelineRecordSink::with_locus(memory::record_locus)`, or every
+  record of a capture (one source) is one event.
 - **Hostile input.** Memory images are attacker-controlled. Backends bounds-check, bound counts
   and iterations, detect cycles, and never panic; `Va`/`Pa` have no wrapping arithmetic.
 - **Testing.** `InMemoryPhysicalMemory`, `InMemoryPagingFile`, `TestingAddressSpace` and `TestingMemoryImage`

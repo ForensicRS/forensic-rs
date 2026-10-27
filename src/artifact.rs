@@ -219,6 +219,8 @@ pub enum MemoryArtifact {
     /// A virtual memory region (a VAD on Windows)
     Region,
     Handle,
+    /// A registry hive loaded in memory
+    Hive,
     Other(String),
     #[default]
     Unknown,
@@ -420,6 +422,7 @@ impl std::fmt::Display for MemoryArtifact {
             MemoryArtifact::Module => write!(f, "Module"),
             MemoryArtifact::Region => write!(f, "Region"),
             MemoryArtifact::Handle => write!(f, "Handle"),
+            MemoryArtifact::Hive => write!(f, "Hive"),
             MemoryArtifact::Other(v) => write!(f, "{}", v),
             MemoryArtifact::Unknown => write!(f, "Unknown"),
         }
@@ -915,6 +918,7 @@ pub fn memory_artifact_from_str(txt: &str) -> MemoryArtifact {
         "Module" => MemoryArtifact::Module,
         "Region" => MemoryArtifact::Region,
         "Handle" => MemoryArtifact::Handle,
+        "Hive" => MemoryArtifact::Hive,
         "Unknown" => MemoryArtifact::Unknown,
         _ => MemoryArtifact::Other(txt.to_string()),
     }

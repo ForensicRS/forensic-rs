@@ -164,6 +164,8 @@ pub enum MemRecordKind {
     ProcessModule,
     Region,
     Handle,
+    /// Registry hives loaded in memory: [`MemoryImage::hives`](super::MemoryImage::hives).
+    Hive,
 }
 
 /// Facts about the captured operating system.
@@ -393,6 +395,33 @@ impl MemHandle {
             object_type: MemValue::Unsupported,
             granted_access: MemValue::Unsupported,
             name: MemValue::Unsupported,
+        }
+    }
+}
+
+/// A registry hive loaded in memory. Its keys are read through
+/// [`MemoryImage::as_registry`](super::MemoryImage::as_registry).
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct MemHive {
+    pub key: MemRecordKey,
+    pub meta: MemRecordMeta,
+    /// Where the hive is mounted (`\REGISTRY\MACHINE\SYSTEM`).
+    pub root_path: MemValue<Text>,
+    /// The file it was loaded from; `None` for a hive with no file (`HARDWARE`).
+    pub file_path: MemValue<Option<Text>>,
+    /// When the hive was last written, as its header (base block) records it.
+    pub last_write: MemValue<Option<ForensicTimestamp>>,
+}
+
+impl MemHive {
+    pub fn new(key: MemRecordKey, meta: MemRecordMeta) -> Self {
+        Self {
+            key,
+            meta,
+            root_path: MemValue::Unsupported,
+            file_path: MemValue::Unsupported,
+            last_write: MemValue::Unsupported,
         }
     }
 }

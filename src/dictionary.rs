@@ -138,6 +138,9 @@ pub const DLL_PATH: &str = "dll.path";
 pub const MEMORY_VA: &str = "memory.va";
 /// The physical address of that structure. A forensic-rs extension, not ECS.
 pub const MEMORY_PA: &str = "memory.pa";
+/// The address space `memory.va` is in (`crate::memory::SpaceId`'s value). A forensic-rs
+/// extension, not ECS.
+pub const MEMORY_SPACE: &str = "memory.space";
 /// The record's worst validity (`crate::memory::Validity`). A forensic-rs extension, not ECS.
 pub const MEMORY_VALIDITY: &str = "memory.validity";
 /// The fields a memory record could not read, each with its validity. They are omitted from the
